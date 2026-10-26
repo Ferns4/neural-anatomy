@@ -5,8 +5,8 @@
   const { MLP } = NA.engine;
   const D = NA.data;
 
-  const DEFAULT_LENSES = { edges: 'weight', nodes: 'activation', maps: true, values: false, bias: false, flow: false, health: false };
-  const DEFAULT_OVERLAYS = { train: true, test: true, errors: false, neuronLines: false, contributions: false, saliency: false };
+  const DEFAULT_LENSES = { edges: 'weight', nodes: 'activation', maps: true, values: false, bias: false, flow: false, health: false, acts: true };
+  const DEFAULT_OVERLAYS = { train: true, val: true, test: false, errors: false, neuronLines: false, contributions: false, saliency: false };
 
   const App = {
     ev: NA.Emitter(),
@@ -70,19 +70,30 @@
     return { n: ds.classes, out: 'softmax' };
   };
 
+  // Per-neuron activation ids for hidden layer h, padded with the default where none was chosen.
+  App.layerActs = function (h) {
+    const n = this.arch.hidden[h], src = (this.arch.acts && this.arch.acts[h]) || [];
+    const out = [];
+    for (let j = 0; j < n; j++) out.push(src[j] || this.arch.act);
+    return out;
+  };
+
   App.rebuild = function (opts = {}) {
     const s = this.spec;
     if (opts.data || !this.ds) this.ds = D.buildDataset(s);
     else D.setFeatures(this.ds, s.features);
     const ds = this.ds, o = this.outputSpec(ds);
-    this.net = new MLP({ sizes: [ds.dim, ...this.arch.hidden, o.n], act: this.arch.act, out: o.out, init: this.hyper.init, seed: this.hyper.seed });
+    const acts = [null, ...this.arch.hidden.map((n, h) => this.layerActs(h)), null];
+    this.net = new MLP({ sizes: [ds.dim, ...this.arch.hidden, o.n], act: this.arch.act, acts, out: o.out, loss: this.hyper.loss, init: this.hyper.init, seed: this.hyper.seed });
+    this.hyper.loss = this.net.lossId;
     this.rng = new NA.RNG((this.hyper.seed * 31 + 7) >>> 0);
     this.order = Int32Array.from(ds.trainIdx);
     this.rng.shuffle(this.order);
     this.batchPos = 0;
     const cap = ds.kind === 'image' ? 400 : 600;
     this.evalTrain = ds.trainIdx.length > cap ? ds.trainIdx.slice(0, cap) : ds.trainIdx;
-    this.evalTest = ds.testIdx.length > cap ? ds.testIdx.slice(0, cap) : ds.testIdx;
+    this.evalVal = ds.valIdx.length > cap ? ds.valIdx.slice(0, cap) : ds.valIdx;
+    this.testResult = null;
     this.step = 0; this.version++; this.caches = {}; this._pt = null;
     this.training = false; this.ffTarget = null; this.diverged = false;
     this.history = { points: [], snaps: [], pointEvery: ds.kind === 'image' ? 8 : 2, snapEvery: ds.kind === 'image' ? 10 : 5, lastPointStep: 0, lastSnapStep: 0 };
@@ -137,19 +148,116 @@
     for (const k of ['noise', 'n', 'trainRatio']) if (p[k] !== undefined && p[k] !== sp[k]) { sp[k] = p[k]; data = true; }
     if (p.dataSeed !== undefined) { sp.seed = p.dataSeed; data = true; }
     if (p.features) { sp.features = p.features.slice(); model = true; }
-    if (p.hidden) { this.arch.hidden = p.hidden.slice(); model = true; }
-    if (p.act && p.act !== this.arch.act) { this.arch.act = p.act; model = true; }
+    if (p.hidden) {
+      // keep each surviving neuron's activation when layer sizes change
+      const old = this.arch.hidden.map((n, h) => this.layerActs(h));
+      this.arch.hidden = p.hidden.slice();
+      this.arch.acts = this.arch.hidden.map((n, h) => (old[h] ? old[h].slice(0, n) : null));
+      model = true;
+    }
+    if (p.acts) this.arch.acts = p.acts.map((a) => (a ? a.slice() : null));
+    if (p.act && (p.act !== this.arch.act || (this.net && !this.net.isUniform()))) { this.arch.act = p.act; this.arch.acts = null; model = true; }
+    if (p.loss) { h.loss = p.loss; if (this.net) { this.net.setLoss(p.loss); h.loss = this.net.lossId; this.version++; this.caches = {}; this._pt = null; } }
     if (p.seed !== undefined) { h.seed = p.seed; model = true; }
     if (p.init && p.init !== h.init) { h.init = p.init; model = true; }
     for (const k of ['lr', 'optimizer', 'batch', 'reg', 'regRate']) if (p[k] !== undefined) h[k] = p[k];
     if (p.optimizer !== undefined && this.net) this.net.resetOptimizer(p.optimizer);
     if (data || model || p.reset) this.rebuild({ data, keepSelection: true });
+    else if (p.loss) { this.recordPoint(); this.emit('weights'); this.emit('history'); }
     this.emit('hyper');
     if (p.train) this.fastForward(p.train);
     if (p.tab) this.emit('tab', p.tab);
     if (p.view) this.emit('view', p.view);
     if (p.sampleDigit !== undefined) this.emit('sampleDigit', p.sampleDigit);
   };
+
+  // ------------------------------------------------------------------ architecture edits
+  const actLabel = (id) => (NA.engine.ACTIVATIONS[id] || {}).label || id;
+  App.toast = function (msg) { this.emit('toast', msg); };
+
+  // Change one neuron's activation in place: weights are kept so the effect shows immediately.
+  App.setNeuronAct = function (l, j, id) {
+    if (l <= 0 || l >= this.net.L) return;
+    const h = l - 1;
+    if (!this.arch.acts) this.arch.acts = [];
+    const acts = this.layerActs(h);
+    acts[j] = id;
+    this.arch.acts[h] = acts;
+    this.net.setAct(l, j, id);
+    this.afterActChange();
+    this.toast(`${this.neuronName(l, j)} now uses ${actLabel(id)}. Weights kept.`);
+  };
+  App.setLayerAct = function (l, id) {
+    if (l <= 0 || l >= this.net.L) return;
+    const h = l - 1, n = this.arch.hidden[h];
+    if (!this.arch.acts) this.arch.acts = [];
+    this.arch.acts[h] = new Array(n).fill(id);
+    for (let j = 0; j < n; j++) this.net.setAct(l, j, id);
+    this.afterActChange();
+    this.toast(`All ${n} neurons in ${this.layerName(l)} now use ${actLabel(id)}. Weights kept.`);
+  };
+  // Several neurons ({l, j} list) switched to one activation, e.g. dead ReLUs to Leaky ReLU.
+  App.setActs = function (list, id) {
+    if (!list.length) return;
+    if (!this.arch.acts) this.arch.acts = [];
+    for (const { l, j } of list) {
+      if (l <= 0 || l >= this.net.L) continue;
+      const acts = this.layerActs(l - 1);
+      acts[j] = id;
+      this.arch.acts[l - 1] = acts;
+      this.net.setAct(l, j, id);
+    }
+    this.afterActChange();
+    this.toast(`${list.length === 1 ? this.neuronName(list[0].l, list[0].j) + ' now uses' : list.length + ' neurons now use'} ${actLabel(id)}. Weights kept.`);
+  };
+  App.afterActChange = function () {
+    if (this.training) this.pause();
+    this.version++; this.caches = {}; this._pt = null;
+    this.recordPoint();
+    this.emit('weights'); this.emit('arch'); this.emit('history'); this.emit('hyper');
+  };
+  App.setLoss = function (id) {
+    this.applyPatch({ loss: id });
+    const L = NA.engine.LOSSES[this.net.lossId];
+    this.toast(`Loss is now ${L.label.toLowerCase()}. Training continues from the current weights.`);
+  };
+  // Insert a hidden layer after hidden index h (−1 = right after the input; default: before the output).
+  App.addLayer = function (h) {
+    const hidden = this.arch.hidden.slice();
+    if (hidden.length >= 6) { this.toast('Six hidden layers is the maximum here.'); return; }
+    const at = h === undefined ? hidden.length : h + 1;
+    const size = hidden.length ? hidden[Math.max(0, Math.min(hidden.length - 1, at - 1))] : 4;
+    const acts = hidden.map((n, k) => this.layerActs(k));
+    const neighbour = acts[Math.max(0, Math.min(acts.length - 1, at - 1))];
+    hidden.splice(at, 0, size);
+    acts.splice(at, 0, new Array(size).fill(neighbour ? mostCommon(neighbour) : this.arch.act));
+    this.applyPatch({ hidden, acts });
+    this.toast(`Added Hidden ${at + 1} with ${size} neurons. Weights re-initialized.`);
+  };
+  App.removeLayer = function (h) {
+    const hidden = this.arch.hidden.slice();
+    if (!hidden.length) return;
+    const at = h === undefined ? hidden.length - 1 : h;
+    const acts = hidden.map((n, k) => this.layerActs(k));
+    hidden.splice(at, 1); acts.splice(at, 1);
+    this.applyPatch({ hidden, acts });
+    this.toast(hidden.length ? `Removed Hidden ${at + 1}. Weights re-initialized.` : 'No hidden layers left: the network is now a single layer.');
+  };
+  App.resizeLayer = function (h, d) {
+    const hidden = this.arch.hidden.slice(), max = this.isImage() ? 48 : 32;
+    const next = Math.max(1, Math.min(max, hidden[h] + d));
+    if (next === hidden[h]) return;
+    const acts = hidden.map((n, k) => this.layerActs(k));
+    if (d > 0) acts[h].push(mostCommon(acts[h])); else acts[h].pop();
+    hidden[h] = next;
+    this.applyPatch({ hidden, acts });
+  };
+  function mostCommon(ids) {
+    const c = {};
+    let best = ids[0];
+    for (const id of ids) { c[id] = (c[id] || 0) + 1; if (c[id] > c[best]) best = id; }
+    return best;
+  }
 
   // ------------------------------------------------------------------ training
   App.trainSteps = function (k) {
@@ -172,8 +280,8 @@
   App.recordPoint = function () {
     const net = this.net, ds = this.ds, H = this.history;
     const tr = net.evaluate(ds.X, ds.y, this.evalTrain, ds.task);
-    const te = net.evaluate(ds.X, ds.y, this.evalTest, ds.task);
-    H.points.push({ step: this.step, epoch: this.epoch(), trainLoss: tr.loss, testLoss: te.loss, trainAcc: tr.acc, testAcc: te.acc, grad: Array.from(net.gradRms), ratio: Array.from(net.updateRatio), reg: net.regPenalty(this.hyper.reg, this.hyper.regRate) });
+    const va = net.evaluate(ds.X, ds.y, this.evalVal, ds.task);
+    H.points.push({ step: this.step, epoch: this.epoch(), trainLoss: tr.loss, valLoss: va.loss, trainAcc: tr.acc, valAcc: va.acc, grad: Array.from(net.gradRms), ratio: Array.from(net.updateRatio), reg: net.regPenalty(this.hyper.reg, this.hyper.regRate) });
     if (H.points.length > 360) {
       const last = H.points.length - 1;
       H.points = H.points.filter((pt, i) => i % 2 === 0 || i === last);
@@ -354,7 +462,7 @@
       else this.setProbe(p.raw, null, p.strokes ? { strokes: p.strokes, width: p.width } : null);
       return;
     }
-    if (ds.kind === 'image') { this.setProbeSample(ds.testIdx[0]); return; }
+    if (ds.kind === 'image') { this.setProbeSample(ds.valIdx[0]); return; }
     // pick the training sample nearest a fixed, typical location
     const target = ds.kind === 'plane' ? [0.42, 0.3] : [0.3];
     let best = ds.trainIdx[0], bd = Infinity;
@@ -416,7 +524,44 @@
     return this.cached('grad', 160, () => this.net.gradientReport(this.ds.X, this.ds.y, this.evalTrain, this.hyper.reg, this.hyper.regRate));
   };
   App.importance = function () {
-    return this.cached('importance', 2500, () => this.net.importance(this.ds.X, this.ds.y, this.evalTest.length ? this.evalTest : this.evalTrain, this.ds.task));
+    return this.cached('importance', 2500, () => this.net.importance(this.ds.X, this.ds.y, this.evalVal.length ? this.evalVal : this.evalTrain, this.ds.task));
+  };
+
+  /* The held-out test: evaluated only on request, after training. Records the step it was run at so
+     the report can tell when the model has changed since. */
+  App.runTest = function () {
+    const ds = this.ds, net = this.net, idx = ds.testIdx, n = idx.length, d0 = net.sizes[0];
+    if (!n) return null;
+    const cls = ds.task !== 'regression', K = cls ? (ds.task === 'binary' ? 2 : ds.classes) : 0;
+    const confusion = cls ? Array.from({ length: K }, () => new Array(K).fill(0)) : null;
+    let loss = 0, correct = 0, sse = 0, sae = 0, sy = 0, syy = 0;
+    const errors = [];
+    for (const k of idx) {
+      net.forward(ds.X, k * d0);
+      loss += net.lossOf(ds.y[k]);
+      const out = net.a[net.L];
+      if (cls) {
+        const pred = net.predicted(), conf = ds.task === 'binary' ? (pred ? out[0] : 1 - out[0]) : out[pred];
+        confusion[ds.y[k]][pred]++;
+        if (pred === ds.y[k]) correct++; else errors.push({ k, truth: ds.y[k], pred, conf });
+      } else {
+        const r = out[0] - ds.y[k];
+        sse += r * r; sae += Math.abs(r); sy += ds.y[k]; syy += ds.y[k] * ds.y[k];
+        errors.push({ k, truth: ds.y[k], pred: out[0], err: Math.abs(r) });
+      }
+    }
+    const m = this.metrics();
+    const res = { step: this.displayStep(), version: this.version, n, loss: loss / n, task: ds.task, lossId: net.lossId, valLoss: m.valLoss, valAcc: m.valAcc, trainAcc: m.trainAcc };
+    if (cls) { res.acc = correct / n; res.confusion = confusion; res.errors = errors.sort((a, b) => b.conf - a.conf); }
+    else {
+      const sst = syy - (sy * sy) / n;
+      res.acc = sst > 1e-12 ? 1 - sse / sst : 0;
+      res.rmse = Math.sqrt(sse / n); res.mae = sae / n;
+      res.errors = errors.sort((a, b) => b.err - a.err).slice(0, 12);
+    }
+    this.testResult = res;
+    this.emit('test', res);
+    return res;
   };
   // Max |activation| per layer over the dataset, used to normalise colours.
   App.layerScale = function () {

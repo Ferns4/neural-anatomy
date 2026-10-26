@@ -12,15 +12,62 @@
     return 0.5 * (1 + t) + 0.5 * z * (1 - t * t) * SQ2PI * (1 + 3 * 0.044715 * z * z);
   }
 
-  // f: activation, d: derivative given (z, a)
+  const softplus = (z) => (z > 30 ? z : Math.log1p(Math.exp(z)));
+
+  // f: activation, d: derivative given (z, a). he: use He initialisation. sat: is this output on a flat tail?
+  // formula / dformula: the function and its slope as text; apply(z): the formula with a number put in.
   const ACTIVATIONS = {
-    relu: { id: 'relu', label: 'ReLU', formula: 'max(0, z)', f: (z) => (z > 0 ? z : 0), d: (z) => (z > 0 ? 1 : 0), family: 'rectifier' },
-    leaky: { id: 'leaky', label: 'Leaky ReLU', formula: 'max(0.05·z, z)', f: (z) => (z > 0 ? z : LEAK * z), d: (z) => (z > 0 ? 1 : LEAK), family: 'rectifier' },
-    tanh: { id: 'tanh', label: 'Tanh', formula: 'tanh(z)', f: Math.tanh, d: (z, a) => 1 - a * a, family: 'squash', lo: -1, hi: 1 },
-    sigmoid: { id: 'sigmoid', label: 'Sigmoid', formula: '1 / (1 + e^(−z))', f: sigmoid, d: (z, a) => a * (1 - a), family: 'squash', lo: 0, hi: 1 },
-    gelu: { id: 'gelu', label: 'GELU', formula: 'z · Φ(z)', f: gelu, d: geluD, family: 'smooth' },
-    linear: { id: 'linear', label: 'Linear', formula: 'z', f: (z) => z, d: () => 1, family: 'linear' },
+    relu: { id: 'relu', label: 'ReLU', short: 'ReLU', formula: 'max(0, z)', dformula: '1 if z > 0, else 0', apply: (z) => `max(0, ${z})`,
+      f: (z) => (z > 0 ? z : 0), d: (z) => (z > 0 ? 1 : 0), family: 'rectifier', he: true, canDie: true },
+    leaky: { id: 'leaky', label: 'Leaky ReLU', short: 'Leaky', formula: 'max(0.05z, z)', dformula: '1 if z > 0, else 0.05', apply: (z) => `max(0.05·${z}, ${z})`,
+      f: (z) => (z > 0 ? z : LEAK * z), d: (z) => (z > 0 ? 1 : LEAK), family: 'rectifier', he: true },
+    elu: { id: 'elu', label: 'ELU', short: 'ELU', formula: 'z if z > 0, else eᶻ − 1', dformula: '1 if z > 0, else eᶻ', apply: (z) => (z[0] === '−' ? `e^(${z}) − 1` : z),
+      f: (z) => (z > 0 ? z : Math.expm1(z)), d: (z, a) => (z > 0 ? 1 : a + 1), family: 'smooth', he: true },
+    gelu: { id: 'gelu', label: 'GELU', short: 'GELU', formula: 'z · Φ(z)', dformula: 'Φ(z) + z · φ(z)', apply: (z) => `${z} · Φ(${z})`,
+      f: gelu, d: geluD, family: 'smooth', he: true, note: 'Φ is the standard normal cumulative distribution; computed with the tanh approximation.' },
+    swish: { id: 'swish', label: 'Swish', short: 'Swish', formula: 'z · σ(z)', dformula: 'σ(z) + z · σ(z)(1 − σ(z))', apply: (z) => `${z} · σ(${z})`,
+      f: (z) => z * sigmoid(z), d: (z) => { const s = sigmoid(z); return s + z * s * (1 - s); }, family: 'smooth', he: true },
+    softplus: { id: 'softplus', label: 'Softplus', short: 'Softplus', formula: 'ln(1 + eᶻ)', dformula: 'σ(z) = 1 / (1 + e⁻ᶻ)', apply: (z) => `ln(1 + e^(${z}))`,
+      f: softplus, d: (z) => sigmoid(z), family: 'smooth', he: true },
+    tanh: { id: 'tanh', label: 'Tanh', short: 'tanh', formula: 'tanh(z) = (eᶻ − e⁻ᶻ) / (eᶻ + e⁻ᶻ)', dformula: '1 − tanh²(z)', apply: (z) => `tanh(${z})`,
+      f: Math.tanh, d: (z, a) => 1 - a * a, family: 'squash', lo: -1, hi: 1, sat: (a) => Math.abs(a) > 0.97 },
+    sigmoid: { id: 'sigmoid', label: 'Sigmoid', short: 'σ', formula: 'σ(z) = 1 / (1 + e⁻ᶻ)', dformula: 'σ(z) · (1 − σ(z))', apply: (z) => `1 / (1 + e^(${z[0] === '−' ? z.slice(1) : '−' + z}))`,
+      f: sigmoid, d: (z, a) => a * (1 - a), family: 'squash', lo: 0, hi: 1, sat: (a) => a < 0.03 || a > 0.97 },
+    sine: { id: 'sine', label: 'Sine', short: 'sin', formula: 'sin(z)', dformula: 'cos(z)', apply: (z) => `sin(${z})`,
+      f: Math.sin, d: (z) => Math.cos(z), family: 'periodic', lo: -1, hi: 1 },
+    gaussian: { id: 'gaussian', label: 'Gaussian', short: 'Gauss', formula: 'e^(−z²)', dformula: '−2z · e^(−z²)', apply: (z) => `e^(−(${z})²)`,
+      f: (z) => Math.exp(-z * z), d: (z, a) => -2 * z * a, family: 'bump', lo: 0, hi: 1, sat: (a) => a < 0.03 },
+    linear: { id: 'linear', label: 'Linear', short: 'linear', formula: 'z', dformula: '1', apply: (z) => z,
+      f: (z) => z, d: () => 1, family: 'linear' },
   };
+  const ACTIVATION_ORDER = ['relu', 'leaky', 'elu', 'gelu', 'swish', 'softplus', 'tanh', 'sigmoid', 'sine', 'gaussian', 'linear'];
+
+  // Losses available for each output layer, first one is the default.
+  const HUBER = 0.2;
+  // formula[out]: the loss written for that output layer; delta[out]: its error signal ∂L/∂z.
+  const LOSSES = {
+    xent: { id: 'xent', label: 'Cross-entropy', short: 'Cross-ent.',
+      formula: { sigmoid: 'L = −[y·ln p + (1 − y)·ln(1 − p)]', softmax: 'L = −ln p_y' },
+      delta: { sigmoid: 'δ = p − y', softmax: 'δₖ = pₖ − yₖ' },
+      hint: 'Punishes confident mistakes hardest; with sigmoid or softmax the error signal is simply p − y.' },
+    mse: { id: 'mse', label: 'Squared error', short: 'Squared',
+      formula: { sigmoid: 'L = ½(p − y)²', softmax: 'L = ½ Σₖ (pₖ − yₖ)²', identity: 'L = ½(ŷ − y)²' },
+      delta: { sigmoid: 'δ = (p − y) · p(1 − p)', softmax: 'δⱼ = pⱼ[(pⱼ − yⱼ) − Σₖ pₖ(pₖ − yₖ)]', identity: 'δ = ŷ − y' },
+      hint: 'Penalises the square of the miss. On a probability output it learns slowly when confidently wrong, because the slope p(1 − p) is tiny there.' },
+    hinge: { id: 'hinge', label: 'Hinge', short: 'Hinge',
+      formula: { sigmoid: 'L = max(0, 1 − t·z), t = ±1' },
+      delta: { sigmoid: 'δ = −t if t·z < 1, else 0' },
+      hint: 'The support-vector-machine loss on the raw score z: points beyond the margin (t·z ≥ 1) stop contributing at all.' },
+    mae: { id: 'mae', label: 'Absolute error', short: 'Absolute',
+      formula: { identity: 'L = |ŷ − y|' },
+      delta: { identity: 'δ = sign(ŷ − y)' },
+      hint: 'Every miss pulls with the same strength, so outliers matter less and the fit tracks the median.' },
+    huber: { id: 'huber', label: 'Huber', short: 'Huber',
+      formula: { identity: `L = ½r² if |r| ≤ ${HUBER}, else ${HUBER}(|r| − ${HUBER / 2})` },
+      delta: { identity: `δ = r if |r| ≤ ${HUBER}, else ${HUBER}·sign(r)` },
+      hint: `Squared error for small misses, absolute error beyond ${HUBER}: smooth near the target and robust to outliers.` },
+  };
+  const LOSS_FOR = { sigmoid: ['xent', 'mse', 'hinge'], softmax: ['xent', 'mse'], identity: ['mse', 'mae', 'huber'] };
 
   const OPTIMIZERS = {
     sgd: { id: 'sgd', label: 'SGD' },
@@ -29,15 +76,24 @@
   };
 
   class MLP {
-    /* cfg: { sizes:[n0..nL], act, out:'sigmoid'|'softmax'|'identity', init, seed } */
+    /* cfg: { sizes:[n0..nL], act, acts:[per layer: array of activation ids], out:'sigmoid'|'softmax'|'identity',
+              loss, init, seed } — every hidden neuron can have its own activation function. */
     constructor(cfg) {
       this.sizes = cfg.sizes.slice();
       this.L = this.sizes.length - 1;
       this.actId = cfg.act || 'relu';
       this.act = ACTIVATIONS[this.actId];
       this.out = cfg.out || 'sigmoid';
-      this.lossId = this.out === 'sigmoid' ? 'bce' : this.out === 'softmax' ? 'ce' : 'mse';
+      this.setLoss(cfg.loss);
       const S = this.sizes;
+      this.actIds = S.map((n, l) => (l > 0 && l < this.L ? new Array(n).fill(this.actId) : null));
+      if (cfg.acts) {
+        for (let l = 1; l < this.L; l++) {
+          const src = cfg.acts[l];
+          if (src) for (let j = 0; j < S[l]; j++) if (src[j] && ACTIVATIONS[src[j]]) this.actIds[l][j] = src[j];
+        }
+      }
+      this.actFns = this.actIds.map((ids) => (ids ? ids.map((id) => ACTIVATIONS[id]) : null));
       this.W = []; this.b = []; this.gW = []; this.gb = [];
       for (let l = 0; l < this.L; l++) {
         this.W.push(new Float64Array(S[l + 1] * S[l]));
@@ -61,11 +117,24 @@
     get paramCount() { let n = 0; for (let l = 0; l < this.L; l++) n += this.W[l].length + this.b[l].length; return n; }
     isOutput(l) { return l === this.L; }
 
+    // Activation object of neuron (l, j); the output layer reports its own squashing function.
+    actOf(l, j) {
+      if (this.actFns[l]) return this.actFns[l][j];
+      if (l === this.L) return this.out === 'sigmoid' ? ACTIVATIONS.sigmoid : ACTIVATIONS.linear;
+      return ACTIVATIONS.linear;
+    }
+    setAct(l, j, id) { if (this.actIds[l] && ACTIVATIONS[id]) { this.actIds[l][j] = id; this.actFns[l][j] = ACTIVATIONS[id]; } }
+    // The id shared by every neuron in layer l, or 'mixed'.
+    layerActId(l) { const ids = this.actIds[l]; if (!ids) return null; return ids.every((x) => x === ids[0]) ? ids[0] : 'mixed'; }
+    isUniform() { for (let l = 1; l < this.L; l++) if (this.layerActId(l) !== this.actId) return false; return true; }
+    setLoss(id) { const ok = LOSS_FOR[this.out]; this.lossId = ok.includes(id) ? id : ok[0]; }
+
     init(mode, seed) {
       const rng = new NA.RNG((seed * 7919 + 17) >>> 0);
-      const rect = this.act.family === 'rectifier' || this.act.family === 'smooth';
       for (let l = 0; l < this.L; l++) {
         const nIn = this.sizes[l], nOut = this.sizes[l + 1], last = l === this.L - 1;
+        const fns = this.actFns ? this.actFns[l + 1] : null;
+        const rect = fns ? fns.filter((a) => a.he).length * 2 > fns.length : !!this.act.he;
         let sd;
         if (mode === 'small') sd = 0.01;
         else if (mode === 'large') sd = 1.6;
@@ -98,8 +167,8 @@
           z[j] = s;
         }
         if (l < L - 1) {
-          const f = this.act.f, m = this.mask[l + 1];
-          for (let j = 0; j < nOut; j++) a[j] = m[j] ? f(z[j]) : 0;
+          const fns = this.actFns[l + 1], m = this.mask[l + 1];
+          for (let j = 0; j < nOut; j++) a[j] = m[j] ? fns[j].f(z[j]) : 0;
         } else this._outAct(z, a);
       }
       return this.a[L];
@@ -115,16 +184,25 @@
       } else { for (let k = 0; k < n; k++) a[k] = z[k]; }
     }
 
-    // Loss of the most recent forward pass against target y.
+    // Loss of the most recent forward pass against target y, under the selected loss function.
     lossOf(y) {
-      const zL = this.z[this.L], aL = this.a[this.L];
-      if (this.out === 'sigmoid') { const z = zL[0]; return Math.max(z, 0) - z * y + Math.log1p(Math.exp(-Math.abs(z))); }
+      const zL = this.z[this.L], aL = this.a[this.L], id = this.lossId;
+      if (this.out === 'sigmoid') {
+        const z = zL[0];
+        if (id === 'mse') { const d = aL[0] - y; return 0.5 * d * d; }
+        if (id === 'hinge') { const t = y > 0.5 ? 1 : -1; return Math.max(0, 1 - t * z); }
+        return Math.max(z, 0) - z * y + Math.log1p(Math.exp(-Math.abs(z)));
+      }
       if (this.out === 'softmax') {
+        if (id === 'mse') { let s = 0; for (let k = 0; k < aL.length; k++) { const d = aL[k] - (k === (y | 0) ? 1 : 0); s += d * d; } return 0.5 * s; }
         let m = -Infinity; for (let k = 0; k < zL.length; k++) if (zL[k] > m) m = zL[k];
         let s = 0; for (let k = 0; k < zL.length; k++) s += Math.exp(zL[k] - m);
         return m + Math.log(s) - zL[y | 0];
       }
-      const d = aL[0] - y; return 0.5 * d * d;
+      const r = aL[0] - y, ar = Math.abs(r);
+      if (id === 'mae') return ar;
+      if (id === 'huber') return ar <= HUBER ? 0.5 * r * r : HUBER * (ar - 0.5 * HUBER);
+      return 0.5 * r * r;
     }
 
     predicted() {
@@ -135,25 +213,39 @@
     }
 
     // ------------------------------------------------------------ backward
-    // Seeds the output error for target y. With sigmoid+BCE, softmax+CE and identity+½SE
-    // the derivative of the loss w.r.t. the output pre-activation is simply ŷ − y.
+    // Seeds the output error δ = ∂L/∂z for target y. Cross-entropy with sigmoid or softmax, and
+    // squared error with a linear output, reduce to ŷ − y; the other pairings keep their extra factors.
     _seed(y) {
-      const dL = this.delta[this.L], aL = this.a[this.L];
-      if (this.out === 'softmax') { for (let k = 0; k < dL.length; k++) dL[k] = aL[k] - (k === (y | 0) ? 1 : 0); }
-      else dL[0] = aL[0] - y;
+      const dL = this.delta[this.L], aL = this.a[this.L], zL = this.z[this.L], id = this.lossId;
+      if (this.out === 'softmax') {
+        const c = y | 0;
+        if (id === 'mse') {
+          let s = 0; for (let k = 0; k < dL.length; k++) s += aL[k] * (aL[k] - (k === c ? 1 : 0));
+          for (let j = 0; j < dL.length; j++) dL[j] = aL[j] * ((aL[j] - (j === c ? 1 : 0)) - s);
+        } else for (let k = 0; k < dL.length; k++) dL[k] = aL[k] - (k === c ? 1 : 0);
+      } else if (this.out === 'sigmoid') {
+        const p = aL[0];
+        if (id === 'mse') dL[0] = (p - y) * p * (1 - p);
+        else if (id === 'hinge') { const t = y > 0.5 ? 1 : -1; dL[0] = t * zL[0] < 1 ? -t : 0; }
+        else dL[0] = p - y;
+      } else {
+        const r = aL[0] - y;
+        dL[0] = id === 'mae' ? Math.sign(r) : id === 'huber' ? (Math.abs(r) <= HUBER ? r : HUBER * Math.sign(r)) : r;
+      }
     }
 
-    // δ[l] = (W[l]ᵀ δ[l+1]) ⊙ f'(z[l]); for l = 0 this is the gradient w.r.t. the inputs.
+    // δ[l] = (W[l]ᵀ δ[l+1]) ⊙ f'(z[l]), using each neuron's own activation; for l = 0 this is the
+    // gradient with respect to the inputs.
     _propagate(toInput) {
       const S = this.sizes;
       for (let l = this.L - 1; l >= (toInput ? 0 : 1); l--) {
         const nIn = S[l], nOut = S[l + 1], W = this.W[l], dOut = this.delta[l + 1], dIn = this.delta[l], m = this.mask[l];
-        const zIn = this.z[l], aIn = this.a[l], df = this.act.d;
+        const zIn = this.z[l], aIn = this.a[l], fns = this.actFns[l];
         for (let i = 0; i < nIn; i++) {
           if (!m[i]) { dIn[i] = 0; continue; }
           let s = 0;
           for (let j = 0; j < nOut; j++) s += W[j * nIn + i] * dOut[j];
-          dIn[i] = l === 0 ? s : s * df(zIn[i], aIn[i]);
+          dIn[i] = l === 0 ? s : s * fns[i].d(zIn[i], aIn[i]);
         }
       }
     }
@@ -365,7 +457,7 @@
       }
     }
     clone() {
-      const c = new MLP({ sizes: this.sizes, act: this.actId, out: this.out, init: this.initMode, seed: this.seed });
+      const c = new MLP({ sizes: this.sizes, act: this.actId, acts: this.actIds, out: this.out, loss: this.lossId, init: this.initMode, seed: this.seed });
       c.setParams(this.getParams());
       c.mask = this.mask.map((m) => Uint8Array.from(m));
       return c;
@@ -373,14 +465,16 @@
   }
 
   // ------------------------------------------------------------ statistics
-  /* Per-neuron statistics over a forwardMany() result, optionally restricted to sample indices idx. */
+  /* Per-neuron statistics over a forwardMany() result, optionally restricted to sample indices idx.
+     activeFrac: share of inputs with z > 0. satFrac: share on the flat tails of the neuron's activation. */
   function neuronStats(net, F, idx) {
-    const N = F.n, act = net.act, n = idx ? idx.length : N;
+    const N = F.n, n = idx ? idx.length : N;
     return net.sizes.map((m, l) => {
       const A = F.a[l], Z = F.z[l], hidden = l > 0 && l < net.L;
       const out = [];
       const buf = new Float32Array(n);
       for (let j = 0; j < m; j++) {
+        const act = hidden ? net.actFns[l][j] : null;
         let s = 0, ss = 0, mn = Infinity, mx = -Infinity, active = 0, sat = 0;
         for (let q = 0; q < n; q++) {
           const p = idx ? idx[q] : q;
@@ -388,10 +482,8 @@
           buf[q] = v; s += v; ss += v * v;
           if (v < mn) mn = v; if (v > mx) mx = v;
           if (hidden) {
-            const z = Z[j * N + p];
-            if (act.family === 'rectifier' ? z > 0 : true) active++;
-            if (act.id === 'tanh' && Math.abs(v) > 0.97) sat++;
-            else if (act.id === 'sigmoid' && (v < 0.03 || v > 0.97)) sat++;
+            if (Z[j * N + p] > 0) active++;
+            if (act.sat && act.sat(v)) sat++;
           }
         }
         buf.sort();
@@ -508,5 +600,14 @@
     return segs;
   }
 
-  NA.engine = { MLP, ACTIVATIONS, OPTIMIZERS, neuronStats, correlation, pca2, procrustes2, contour, sigmoid };
+  // Is neuron (l, j) dead or flat over the statistics? ReLU dies when z ≤ 0 everywhere; anything else is
+  // reported as flat when its output barely varies.
+  function deadKind(net, stats, l, j) {
+    if (l <= 0 || l >= net.L || !net.mask[l][j]) return null;
+    const s = stats[l][j], act = net.actFns[l][j];
+    if (act.canDie) return s.activeFrac === 0 ? 'dead' : null;
+    return s.std < 1e-4 ? 'flat' : null;
+  }
+
+  NA.engine = { MLP, ACTIVATIONS, ACTIVATION_ORDER, LOSSES, LOSS_FOR, HUBER, OPTIMIZERS, neuronStats, deadKind, correlation, pca2, procrustes2, contour, sigmoid };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

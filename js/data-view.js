@@ -18,7 +18,8 @@
     App.on('model', () => { DV.build(); });
     App.on('preset', (p) => { DV.setView(p.view || 'output'); });
     App.on('view', (v) => DV.setView(v));
-    App.on('sampleDigit', (d) => { const k = Array.from(App.ds.testIdx).find((i) => App.ds.y[i] === d); if (k !== undefined) App.setProbeSample(k); });
+    App.on('sampleDigit', (d) => { const k = Array.from(App.ds.valIdx).find((i) => App.ds.y[i] === d); if (k !== undefined) App.setProbeSample(k); });
+    App.on('test', () => { DV.dirty = true; DV.galleryKey = ''; });
     theme.onChange(mark);
     let lastW = 0;
     new ResizeObserver(() => {
@@ -92,23 +93,32 @@
   // ================================================================== 2-D plane
   function buildPlane() {
     const tools = el('div', { class: 'chip-row', role: 'group', 'aria-label': 'Map overlays' },
-      chip('Train points', 'train', 'Show training points (filled)'),
-      chip('Test points', 'test', 'Show test points (rings)'),
+      chip('Train', 'train', 'Show training points (filled dots)'),
+      chip('Validation', 'val', 'Show validation points (rings): tracked live while training'),
+      chip('Test', 'test', 'Show the held-out test points (squares). Run the test from the Training tab.'),
       chip('Errors', 'errors', 'Ring the points the network gets wrong'),
       chip('Neuron lines', 'neuronLines', 'Draw where each first-layer neuron’s pre-activation crosses zero'));
     DV.canvas = el('canvas', { class: 'plane-canvas', 'aria-label': 'Decision map of the network over the input plane' });
     DV.off = document.createElement('canvas');
     DV.readout = el('div', { class: 'readout-line', 'aria-live': 'polite' });
     DV.legendEl = el('div', { class: 'mini-legend' });
-    DV.outEl.append(tools, el('div', { class: 'canvas-wrap' }, DV.canvas), DV.readout, DV.legendEl);
+    const host = el('div', { class: 'zoom-host' }, DV.canvas);
+    DV.outEl.append(tools, el('div', { class: 'canvas-wrap' }, host), DV.readout, DV.legendEl);
+    // one finger (or the mouse) moves the probe; two fingers, double-tap or Ctrl + scroll zoom
+    DV.zoom = new NA.ui.Zoom(DV.canvas, { host, onChange: () => { DV.dirty = true; NA.tooltip.hide(); } });
     let dragging = false;
-    const toRaw = (ev) => { const r = DV.canvas.getBoundingClientRect(); return [clamp(((ev.clientX - r.left) / r.width) * 2 - 1, -1, 1), clamp(1 - ((ev.clientY - r.top) / r.height) * 2, -1, 1)]; };
+    const toRaw = (ev) => {
+      const r = DV.canvas.getBoundingClientRect(), [wx, wy] = DV.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top);
+      return [clamp((wx / r.width) * 2 - 1, -1, 1), clamp(1 - (wy / r.height) * 2, -1, 1)];
+    };
     DV.canvas.addEventListener('pointerdown', (ev) => {
+      if (DV.zoom.ptrs.size > 1) { dragging = false; return; }
       dragging = true; DV.canvas.setPointerCapture(ev.pointerId);
       const raw = toRaw(ev), k = nearestPoint(ev);
       if (k !== null) App.setProbeSample(k); else App.setProbe(raw, null);
     });
     DV.canvas.addEventListener('pointermove', (ev) => {
+      if (DV.zoom.busy) { dragging = false; return; }
       const raw = toRaw(ev);
       if (dragging) { App.setProbe(raw, null); return; }
       const k = nearestPoint(ev);
@@ -123,19 +133,18 @@
     renderPlaneLegend();
   }
 
-  function visibleSample(k) {
-    const isTrain = App.ds._isTrain ? App.ds._isTrain[k] : true;
-    return isTrain ? App.overlays.train : App.overlays.test;
-  }
-  function trainMask() {
-    const ds = App.ds;
-    if (!ds._isTrain) { ds._isTrain = new Uint8Array(ds.n); for (const k of ds.trainIdx) ds._isTrain[k] = 1; }
-    return ds._isTrain;
+  const SPLIT_KEY = ['train', 'val', 'test'], SPLIT_NAME = ['Training', 'Validation', 'Test'];
+  function visibleSample(k) { return !!App.overlays[SPLIT_KEY[App.ds.split[k]]]; }
+  // Training points are filled dots, validation points rings, held-out test points squares.
+  function drawSample(ctx, x, y, r, split, col, sc = 1) {
+    ctx.beginPath();
+    if (split === 2) { const s = r * 0.95; ctx.rect(x - s, y - s, 2 * s, 2 * s); } else ctx.arc(x, y, r, 0, Math.PI * 2);
+    if (split === 0) { ctx.fillStyle = col; ctx.fill(); }
+    else { ctx.lineWidth = 1.7 * sc; ctx.strokeStyle = col; ctx.stroke(); }
   }
   function nearestPoint(ev) {
-    const ds = App.ds, r = DV.canvas.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
-    trainMask();
-    let best = null, bd = 8;
+    const ds = App.ds, r = DV.canvas.getBoundingClientRect(), [mx, my] = DV.zoom ? DV.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top) : [ev.clientX - r.left, ev.clientY - r.top];
+    let best = null, bd = 8 / (DV.zoom ? DV.zoom.k : 1);
     for (let k = 0; k < ds.n; k++) {
       if (!visibleSample(k)) continue;
       const x = ((ds.raw[2 * k] + 1) / 2) * r.width, y = ((1 - ds.raw[2 * k + 1]) / 2) * r.height;
@@ -145,9 +154,9 @@
     return best;
   }
   function sampleTip(k) {
-    const ds = App.ds, isTrain = trainMask()[k], pred = App.predictionsAll()[k];
+    const ds = App.ds, pred = App.predictionsAll()[k];
     const row = (a, b) => el('div', { class: 'tt-row' }, el('span', { class: 'tt-k', text: a }), el('span', { class: 'tt-v', text: b }));
-    const kids = [el('div', { class: 'tt-title', text: `${isTrain ? 'Training' : 'Test'} sample #${k}` })];
+    const kids = [el('div', { class: 'tt-title', text: `${SPLIT_NAME[ds.split[k]]} sample #${k}` })];
     if (ds.kind === 'plane') kids.push(row('position', `(${fmt(ds.raw[2 * k], 2)}, ${fmt(ds.raw[2 * k + 1], 2)})`));
     if (ds.task === 'regression') { kids.push(row('x', fmt(ds.raw[k], 3)), row('target y', fmt(ds.y[k], 3)), row('prediction ŷ', fmt(pred, 3))); }
     else {
@@ -162,7 +171,7 @@
   function renderPlaneLegend() {
     const ds = App.ds, items = [];
     for (let k = 0; k < ds.classes; k++) items.push(el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: `var(--${['neg', 'pos', 'c3'][k]})` } }), App.className(k)));
-    items.push(el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled' }), 'train'), el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-ring' }), 'test'));
+    items.push(el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled' }), 'train'), el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-ring' }), 'validation'), el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-square' }), 'test (held out)'));
     NA.clear(DV.legendEl).append(...items);
   }
 
@@ -193,17 +202,19 @@
     ctx.clearRect(0, 0, S, S);
     ctx.save();
     rr(ctx, 0, 0, S, S, 8); ctx.clip();
+    DV.zoom.apply(ctx, DV.canvas._dpr || 1);
+    const sc = 1 / DV.zoom.k; // markers and lines keep their on-screen size while the map magnifies
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(DV.off, 0, 0, S, S);
     const cell = S / G;
     const drawSegs = (segs, color, width) => {
-      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round';
+      ctx.strokeStyle = color; ctx.lineWidth = width * sc; ctx.lineCap = 'round';
       ctx.beginPath();
       for (let i = 0; i < segs.length; i += 4) { ctx.moveTo((segs[i] + 0.5) * cell, (segs[i + 1] + 0.5) * cell); ctx.lineTo((segs[i + 2] + 0.5) * cell, (segs[i + 3] + 0.5) * cell); }
       ctx.stroke();
     };
     // axes
-    ctx.strokeStyle = theme.c('ink', 0.1); ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.c('ink', 0.1); ctx.lineWidth = sc;
     ctx.beginPath(); ctx.moveTo(S / 2, 0); ctx.lineTo(S / 2, S); ctx.moveTo(0, S / 2); ctx.lineTo(S, S / 2); ctx.stroke();
     // neuron lines (first hidden layer zero crossings)
     if (App.overlays.neuronLines && L > 1) {
@@ -227,24 +238,20 @@
         }
       }
     }
-    // data points
-    const isTrain = trainMask(), preds = App.overlays.errors ? App.predictionsAll() : null;
-    const rad = ds.n > 450 ? 3 : ds.n > 200 ? 3.6 : 4.4;
-    for (let pass = 0; pass < 2; pass++) {
+    // data points: test squares first, then validation rings, training dots on top
+    const preds = App.overlays.errors ? App.predictionsAll() : null;
+    const rad = (ds.n > 450 ? 3 : ds.n > 200 ? 3.6 : 4.4) * sc;
+    for (const split of [2, 1, 0]) {
+      if (!App.overlays[SPLIT_KEY[split]]) continue;
       for (let k = 0; k < ds.n; k++) {
-        const tr = isTrain[k];
-        if ((pass === 0) !== !tr) continue; // test points first, training on top
-        if (tr ? !App.overlays.train : !App.overlays.test) continue;
+        if (ds.split[k] !== split) continue;
         const x = ((ds.raw[2 * k] + 1) / 2) * S, y = ((1 - ds.raw[2 * k + 1]) / 2) * S;
-        const col = theme.classColor(ds.y[k]);
-        const r = k === DV.hoverPoint ? rad + 2 : rad;
-        ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, Math.PI * 2); ctx.fillStyle = theme.c('panel'); ctx.fill();
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-        if (tr) { ctx.fillStyle = col; ctx.fill(); }
-        else { ctx.lineWidth = 1.7; ctx.strokeStyle = col; ctx.stroke(); }
+        const r = k === DV.hoverPoint ? rad + 2 * sc : rad;
+        ctx.beginPath(); ctx.arc(x, y, r + 1.4 * sc, 0, Math.PI * 2); ctx.fillStyle = theme.c('panel'); ctx.fill();
+        drawSample(ctx, x, y, r, split, theme.classColor(ds.y[k]), sc);
         if (preds && preds[k] !== ds.y[k]) {
-          ctx.beginPath(); ctx.arc(x, y, r + 3.4, 0, Math.PI * 2);
-          ctx.lineWidth = 1.6; ctx.strokeStyle = theme.c('critical'); ctx.stroke();
+          ctx.beginPath(); ctx.arc(x, y, r + 3.4 * sc, 0, Math.PI * 2);
+          ctx.lineWidth = 1.6 * sc; ctx.strokeStyle = theme.c('critical'); ctx.stroke();
         }
       }
     }
@@ -252,15 +259,16 @@
     const p = App.probe;
     if (p && p.raw.length === 2) {
       const x = ((p.raw[0] + 1) / 2) * S, y = ((1 - p.raw[1]) / 2) * S;
-      ctx.strokeStyle = theme.c('ink', 0.28); ctx.lineWidth = 1;
+      ctx.strokeStyle = theme.c('ink', 0.28); ctx.lineWidth = sc;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, S); ctx.moveTo(0, y); ctx.lineTo(S, y); ctx.stroke();
-      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.lineWidth = 3.5; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
-      ctx.lineWidth = 2; ctx.strokeStyle = theme.c('ink'); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 7 * sc, 0, Math.PI * 2); ctx.lineWidth = 3.5 * sc; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
+      ctx.lineWidth = 2 * sc; ctx.strokeStyle = theme.c('ink'); ctx.stroke();
     }
     ctx.restore();
     // frame & ticks
     ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1;
     rr(ctx, 0.5, 0.5, S - 1, S - 1, 8); ctx.stroke();
+    if (DV.zoom.k > 1.01) return; // axis names only make sense unzoomed
     // axis names at the ends of the zero lines, on a small backing so they read over any colour
     ctx.font = `600 11px ${NA.getFont('mono')}`;
     const label = (text, x, y, align) => {
@@ -282,8 +290,9 @@
   // ================================================================== 1-D curve
   function buildLine() {
     const tools = el('div', { class: 'chip-row', role: 'group', 'aria-label': 'Plot overlays' },
-      chip('Train points', 'train', 'Show training points'),
-      chip('Test points', 'test', 'Show test points'),
+      chip('Train', 'train', 'Show training points (filled dots)'),
+      chip('Validation', 'val', 'Show validation points (rings)'),
+      chip('Test', 'test', 'Show the held-out test points (squares)'),
       chip('Contributions', 'contributions', 'Show each last-layer neuron’s contribution w·a(x)'));
     DV.canvas = el('canvas', { class: 'line-canvas', 'aria-label': 'Network output as a function of x' });
     DV.readout = el('div', { class: 'readout-line', 'aria-live': 'polite' });
@@ -314,7 +323,6 @@
   }
   function nearestLinePoint(ev) {
     const f = DV.lineFrame, ds = App.ds, r = DV.canvas.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
-    trainMask();
     let best = null, bd = 8;
     for (let k = 0; k < ds.n; k++) {
       if (!visibleSample(k)) continue;
@@ -364,13 +372,12 @@
       ctx.fillText('bias ' + fmt(b, 2), x0 + 6, Y(b) - 2);
     }
     // data points
-    const isTrain = trainMask();
-    for (let k = 0; k < ds.n; k++) {
-      const tr = isTrain[k];
-      if (tr ? !App.overlays.train : !App.overlays.test) continue;
-      const x = X(ds.raw[k]), y = Y(ds.y[k]), r = k === DV.hoverPoint ? 4.6 : 3;
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-      if (tr) { ctx.fillStyle = theme.c('ink-2', 0.75); ctx.fill(); } else { ctx.strokeStyle = theme.c('ink-2', 0.9); ctx.lineWidth = 1.4; ctx.stroke(); }
+    for (const split of [2, 1, 0]) {
+      if (!App.overlays[SPLIT_KEY[split]]) continue;
+      for (let k = 0; k < ds.n; k++) {
+        if (ds.split[k] !== split) continue;
+        drawSample(ctx, X(ds.raw[k]), Y(ds.y[k]), k === DV.hoverPoint ? 4.6 : 3, split, theme.c('ink-2', split ? 0.9 : 0.75));
+      }
     }
     // network output
     const out = g.F.a[L];
@@ -386,10 +393,11 @@
       ctx.fillStyle = theme.c('panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = theme.c('ink'); ctx.stroke();
     }
     ctx.restore();
-    // kinks of first-layer rectifiers
-    if (net.act.family === 'rectifier' && L > 1) {
+    // kinks of first-layer rectifier neurons
+    if (L > 1) {
       const Z = g.F.z[1];
       for (let j = 0; j < net.sizes[1]; j++) {
+        if (net.actOf(1, j).family !== 'rectifier') continue;
         for (let p = 1; p < n; p++) {
           const a = Z[j * n + p - 1], b = Z[j * n + p];
           if ((a > 0) !== (b > 0)) {
@@ -420,13 +428,13 @@
     DV.strokes = []; DV.penWidth = D.PEN;
     const bClear = el('button', { class: 'btn', type: 'button', onclick: () => { DV.strokes = []; DV.penWidth = D.PEN; commitDrawing(); } }, 'Clear');
     const bUndo = el('button', { class: 'btn', type: 'button', onclick: () => { DV.strokes.pop(); commitDrawing(); } }, 'Undo');
-    const bRand = el('button', { class: 'btn', type: 'button', onclick: () => { const t = App.ds.testIdx; App.setProbeSample(t[Math.floor(Math.random() * t.length)]); } }, 'Random sample');
+    const bRand = el('button', { class: 'btn', type: 'button', onclick: () => { const t = App.ds.valIdx; App.setProbeSample(t[Math.floor(Math.random() * t.length)]); } }, 'Random sample');
     const sal = chip('Saliency', 'saliency', 'Colour each pixel by how much inking it would raise (blue) or lower (orange) the predicted digit’s score');
     DV.predEl = el('div', { class: 'digit-pred' });
     DV.galleryEl = el('div', { class: 'gallery', role: 'list' });
     DV.galleryMode = 'all';
     const gTabs = el('div', { class: 'seg seg-sm', role: 'group', 'aria-label': 'Sample filter' },
-      el('button', { type: 'button', 'aria-pressed': 'true', dataset: { g: 'all' } }, 'Test samples'),
+      el('button', { type: 'button', 'aria-pressed': 'true', dataset: { g: 'all' } }, 'Validation samples'),
       el('button', { type: 'button', 'aria-pressed': 'false', dataset: { g: 'errors' } }, 'Mistakes'));
     gTabs.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; DV.galleryMode = b.dataset.g; NA.$$('button', gTabs).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); DV.galleryKey = ''; DV.dirty = true; });
     DV.readout = el('div', { class: 'readout-line', 'aria-live': 'polite' });
@@ -547,7 +555,7 @@
     if (DV.galleryKey === key) return;
     DV.galleryKey = key;
     const preds = App.predictionsAll(), G = ds.imgSize;
-    let list = Array.from(ds.testIdx);
+    let list = Array.from(ds.valIdx);
     if (DV.galleryMode === 'errors') list = list.filter((k) => preds[k] !== ds.y[k]);
     list = list.slice(0, 40);
     const items = list.map((k) => {
@@ -559,7 +567,7 @@
       return el('button', { class: 'g-item' + (wrong ? ' is-wrong' : ''), type: 'button', role: 'listitem', title: `True ${ds.y[k]}, predicted ${preds[k]}`, onclick: () => App.setProbeSample(k) },
         c, el('span', { class: 'g-lab', text: wrong ? `${ds.y[k]}→${preds[k]}` : String(ds.y[k]) }));
     });
-    if (!items.length) items.push(el('div', { class: 'empty-note', text: 'No mistakes on the test set.' }));
+    if (!items.length) items.push(el('div', { class: 'empty-note', text: 'No mistakes on the validation set.' }));
     NA.clear(DV.galleryEl).append(...items);
   }
 
@@ -597,12 +605,12 @@
       }
       DV.controls.append(el('div', { class: 'ctl-block' }, el('div', { class: 'eyebrow', text: 'Dataset' }), tiles));
     } else {
-      DV.controls.append(el('div', { class: 'ctl-block' }, el('div', { class: 'eyebrow', text: 'Dataset' }), el('p', { class: 'ctl-note', text: `${ds.def.label}: ${ds.n.toLocaleString()} images, ${ds.trainIdx.length.toLocaleString()} for training and ${ds.testIdx.length.toLocaleString()} held out for testing. Generated from stroke templates with random slant, jitter and pen width.` })));
+      DV.controls.append(el('div', { class: 'ctl-block' }, el('div', { class: 'eyebrow', text: 'Dataset' }), el('p', { class: 'ctl-note', text: `${ds.def.label}: ${ds.n.toLocaleString()} images. ${ds.trainIdx.length.toLocaleString()} for training, ${ds.valIdx.length.toLocaleString()} for validation while it trains, and ${ds.testIdx.length.toLocaleString()} held out for the final test. Generated from stroke templates with random slant, jitter and pen width.` })));
     }
     if (ds.kind !== 'image') {
       const sliders = el('div', { class: 'ctl-grid' },
         slider('Noise', 'noise', 0, 1, 0.05, sp.noise, (v) => fmtPct(v)),
-        slider('Training split', 'trainRatio', 0.1, 0.9, 0.05, sp.trainRatio, (v) => fmtPct(v)),
+        slider('Training share (rest: half validation, half test)', 'trainRatio', 0.2, 0.9, 0.05, sp.trainRatio, (v) => fmtPct(v)),
         slider('Points', 'n', 40, ds.kind === 'line' ? 400 : 800, 20, sp.n, (v) => String(v)));
       DV.controls.append(el('div', { class: 'ctl-block' }, sliders,
         el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => App.applyPatch({ dataSeed: (sp.seed || 1) + 1 }) }, 'New sample of points')));

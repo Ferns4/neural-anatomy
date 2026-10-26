@@ -38,7 +38,7 @@
         'Each hidden neuron’s map is a soft half-plane. The output is a weighted vote of the two.',
       ],
       try: [
-        { text: 'Re-initialize with seed 2. This network gets stuck in a local minimum near 79% accuracy, a real failure mode of tiny networks.', label: 'Seed 2, retrain', patch: { seed: 2, train: 1000 } },
+        { text: 'Re-initialize with seed 2. This network gets stuck in a local minimum near 79% training accuracy, a real failure mode of tiny networks.', label: 'Seed 2, retrain', patch: { seed: 2, train: 1000 } },
         { text: 'Drop to one hidden neuron and retrain. One fold is not enough for XOR.', label: 'One neuron', patch: { hidden: [1], train: 1000 } },
         { text: 'Switch to Quadrants, where the classes fill whole quadrants. Two monotonic neurons cannot carve that X-shaped boundary; four ReLUs can.', label: 'Quadrants + 4 ReLU', patch: { dataset: 'quadrants', hidden: [4], act: 'relu', train: 1500 } },
       ],
@@ -151,7 +151,7 @@
       look: [
         'Connections and Neurons are set to Gradient. The edges fade from right to left.',
         'Training tab → Gradient flow: the per-layer lines sit decades apart on the log scale.',
-        'Accuracy stays near 50%: the network outputs the same guess everywhere.',
+        'Training accuracy stays at 50%: the network outputs the same guess everywhere, so each split scores whatever share of it belongs to that class.',
       ],
       try: [
         { text: 'Switch the activation to ReLU, whose slope is exactly 1 wherever it is on, and retrain (at a learning rate of 0.1, since the gradients no longer shrink).', label: 'Use ReLU', patch: { act: 'relu', lr: 0.1, train: 1500 } },
@@ -167,14 +167,14 @@
       pretrain: 3000,
       lenses: { edges: 'weight', nodes: 'activation', maps: false, values: false, flow: false, bias: false, health: false },
       tab: 'training', overlays: { errors: true },
-      about: 'More than a thousand parameters trained on just 50 noisy points. The network can memorize every training point, carving small islands around individual examples. Training loss falls toward zero while test loss climbs.',
+      about: 'More than a thousand parameters trained on just 50 noisy points. The network can memorize every training point, carving small islands around individual examples. Training loss falls toward zero while validation loss climbs.',
       look: [
-        'Training tab: the train and test loss curves split apart. The step where test loss bottoms out is when the model was best.',
-        'Output view: small pockets around single training points. Hide the test points to see them clearly.',
-        'Drag the history timeline back to where test loss was lowest. Stopping there is called early stopping.',
+        'Training tab: the train and validation loss curves split apart. The step where validation loss bottoms out is when the model was best.',
+        'Output view: small pockets around single training points. Hide the validation points to see them clearly.',
+        'Drag the history timeline back to where validation loss was lowest. Stopping there is called early stopping. Then run the held-out test to see how the stopped model really does.',
       ],
       try: [
-        { text: 'Add L2 regularization at 0.01 and retrain from scratch. The boundary smooths out and test loss drops from above 4 to under 0.5.', label: 'Add L2 0.01', patch: { reg: 'l2', regRate: 0.01, reset: true, train: 3000 } },
+        { text: 'Add L2 regularization at 0.01 and retrain from scratch. The boundary smooths out and validation loss drops from about 3 to under 0.5.', label: 'Add L2 0.01', patch: { reg: 'l2', regRate: 0.01, reset: true, train: 3000 } },
         { text: 'Shrink to one hidden layer of 4 neurons.', label: 'Smaller network', patch: { hidden: [4], train: 3000 } },
         { text: 'Give it more data: 400 points instead of 100.', label: 'More data', patch: { n: 400, train: 3000 } },
       ],

@@ -18,8 +18,10 @@
       IN.setTab(next.dataset.tab); next.focus();
     });
     const mark = () => { IN.dirty = true; };
-    ['weights', 'probe', 'history', 'ablation', 'training', 'hyper'].forEach((t) => App.on(t, mark));
+    ['weights', 'probe', 'history', 'ablation', 'training', 'hyper', 'overlay'].forEach((t) => App.on(t, mark));
     App.on('model', () => { IN.built = ''; IN.layer = clamp(IN.layer, 1, App.net.L); mark(); });
+    App.on('arch', () => { IN.built = ''; mark(); });
+    App.on('test', () => { IN.built = ''; mark(); });
     App.on('selection', (o) => {
       if (App.selected && App.selected.l > 0) IN.layer = App.selected.l;
       if (o && o.fromGraph && IN.tab !== 'backprop') IN.setTab('neuron');
@@ -89,7 +91,10 @@
     },
     update() {
       const p = App.preset;
-      const changed = JSON.stringify(App.arch) !== JSON.stringify(p.arch) || App.spec.dataset !== p.data.dataset || (App.spec.features || []).join() !== (p.data.features || App.spec.features || []).join();
+      // compare layer sizes and every neuron's activation, plus the loss, against the preset
+      const archSig = (a) => JSON.stringify([a.hidden, a.hidden.map((n, h) => NA.range(n).map((j) => ((a.acts && a.acts[h]) || [])[j] || a.act))]);
+      const changed = archSig(App.arch) !== archSig(p.arch) || App.net.lossId !== (p.hyper.loss || NA.engine.LOSS_FOR[App.net.out][0]) ||
+        App.spec.dataset !== p.data.dataset || (App.spec.features || []).join() !== (p.data.features || App.spec.features || []).join();
       this.changedEl.hidden = !changed;
       const list = NA.insights.diagnose();
       const sig = list.map((d) => d.level + d.title + d.body).join('|');
@@ -113,7 +118,7 @@
       this.none = false;
       const { l, j } = s;
       const kind = l === 0 ? 'Input' : l === L ? 'Output' : `Hidden ${l}`;
-      const fn = l === 0 ? 'raw input' : l === L ? { sigmoid: 'sigmoid', softmax: 'softmax', identity: 'linear' }[net.out] : net.act.label;
+      const fn = l === 0 ? 'raw input' : l === L ? { sigmoid: 'sigmoid', softmax: 'softmax', identity: 'linear' }[net.out] : net.actOf(l, j).label;
       const nav = (d) => () => { const n = net.sizes[l]; App.select({ l, j: (j + d + n) % n }); };
       this.ablateBtn = l < L ? el('button', { class: 'btn', type: 'button', 'aria-pressed': 'false', onclick: () => App.toggleAblate(l, j) }, 'Ablate') : null;
       root.append(el('header', { class: 'n-head' },
@@ -129,19 +134,41 @@
       if (l > 0) root.append(section('Computation for the probe input', this.eqEl));
       else root.append(section('Value for the probe input', this.eqEl));
 
-      this.actCanvas = null;
-      if (l > 0 && !(l === L && net.out === 'softmax')) {
+      this.actCanvas = null; this.fxApplied = null;
+      const plotLegend = () => el('div', { class: 'mini-legend' }, el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink)' } }), 'f(z)'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--muted)' } }), 'slope f′(z)'), el('span', { class: 'lg-item' }, el('i', { class: 'key-box' }), 'z over training data'), el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--pos)' } }), 'probe'));
+      if (l > 0 && l < L) {
+        // this neuron's own activation function: pick it, read its formula, see where the probe sits
+        const act = net.actOf(l, j);
+        this.act = act;
         this.actCanvas = el('canvas');
         this.actNote = el('p', { class: 'sec-note' });
-        const act = l === L ? (net.out === 'sigmoid' ? NA.engine.ACTIVATIONS.sigmoid : NA.engine.ACTIVATIONS.linear) : net.act;
-        this.act = act;
-        root.append(section(`Activation function: ${act.label}`, el('div', { class: 'chart-box' }, this.actCanvas),
-          el('div', { class: 'mini-legend' }, el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink)' } }), 'f(z)'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--muted)' } }), 'slope f′(z)'), el('span', { class: 'lg-item' }, el('i', { class: 'key-box' }), 'z over training data'), el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--pos)' } }), 'probe')),
-          this.actNote));
+        this.fxApplied = el('div', { class: 'fx-line fx-strong' });
+        const chip = el('button', { class: 'act-pick', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Activation function: ${act.label}. Change for this neuron` },
+          NA.ui.actGlyph(act.id, 34, 22), el('span', { class: 'act-pick-text' }, el('span', { class: 'act-pick-name', text: act.label }), el('span', { class: 'act-pick-hint', text: 'Change for this neuron' })), el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+        chip.addEventListener('click', () => NA.openNeuronMenu(l, j, chip));
+        root.append(section('Activation function', chip,
+          el('div', { class: 'fx' }, el('div', { class: 'fx-line', text: `f(z) = ${act.formula}` }), el('div', { class: 'fx-line fx-muted', text: `f′(z) = ${act.dformula}` }), this.fxApplied, act.note ? el('div', { class: 'fx-note', text: act.note }) : null),
+          el('div', { class: 'chart-box' }, this.actCanvas), plotLegend(), this.actNote));
+      } else if (l === L) {
+        const Ls = NA.engine.LOSSES[net.lossId], outName = { sigmoid: 'Sigmoid, a probability', softmax: 'Softmax across the outputs', identity: 'Linear (no squashing)' }[net.out];
+        if (net.out !== 'softmax') {
+          this.act = net.actOf(l, j);
+          this.actCanvas = el('canvas');
+          this.actNote = el('p', { class: 'sec-note' });
+        }
+        const lossBtn = el('button', { class: 'act-pick', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Loss function: ${Ls.label}. Change` },
+          el('span', { class: 'act-pick-text' }, el('span', { class: 'act-pick-name', text: Ls.label }), el('span', { class: 'act-pick-hint', text: 'Change the loss function' })), el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+        lossBtn.addEventListener('click', () => NA.openLossMenu(lossBtn));
+        this.fxApplied = el('div', { class: 'fx-line fx-strong' });
+        root.append(section(`Output function: ${outName}`, el('div', { class: 'fx' }, this.fxApplied),
+          this.actCanvas ? el('div', { class: 'chart-box' }, this.actCanvas) : null, this.actCanvas ? plotLegend() : null, this.actCanvas ? this.actNote : null));
+        root.append(section('Loss function', lossBtn,
+          el('div', { class: 'fx' }, el('div', { class: 'fx-line', text: Ls.formula[net.out] }), el('div', { class: 'fx-line fx-muted', text: Ls.delta[net.out] + '   (error signal sent back)' })),
+          el('p', { class: 'sec-note', text: Ls.hint })));
       }
       this.respCanvas = el('canvas', { class: 'resp-canvas' });
       this.respExtra = el('div', { class: 'resp-extra' });
-      const respTitle = ds.kind === 'plane' ? 'Response over the input plane' : ds.kind === 'line' ? 'Response as x varies' : l === 1 ? 'Weight template' : l === 0 ? 'Where this pixel sends its signal' : 'Test images that excite it most';
+      const respTitle = ds.kind === 'plane' ? 'Response over the input plane' : ds.kind === 'line' ? 'Response as x varies' : l === 1 ? 'Weight template' : l === 0 ? 'Where this pixel sends its signal' : 'Validation images that excite it most';
       this.respNote = el('p', { class: 'sec-note' });
       root.append(section(respTitle, el('div', { class: 'chart-box' }, this.respCanvas), this.respExtra, this.respNote));
 
@@ -180,12 +207,9 @@
         const nIn = net.sizes[l - 1], rows = [];
         for (let i = 0; i < nIn; i++) { const w = net.W[l - 1][j * nIn + i], a = tr.a[l - 1][i]; rows.push({ name: App.neuronName(l - 1, i, true), w, a, c: w * a }); }
         rows.sort((a, b) => Math.abs(b.c) - Math.abs(a.c));
-        const z = tr.z[l][j], a = tr.a[l][j], b = net.b[l - 1][j];
-        let fnText;
-        if (l < L) fnText = `a = ${net.act.id === 'relu' ? 'max(0, z)' : net.act.id === 'leaky' ? 'max(0.05z, z)' : net.act.id + '(z)'} = ${fmt(a, 4)}${!net.mask[l][j] ? '  (ablated → 0)' : ''}`;
-        else if (net.out === 'sigmoid') fnText = `p = σ(z) = 1 / (1 + e^(−z)) = ${fmt(a, 4)}`;
-        else if (net.out === 'softmax') fnText = `p = e^z / Σ e^zₖ = ${fmt(a, 4)}  (softmax across ${net.sizes[L]} outputs)`;
-        else fnText = `ŷ = z = ${fmt(a, 4)}`;
+        const z = tr.z[l][j], b = net.b[l - 1][j];
+        const fnText = NA.actLines(l, j, tr)[1] + (l < L && !net.mask[l][j] ? '  (ablated → 0)' : '');
+        if (this.fxApplied) this.fxApplied.textContent = fnText;
         const lossLine = l === L && tr.delta ? el('p', { class: 'eq-line mono', text: `loss on this sample = ${fmt(tr.loss, 4)}   ·   δ = ∂L/∂z = ${fmt(tr.delta[l][j], 4)}` }) : null;
         NA.clear(this.eqEl).append(...[
           el('p', { class: 'eq-line mono', text: `z = Σᵢ wᵢ·aᵢ + b  over ${nIn} input${nIn > 1 ? 's' : ''}` }),
@@ -198,12 +222,14 @@
         for (let q = 0; q < idx.length; q++) zs[q] = F.z[l][j * N + idx[q]];
         C.activationPlot(this.actCanvas, this.act, zs, tr.z[l][j]);
         let flat = 0, off = 0;
-        for (const z of zs) { const d = this.act.d(z, this.act.f(z)); if (d < 0.1) flat++; if (z <= 0) off++; }
-        const sorted = Array.from(zs).sort((a, b) => a - b);
+        for (const z of zs) { const d = Math.abs(this.act.d(z, this.act.f(z))); if (d < 0.1) flat++; if (z <= 0) off++; }
+        const sorted = Array.from(zs).sort((a, b) => a - b), act = this.act;
         let note = `Over the training data z ranges from ${fmt(sorted[0], 2)} to ${fmt(sorted[sorted.length - 1], 2)} (median ${fmt(NA.quantile(sorted, 0.5), 2)}). `;
-        if (this.act.family === 'rectifier') note += `It is switched off (z ≤ 0) for ${fmtPct(off / zs.length)} of inputs${this.act.id === 'relu' ? ', where no gradient flows back through it.' : '; leaky ReLU still passes 5% of the gradient there.'}`;
-        else if (this.act.family === 'squash') note += `For ${fmtPct(flat / zs.length)} of inputs it sits where the slope is below 0.1 and learns slowly.`;
-        else note += 'A linear unit passes the gradient through unchanged.';
+        if (act.id === 'relu') note += `It is switched off (z ≤ 0) for ${fmtPct(off / zs.length)} of inputs, where no gradient flows back through it.`;
+        else if (act.id === 'leaky') note += `It is on its shallow side (z ≤ 0) for ${fmtPct(off / zs.length)} of inputs, still passing 5% of the gradient there.`;
+        else if (act.id === 'linear') note += 'A linear unit passes the gradient through unchanged.';
+        else if (act.id === 'sine') note += 'Sine is periodic, so very different z values can give the same output; its slope cos(z) changes sign every π.';
+        else note += `For ${fmtPct(flat / zs.length)} of inputs it sits where the slope |f′(z)| is below 0.1 and learns slowly.`;
         this.actNote.textContent = note;
       }
       // ---- response
@@ -214,13 +240,14 @@
       const st = App.stats()[l][j], items = [];
       items.push(kv('Mean output', fmt(st.mean, 3)), kv('Spread (std)', fmt(st.std, 3)));
       if (l > 0 && l < L) {
-        if (net.act.family === 'rectifier') items.push(kv('Active', fmtPct(st.activeFrac), 'share of inputs with z > 0'));
-        if (net.act.family === 'squash') items.push(kv('Saturated', fmtPct(st.satFrac), 'share on the flat tails'));
+        const act = net.actOf(l, j);
+        if (act.family === 'rectifier') items.push(kv('Active', fmtPct(st.activeFrac), 'share of inputs with z > 0'));
+        if (act.sat) items.push(kv('Saturated', fmtPct(st.satFrac), 'share on the flat tails'));
       }
       if (l > 0 && App.displayStep() > 0) { const g = App.gradReport(); items.push(kv('RMS error signal δ', fmt(g.dRms[l][j], 4), 'how strongly the loss responds to it')); }
       if (l < L && !App.training && App.displayStep() > 0) {
         const r = App.importance().layers[l][j];
-        items.push(kv('If ablated', r.off ? 'already off' : `${fmtSigned(r.dLoss)} test loss`, r.off ? null : ds.task !== 'regression' ? `${fmtSigned(r.dAcc * 100, 1)} pts accuracy` : `${fmtSigned(r.dAcc, 3)} R²`));
+        items.push(kv('If ablated', r.off ? 'already off' : `${fmtSigned(r.dLoss)} validation loss`, r.off ? null : ds.task !== 'regression' ? `${fmtSigned(r.dAcc * 100, 1)} pts accuracy` : `${fmtSigned(r.dAcc, 3)} R²`));
       }
       NA.clear(this.statsEl).append(...items);
     },
@@ -293,7 +320,7 @@
       ctx.strokeStyle = theme.c('pos'); ctx.lineWidth = 2.2; ctx.beginPath(); for (let p = 0; p < n; p++) { p ? ctx.lineTo(X(g.raw[p]), Y(A[j * n + p])) : ctx.moveTo(X(g.raw[p]), Y(A[j * n + p])); } ctx.stroke();
       const px = X(App.probe.raw[0]); ctx.strokeStyle = theme.c('ink', 0.4); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(px, pad); ctx.lineTo(px, H - pad); ctx.stroke();
       T.respExtra.append(el('div', { class: 'mini-legend' }, el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'output a(x)'), Z ? el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--muted)' } }), 'pre-activation z(x)') : null));
-      T.respNote.textContent = l > 0 && l < net.L && net.act.family === 'rectifier' ? 'z(x) is a straight line in the first hidden layer; ReLU keeps only its positive part, producing one kink.' : '';
+      T.respNote.textContent = l === 1 && l < net.L && net.actOf(l, j).family === 'rectifier' ? 'z(x) is a straight line in the first hidden layer; the rectifier bends it at z = 0, producing one kink.' : '';
     } else {
       // digits
       const G = ds.imgSize;
@@ -307,11 +334,11 @@
         T.respNote.textContent = 'See the outgoing weights above.';
       } else {
         const ctx = NA.fitCanvas(cv, 10, 10); ctx.clearRect(0, 0, 10, 10);
-        T.respNote.textContent = l === net.L ? `The test images with the highest probability for digit ${j}.` : 'The test images that drive this neuron highest.';
+        T.respNote.textContent = l === net.L ? `The validation images with the highest probability for digit ${j}.` : 'The validation images that drive this neuron highest.';
       }
       if (l >= 1) {
         const F = App.dataPass(), N = F.n, A = F.a[l];
-        const top = Array.from(ds.testIdx).sort((p, q) => A[j * N + q] - A[j * N + p]).slice(0, 10);
+        const top = Array.from(ds.valIdx).sort((p, q) => A[j * N + q] - A[j * N + p]).slice(0, 10);
         const grid = el('div', { class: 'top-imgs' });
         for (const k of top) {
           const c = document.createElement('canvas'); c.width = G; c.height = G;
@@ -320,7 +347,7 @@
           cx.putImageData(im, 0, 0);
           grid.appendChild(el('button', { class: 'g-item', type: 'button', title: `Digit ${ds.y[k]}, activation ${fmt(A[j * N + k], 2)}`, onclick: () => App.setProbeSample(k) }, c, el('span', { class: 'g-lab', text: fmt(A[j * N + k], 1) })));
         }
-        T.respExtra.append(el('div', { class: 'eyebrow', text: l === net.L ? 'Highest scoring test images' : 'Top-activating test images' }), grid);
+        T.respExtra.append(el('div', { class: 'eyebrow', text: l === net.L ? 'Highest scoring validation images' : 'Top-activating validation images' }), grid);
       }
     }
   }
@@ -333,6 +360,16 @@
       const chips = el('div', { class: 'seg seg-sm', role: 'group', 'aria-label': 'Layer' });
       for (let k = 1; k <= L; k++) chips.appendChild(el('button', { type: 'button', 'aria-pressed': String(k === l), onclick: () => { IN.layer = k; IN.built = ''; IN.dirty = true; } }, App.layerName(k)));
       root.append(chips);
+      if (l < L) {
+        // the layer's activation, with a menu to set it for every neuron or add / remove layers
+        const id = net.layerActId(l), act = id !== 'mixed' ? NA.engine.ACTIVATIONS[id] : null;
+        const pick = el('button', { class: 'act-pick', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Activation for ${App.layerName(l)}: ${act ? act.label : 'mixed'}. Change` },
+          act ? NA.ui.actGlyph(id, 34, 22) : el('span', { class: 'lh-chip-mixed act-pick-mixed', 'aria-hidden': 'true', text: '≋' }),
+          el('span', { class: 'act-pick-text' }, el('span', { class: 'act-pick-name', text: act ? act.label : 'Mixed activations' }), el('span', { class: 'act-pick-hint', text: act ? `f(z) = ${act.formula}` : 'Neurons in this layer use different functions' })),
+          el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+        pick.addEventListener('click', () => NA.openLayerMenu(l, pick));
+        root.append(el('div', { class: 'layer-act' }, el('span', { class: 'eyebrow', text: 'Activation for every neuron' }), pick));
+      }
       this.tiles = el('div', { class: 'tiles' });
       root.append(this.tiles);
       const nIn = net.sizes[l - 1], nOut = net.sizes[l];
@@ -352,14 +389,20 @@
       root.append(section(l === L ? 'Output range per neuron' : 'Activation range per neuron', el('div', { class: 'chart-box' }, this.rangeCanvas),
         el('div', { class: 'mini-legend' }, el('span', { class: 'lg-item', text: 'line: 5th–95th percentile' }), el('span', { class: 'lg-item', text: 'box: middle 50%' }), el('span', { class: 'lg-item', text: 'tick: median' }))));
       this.impEl = el('div', { class: 'imp-list' });
-      if (l < L) root.append(section('Importance (knock-out test)', el('p', { class: 'sec-note', text: 'How much test loss rises when each neuron is forced to 0. Tall bars mark neurons the network depends on.' }), this.impEl));
+      if (l < L) root.append(section('Importance (knock-out test)', el('p', { class: 'sec-note', text: 'How much validation loss rises when each neuron is forced to 0. Tall bars mark neurons the network depends on.' }), this.impEl));
     },
     update() {
       const net = App.net, L = net.L, l = IN.layer, nIn = net.sizes[l - 1], nOut = net.sizes[l], Wt = net.W[l - 1], b = net.b[l - 1];
-      const stats = App.stats()[l], last = App.metrics();
+      const all = App.stats(), stats = all[l], last = App.metrics();
       let w2 = 0; for (const v of Wt) w2 += v * v;
-      let dead = 0, sat = 0;
-      if (l < L) for (let j = 0; j < nOut; j++) { const s = stats[j]; if (net.act.family === 'rectifier' ? s.activeFrac === 0 : s.std < 1e-4) dead++; else if (s.satFrac > 0.9) sat++; }
+      // dead (ReLU never fires) or flat neurons, and neurons stuck on a flat tail of their own activation
+      let dead = 0, sat = 0, canSat = false;
+      if (l < L) for (let j = 0; j < nOut; j++) {
+        const act = net.actFns[l][j];
+        if (act.sat && net.mask[l][j]) canSat = true;
+        if (NA.engine.deadKind(net, all, l, j)) dead++;
+        else if (act.sat && net.mask[l][j] && stats[j].satFrac > 0.9) sat++;
+      }
       const grad = App.displayStep() > 0 ? App.gradReport().layerRms[l - 1] : 0;
       const ratio = last && last.ratio && last.ratio.length ? last.ratio[l - 1] : 0;
       const tiles = [
@@ -368,7 +411,10 @@
         tile('Gradient RMS', fmt(grad, 4), 'full training set'),
         tile('Update / weight', ratio ? fmtPct(ratio, 2) : '—', ratio ? ratioWord(ratio) : 'per step'),
       ];
-      if (l < L) tiles.push(tile(net.act.family === 'rectifier' ? 'Dead neurons' : 'Saturated', String(net.act.family === 'rectifier' ? dead : sat), `of ${nOut}`));
+      if (l < L) {
+        tiles.push(tile('Dead or flat', String(dead), `of ${nOut}`));
+        if (canSat) tiles.push(tile('Saturated', String(sat), 'on a flat tail > 90% of the time'));
+      }
       NA.clear(this.tiles).append(...tiles);
       const sel = App.selected && App.selected.l === l ? App.selected.j : null;
       if (this.img) {
@@ -387,7 +433,7 @@
         this.hin = C.hinton(this.wCanvas, Wt, nOut, nIn, { selected: sel, colLabel: nIn <= 16 ? (i) => App.neuronName(l - 1, i, true).replace(/^H\d+·/, '') : null });
       }
       C.histogram(this.histCanvas, Wt, { bins: 32, colorFn: (v) => theme.divColor(v / (NA.maxAbs(Wt) || 1) * 0.8 + Math.sign(v) * 0.2), markers: Array.from(b).slice(0, 40).map((x) => ({ x, color: theme.c('ink', 0.5) })) });
-      C.rangeStrips(this.rangeCanvas, stats, { selected: sel, label: (j) => (l === L ? App.neuronName(l, j, true) : String(j + 1)), isDead: (j) => l < L && (net.act.family === 'rectifier' ? stats[j].activeFrac === 0 : stats[j].std < 1e-4) });
+      C.rangeStrips(this.rangeCanvas, stats, { selected: sel, label: (j) => (l === L ? App.neuronName(l, j, true) : String(j + 1)), isDead: (j) => l < L && !!NA.engine.deadKind(net, all, l, j) });
       if (this.impEl && l < L) {
         if (App.training || App.displayStep() === 0) { NA.clear(this.impEl).append(el('p', { class: 'empty-note', text: App.training ? 'Pause training to run the knock-out test.' : 'Train the network first.' })); }
         else {
@@ -407,11 +453,21 @@
 
   // ==================================================================== Training
   const Training = {
-    key: () => `${App.net.sizes.join('-')}:${App.ds.id}:${App.ds.task}`,
+    key: () => `${App.net.sizes.join('-')}:${App.ds.id}:${App.ds.task}:${App.net.lossId}`,
     build(root) {
-      const cls = App.ds.task !== 'regression';
+      const cls = App.ds.task !== 'regression', net = App.net;
       this.tiles = el('div', { class: 'tiles' });
       root.append(this.tiles);
+      // the held-out test: run on request, never used for training or for choosing settings
+      this.testEl = el('div', { class: 'test-card', id: 'testCard' });
+      this.testSig = '';
+      root.append(section('Held-out test', this.testEl));
+      const Ls = NA.engine.LOSSES[net.lossId];
+      const lossBtn = el('button', { class: 'act-pick', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Loss function: ${Ls.label}. Change` },
+        el('span', { class: 'act-pick-text' }, el('span', { class: 'act-pick-name', text: Ls.label }), el('span', { class: 'act-pick-hint act-pick-formula', text: Ls.formula[net.out] })),
+        el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+      lossBtn.addEventListener('click', () => NA.openLossMenu(lossBtn));
+      root.append(section('Loss function', lossBtn, el('p', { class: 'sec-note', text: Ls.hint })));
       const mk = (title, opts, note, legend) => {
         const c = el('canvas');
         const chart = new C.LineChart(c, opts);
@@ -419,29 +475,31 @@
         return chart;
       };
       const lg = (items) => el('div', { class: 'mini-legend' }, ...items.map(([name, color]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: color } }), name)));
-      this.loss = mk('Loss', { height: 150, logY: true, format: (v) => fmt(v, 4) }, 'Log scale. When the test curve turns upward while training loss keeps falling, the model is overfitting.', lg([['train', 'var(--ink-2)'], ['test', 'var(--pos)']]));
-      this.acc = mk(cls ? 'Accuracy' : 'R² (variance explained)', { height: 130, format: (v) => (cls ? fmtPct(v, 1) : fmt(v, 3)), yFormat: (v) => (cls ? Math.round(v * 100) + '%' : fmt(v, 1)) }, null, lg([['train', 'var(--ink-2)'], ['test', 'var(--pos)']]));
-      const L = App.net.L;
+      const splits = () => lg([['train', 'var(--ink-2)'], ['validation', 'var(--pos)']]);
+      this.loss = mk('Loss', { height: 150, logY: true, format: (v) => fmt(v, 4) }, 'Log scale. When the validation curve turns upward while training loss keeps falling, the model is overfitting.', splits());
+      this.acc = mk(cls ? 'Accuracy' : 'R² (variance explained)', { height: 130, format: (v) => (cls ? fmtPct(v, 1) : fmt(v, 3)), yFormat: (v) => (cls ? Math.round(v * 100) + '%' : fmt(v, 1)) }, null, splits());
+      const L = net.L;
       this.gradLegend = lg(NA.range(L).map((l) => [`into ${App.layerName(l + 1, true)}`, theme.series[l % 8]]));
       this.grad = mk('Gradient flow by layer', { height: 150, logY: true, format: (v) => fmt(v, 5) }, 'RMS gradient of each layer’s weights, smoothed over recent checkpoints. Lines far apart mean some layers learn much faster than others.', this.gradLegend);
       this.ratioEl = el('div', { class: 'ratio-table' });
       root.append(section('Update size per step', el('p', { class: 'sec-note', text: 'How far each layer’s weights moved in the last step, relative to their size. Roughly 0.01%–3% is healthy.' }), this.ratioEl));
       this.cmEl = el('div', { class: 'cm-wrap' });
-      if (cls) root.append(section('Confusion matrix (test set)', this.cmEl));
+      if (cls) root.append(section('Confusion matrix (validation set)', this.cmEl));
     },
     update() {
       const pts = App.history.points, m = App.metrics(), cls = App.ds.task !== 'regression', step = App.displayStep();
       const accLabel = cls ? 'accuracy' : 'R²', fa = (v) => (cls ? fmtPct(v, 1) : fmt(v, 3));
       NA.clear(this.tiles).append(
         tile('Train loss', fmt(m.trainLoss, 4), App.hyper.reg !== 'none' && m.reg ? `+ ${fmt(m.reg, 4)} penalty` : null),
-        tile('Test loss', fmt(m.testLoss, 4), `gap ${fmtSigned(m.testLoss - m.trainLoss)}`),
+        tile('Validation loss', fmt(m.valLoss, 4), `gap ${fmtSigned(m.valLoss - m.trainLoss)}`),
         tile('Train ' + accLabel, fa(m.trainAcc)),
-        tile('Test ' + accLabel, fa(m.testAcc)),
+        tile('Val. ' + accLabel, fa(m.valAcc)),
         tile('Step', fmtInt(step), `epoch ${fmt(App.epoch(step), 1)}`));
+      this.renderTest();
       const marker = App.viewing !== null ? step : null;
       const series = (key, name, color) => ({ name, color, points: pts.map((p) => [p.step, p[key]]) });
-      this.loss.frame(); this.loss.set({ series: [series('trainLoss', 'train', theme.c('ink-2')), series('testLoss', 'test', theme.c('pos'))], marker });
-      this.acc.frame(); this.acc.set({ series: [series('trainAcc', 'train', theme.c('ink-2')), series('testAcc', 'test', theme.c('pos'))], marker, yFixed: cls ? [0, 1] : undefined });
+      this.loss.frame(); this.loss.set({ series: [series('trainLoss', 'train', theme.c('ink-2')), series('valLoss', 'validation', theme.c('pos'))], marker });
+      this.acc.frame(); this.acc.set({ series: [series('trainAcc', 'train', theme.c('ink-2')), series('valAcc', 'validation', theme.c('pos'))], marker, yFixed: cls ? [0, 1] : undefined });
       // per-batch gradients are noisy: show an exponential moving average in log space
       const L = App.net.L, gs = [];
       for (let l = 0; l < L; l++) {
@@ -462,27 +520,109 @@
         rows.push(el('div', { class: 'rt-row' }, el('span', { class: 'rt-name', text: `into ${App.layerName(l + 1)}` }), el('span', { class: 'mono', text: r ? fmtPct(r, 3) : '—' }), pill(level, r ? ratioWord(r) : 'no steps yet')));
       }
       NA.clear(this.ratioEl).append(...rows);
-      if (cls) this.confusion();
-    },
-    confusion() {
-      const ds = App.ds, K = ds.classes, preds = App.predictionsAll(), M = Array.from({ length: K }, () => new Array(K).fill(0));
-      for (const k of ds.testIdx) M[ds.y[k]][preds[k]]++;
-      const t = el('table', { class: 'cm' });
-      const name = (k) => (App.isImage() ? String(k) : ['Orange', 'Blue', 'Green'][k]);
-      const thead = el('tr', null, el('th', { class: 'cm-corner', text: 'true ↓ / predicted →' }), ...NA.range(K).map((k) => el('th', { scope: 'col', text: name(k) })));
-      t.appendChild(el('thead', null, thead));
-      const tb = el('tbody');
-      for (let i = 0; i < K; i++) {
-        const tot = M[i].reduce((a, b) => a + b, 0) || 1;
-        tb.appendChild(el('tr', null, el('th', { scope: 'row', text: name(i) }), ...M[i].map((v, j) => {
-          const f = v / tot, bg = i === j ? theme.seqColor(0.15 + 0.7 * f) : v ? theme.c('critical', 0.12 + 0.6 * f) : 'transparent';
-          return el('td', { class: (i === j ? 'cm-diag' : v ? 'cm-err' : '') + (f > 0.55 ? ' cm-strong' : ''), style: { background: bg }, title: `True ${name(i)}, predicted ${name(j)}: ${v}` }, v ? String(v) : '·');
-        })));
+      if (cls) {
+        const ds = App.ds, preds = App.predictionsAll(), M = Array.from({ length: ds.classes }, () => new Array(ds.classes).fill(0));
+        for (const k of ds.valIdx) M[ds.y[k]][preds[k]]++;
+        NA.clear(this.cmEl).append(confusionTable(M));
       }
-      t.appendChild(tb);
-      NA.clear(this.cmEl).append(el('div', { class: 'table-scroll' }, t));
+    },
+    // Only redrawn when the result, its freshness or the controls around it change.
+    renderTest() {
+      const res = App.testResult, ds = App.ds, n = ds.testIdx.length, cls = ds.task !== 'regression';
+      const stale = !!res && res.version !== App.version;
+      const sig = [res ? res.version : '-', stale, App.training, App.displayStep() === 0, !!App.overlays.test].join('|');
+      if (sig === this.testSig) return;
+      this.testSig = sig;
+      const run = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { if (App.training) App.pause(); App.runTest(); } },
+        res ? (stale ? 'Re-run the test' : 'Run the test again') : `Run test on ${fmtInt(n)} samples`);
+      const showPts = ds.kind !== 'image' ? el('button', { class: 'chip', type: 'button', 'aria-pressed': String(!!App.overlays.test), onclick: () => App.setOverlay('test', !App.overlays.test) }, 'Show test points on the plot') : null;
+      const kids = [];
+      if (!res) {
+        kids.push(el('p', { class: 'sec-note', text: `${fmtInt(n)} samples (${Math.round((100 * n) / ds.n)}% of the data) are held back from everything else: training never sees them and the validation numbers never use them. Tune the model against validation, then run the test once for an honest estimate of how it does on new data.` }));
+        if (App.displayStep() === 0) kids.push(el('p', { class: 'sec-note', text: 'The network is untrained, so expect chance-level results.' }));
+        kids.push(el('div', { class: 'btn-row' }, run, showPts));
+      } else {
+        kids.push(el('div', { class: 'test-head' },
+          el('span', { class: 'eyebrow', text: `Tested at step ${fmtInt(res.step)} · ${fmtInt(res.n)} samples` }),
+          stale ? pill('warn', 'Model changed since') : pill('good', 'Current model')));
+        const tiles = cls ? [
+          tile('Test accuracy', fmtPct(res.acc, 1), `validation ${fmtPct(res.valAcc, 1)}`),
+          tile('Test loss', fmt(res.loss, 4), `validation ${fmt(res.valLoss, 4)}`),
+          tile('Mistakes', fmtInt(res.errors.length), `of ${fmtInt(res.n)}`),
+        ] : [
+          tile('Test R²', fmt(res.acc, 3), `validation ${fmt(res.valAcc, 3)}`),
+          tile('RMSE', fmt(res.rmse, 3), 'typical miss'),
+          tile('MAE', fmt(res.mae, 3), 'mean |miss|'),
+          tile('Test loss', fmt(res.loss, 4), `validation ${fmt(res.valLoss, 4)}`),
+        ];
+        kids.push(el('div', { class: 'tiles' }, ...tiles), testVerdict(res));
+        if (cls) kids.push(el('div', { class: 'eyebrow', text: 'Confusion matrix (test set)' }), confusionTable(res.confusion));
+        kids.push(testErrors(res), el('div', { class: 'btn-row' }, run, showPts));
+      }
+      NA.clear(this.testEl).append(...kids);
     },
   };
+
+  function confusionTable(M) {
+    const K = M.length, name = (k) => (App.isImage() ? String(k) : ['Orange', 'Blue', 'Green'][k]);
+    const t = el('table', { class: 'cm' });
+    t.appendChild(el('thead', null, el('tr', null, el('th', { class: 'cm-corner', text: 'true ↓ / predicted →' }), ...NA.range(K).map((k) => el('th', { scope: 'col', text: name(k) })))));
+    const tb = el('tbody');
+    for (let i = 0; i < K; i++) {
+      const tot = M[i].reduce((a, b) => a + b, 0) || 1;
+      tb.appendChild(el('tr', null, el('th', { scope: 'row', text: name(i) }), ...M[i].map((v, j) => {
+        const f = v / tot, bg = i === j ? theme.seqColor(0.15 + 0.7 * f) : v ? theme.c('critical', 0.12 + 0.6 * f) : 'transparent';
+        return el('td', { class: (i === j ? 'cm-diag' : v ? 'cm-err' : '') + (f > 0.55 ? ' cm-strong' : ''), style: { background: bg }, title: `True ${name(i)}, predicted ${name(j)}: ${v}` }, v ? String(v) : '·');
+      })));
+    }
+    t.appendChild(tb);
+    return el('div', { class: 'table-scroll' }, t);
+  }
+
+  // How the test score compares with validation and training, in words. The noise band is the 95%
+  // range for the difference of two accuracies measured on samples of this size.
+  function testVerdict(res) {
+    const lines = [];
+    if (res.task !== 'regression') {
+      const se = Math.sqrt(Math.max(res.acc * (1 - res.acc), 0.01) / res.n) * 100, noise = Math.max(1, 2 * Math.SQRT2 * se), d = (res.acc - res.valAcc) * 100;
+      if (Math.abs(d) < 0.05) lines.push(['good', `Test and validation accuracy agree (${fmtPct(res.acc, 1)}), so the validation numbers were a fair guide to how the model does on new data.`]);
+      else if (Math.abs(d) <= noise) lines.push(['good', `Test accuracy is within ${fmt(Math.abs(d), 1)} points of validation, inside the ±${fmt(noise, 1)} that chance alone produces at this sample size. The validation numbers were a fair guide.`]);
+      else if (d < 0) lines.push(['warn', `Test accuracy is ${fmt(-d, 1)} points below validation, more than chance (±${fmt(noise, 1)}) explains. Settings picked while watching validation may have fitted that set itself.`]);
+      else lines.push(['info', `Test accuracy is ${fmt(d, 1)} points above validation. With splits this small the luck of the draw can do that; neither number is exact.`]);
+      const gap = (res.trainAcc - res.acc) * 100;
+      if (gap > Math.max(5, noise)) lines.push(['warn', `Training accuracy is ${fmt(gap, 1)} points higher than test accuracy: the model has learned details of the training set that do not carry over to new data.`]);
+    } else {
+      const d = res.acc - res.valAcc;
+      if (Math.abs(d) <= 0.03) lines.push(['good', `Test R² is within ${fmt(Math.abs(d), 3)} of validation, so the validation numbers were a fair guide.`]);
+      else if (d < 0) lines.push(['warn', `Test R² is ${fmt(-d, 3)} lower than validation. Settings picked while watching validation may have fitted that set itself, or the split is small.`]);
+      else lines.push(['info', `Test R² is ${fmt(d, 3)} higher than validation; with this few points the split alone can do that.`]);
+      const gap = res.trainAcc - res.acc;
+      if (gap > 0.08) lines.push(['warn', `Training R² is ${fmt(gap, 3)} higher than test R²: the curve is following noise in the training points.`]);
+    }
+    return el('div', { class: 'test-verdict' }, ...lines.map(([lv, t]) => el('p', { class: 'tv-line' }, pill(lv, { good: 'Good', info: 'Note', warn: 'Warning' }[lv]), el('span', { text: t }))));
+  }
+
+  // The worst test samples; clicking one makes it the probe.
+  function testErrors(res) {
+    const ds = App.ds, cls = res.task !== 'regression', shown = res.errors.slice(0, 12);
+    if (!shown.length) return el('p', { class: 'sec-note', text: 'No mistakes on the test set.' });
+    const pick = (k) => () => { App.setProbeSample(k); if (document.body.dataset.layout === 'mobile') App.toast('Probe moved to this test sample. Open Network or Data to trace it.'); };
+    const head = el('div', { class: 'eyebrow', text: (cls ? 'Most confident mistakes' : 'Largest misses') + (cls && res.errors.length > shown.length ? ` · ${shown.length} of ${res.errors.length}` : '') });
+    const note = el('p', { class: 'sec-note', text: 'Click one to make it the probe and trace it through the network.' });
+    if (ds.kind === 'image') {
+      return el('div', { class: 'test-errs' }, head, el('div', { class: 'top-imgs' }, ...shown.map((e) => el('button', { class: 'g-item is-wrong', type: 'button', title: `True ${e.truth}, predicted ${e.pred} (${fmtPct(e.conf, e.conf > 0.99 ? 1 : 0)} sure)`, onclick: pick(e.k) },
+        NA.ui.digitCanvas(e.k), el('span', { class: 'g-lab', text: `${e.truth}→${e.pred}` })))), note);
+    }
+    const name = (k) => ['Orange', 'Blue', 'Green'][k];
+    const rows = shown.map((e) => {
+      const x = ds.raw[e.k * ds.rawDim], where = ds.rawDim > 1 ? `(${fmt(x, 2)}, ${fmt(ds.raw[e.k * ds.rawDim + 1], 2)})` : `x = ${fmt(x, 2)}`;
+      const what = cls
+        ? [el('span', { class: 'er-what' }, el('i', { class: 'dot', style: { background: theme.classColor(e.truth) } }), `${name(e.truth)}, called ${name(e.pred).toLowerCase()}`), el('span', { class: 'mono er-v', text: `${fmtPct(e.conf, e.conf > 0.99 ? 1 : 0)} sure` })]
+        : [el('span', { class: 'er-what', text: `target ${fmt(e.truth, 2)}, predicted ${fmt(e.pred, 2)}` }), el('span', { class: 'mono er-v', text: `off ${fmt(e.err, 2)}` })];
+      return el('button', { class: 'err-row', type: 'button', onclick: pick(e.k) }, el('span', { class: 'mono er-pos', text: where }), ...what);
+    });
+    return el('div', { class: 'test-errs' }, head, el('div', { class: 'err-list' }, ...rows), note);
+  }
 
   // ==================================================================== Backprop (delegated)
   const Backprop = {

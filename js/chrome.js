@@ -48,11 +48,19 @@
     fillSelect($('#hpLr'), OPTIONS.lr);
     fillSelect($('#hpBatch'), OPTIONS.batch);
     fillSelect($('#hpRegRate'), OPTIONS.regRate);
+    // every activation for the whole network, plus a "mixed" state shown when neurons differ
+    const actSel = $('#hpAct');
+    for (const id of E.ACTIVATION_ORDER) actSel.appendChild(el('option', { value: id }, E.ACTIVATIONS[id].label));
+    actSel.appendChild(el('option', { value: 'mixed', disabled: true }, 'Mixed (per neuron)'));
     const on = (id, fn) => $(id).addEventListener('change', (e) => fn(e.target.value));
     on('#hpLr', (v) => App.applyPatch({ lr: +v }));
     on('#hpOpt', (v) => App.applyPatch({ optimizer: v }));
     on('#hpBatch', (v) => App.applyPatch({ batch: +v }));
-    on('#hpAct', (v) => App.applyPatch({ act: v }));
+    on('#hpAct', (v) => { App.applyPatch({ act: v }); App.toast(`Every hidden neuron now uses ${E.ACTIVATIONS[v].label}. Weights re-initialized.`); });
+    on('#hpLoss', (v) => App.setLoss(v));
+    $('#btnTest').addEventListener('click', () => CH.runTest());
+    $('#btnSheetTest').addEventListener('click', () => CH.runTest());
+    $('#btnSheetFF').addEventListener('click', () => { if (NA.mobile) NA.mobile.sheet(false); App.fastForward(500); });
     on('#hpReg', (v) => App.applyPatch({ reg: v, regRate: v !== 'none' && !App.hyper.regRate ? 0.001 : v === 'none' ? 0 : App.hyper.regRate }));
     on('#hpRegRate', (v) => App.applyPatch({ regRate: +v, reg: +v > 0 && App.hyper.reg === 'none' ? 'l2' : +v === 0 ? 'none' : App.hyper.reg }));
     on('#hpInit', (v) => App.applyPatch({ init: v }));
@@ -108,6 +116,9 @@
     App.on('history', () => { CH.tlDirty = true; });
     App.on('weights', () => { CH.roDirty = true; CH.tlDirty = true; });
     App.on('probe', () => { CH.roDirty = true; });
+    App.on('test', () => { CH.roDirty = true; });
+    App.on('arch', syncControls);
+    App.on('toast', (msg) => NA.ui.toast.show(msg));
     document.addEventListener('keydown', onKey);
     App.register(CH);
   };
@@ -117,7 +128,13 @@
     setSelect($('#hpLr'), h.lr, OPTIONS.lr);
     $('#hpOpt').value = h.optimizer;
     setSelect($('#hpBatch'), h.batch, OPTIONS.batch);
-    $('#hpAct').value = App.arch.act;
+    // one activation everywhere selects it; otherwise the "mixed" entry
+    const net = App.net, ids = new Set();
+    for (let l = 1; l < net.L; l++) for (const id of net.actIds[l]) ids.add(id);
+    $('#hpAct').value = ids.size === 1 ? [...ids][0] : ids.size ? 'mixed' : App.arch.act;
+    const lossSel = $('#hpLoss');
+    fillSelect(lossSel, E.LOSS_FOR[net.out], (id) => E.LOSSES[id].label);
+    lossSel.value = net.lossId;
     $('#hpReg').value = h.reg;
     setSelect($('#hpRegRate'), h.regRate, OPTIONS.regRate);
     $('#hpInit').value = h.init;
@@ -163,9 +180,15 @@
     $('#roStep').textContent = fmtInt(step);
     $('#roEpoch').textContent = fmt(App.epoch(step), 1);
     $('#roTrain').textContent = fmt(m.trainLoss, 3);
-    $('#roTest').textContent = fmt(m.testLoss, 3);
-    $('#roAccLabel').textContent = document.body.dataset.layout === 'mobile' ? (cls ? 'Test acc.' : 'Test R²') : (cls ? 'Test accuracy' : 'Test R²');
-    $('#roAcc').textContent = cls ? fmtPct(m.testAcc, 1) : fmt(m.testAcc, 3);
+    $('#roVal').textContent = fmt(m.valLoss, 3);
+    $('#roAccLabel').textContent = document.body.dataset.layout === 'mobile' ? (cls ? 'Val. acc.' : 'Val. R²') : (cls ? 'Val. accuracy' : 'Val. R²');
+    $('#roAcc').textContent = cls ? fmtPct(m.valAcc, 1) : fmt(m.valAcc, 3);
+    // the held-out test button doubles as its last result
+    const tr = App.testResult, stale = !!tr && tr.version !== App.version, tb = $('#btnTest');
+    $('#roTestRun').textContent = tr ? (cls ? fmtPct(tr.acc, 1) : fmt(tr.acc, 3)) + (stale ? ' ↻' : '') : 'Run ›';
+    tb.classList.toggle('has-result', !!tr);
+    tb.classList.toggle('is-stale', stale);
+    tb.title = !tr ? 'Score the model on the held-out test set (T)' : stale ? `Test ${cls ? 'accuracy' : 'R²'} at step ${fmtInt(tr.step)}; the model has changed since. Click to run it again (T)` : `Test ${cls ? 'accuracy' : 'R²'} on ${tr.n} held-out samples. Click to run it again (T)`;
     const state = $('#roState');
     if (App.diverged) { state.textContent = 'Diverged'; state.className = 'state-pill pill-critical'; }
     else if (App.viewing !== null) { state.textContent = 'History'; state.className = 'state-pill pill-info'; }
@@ -182,11 +205,11 @@
     CH.tlFrame = { padL, w, xmin, xmax };
     ctx.fillStyle = theme.c('panel-2'); NA.rr(ctx, 0, 0, W, H, 6); ctx.fill();
     let lo = Infinity, hi = -Infinity;
-    for (const p of pts) for (const v of [p.trainLoss, p.testLoss]) if (v > 0 && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    for (const p of pts) for (const v of [p.trainLoss, p.valLoss]) if (v > 0 && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     if (isFinite(lo)) {
       const llo = Math.log10(lo), lhi = Math.log10(hi) + 1e-9;
       const X = (s) => padL + ((s - xmin) / (xmax - xmin)) * w, Y = (v) => 5 + h - ((Math.log10(Math.max(v, lo)) - llo) / (lhi - llo || 1)) * h;
-      for (const [key, color] of [['trainLoss', theme.c('ink-2')], ['testLoss', theme.c('pos')]]) {
+      for (const [key, color] of [['trainLoss', theme.c('ink-2')], ['valLoss', theme.c('pos')]]) {
         ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
         pts.forEach((p, i) => { if (!isFinite(p[key]) || p[key] <= 0) return; i ? ctx.lineTo(X(p.step), Y(p[key])) : ctx.moveTo(X(p.step), Y(p[key])); });
         ctx.stroke();
@@ -207,6 +230,14 @@
     c.setAttribute('aria-valuemax', String(App.step));
     c.setAttribute('aria-valuetext', `Step ${App.displayStep()}`);
   }
+
+  // Score the held-out test set and open its report.
+  CH.runTest = function () {
+    if (App.training) App.pause();
+    App.runTest();
+    if (NA.mobile && NA.mobile.mobile) { NA.mobile.sheet(false); NA.mobile.go('insp'); }
+    App.emit('tab', 'training');
+  };
 
   // ------------------------------------------------------------------ model zoo
   function buildZoo() {
@@ -279,6 +310,8 @@
     else if (k === 'f' || k === 'F') App.setLens('flow', !App.lenses.flow);
     else if (k === 'b' || k === 'B') App.setLens('bias', !App.lenses.bias);
     else if (k === 'h' || k === 'H') App.setLens('health', !App.lenses.health);
+    else if (k === 'a' || k === 'A') App.setLens('acts', !App.lenses.acts);
+    else if (k === 't' || k === 'T') CH.runTest();
     else if (k === '?') CH.toggleHelp();
   }
 

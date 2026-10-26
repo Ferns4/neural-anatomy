@@ -192,6 +192,7 @@
     canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas._dpr = dpr;
     return ctx;
   }
 

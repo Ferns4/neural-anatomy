@@ -15,7 +15,7 @@
   function diagnose() {
     const out = [];
     const add = (level, title, body, actions = []) => out.push({ level, title, body, actions });
-    const net = App.net, ds = App.ds, L = net.L, act = net.act, h = App.hyper;
+    const net = App.net, ds = App.ds, L = net.L, h = App.hyper, E = NA.engine;
     const pts = App.history.points, last = App.metrics(), step = App.displayStep();
     const cls = ds.task !== 'regression';
     const accName = cls ? 'accuracy' : 'R²';
@@ -28,19 +28,30 @@
     if (App.viewing !== null) add('info', `Viewing step ${NA.fmtInt(step)} from history`, 'Everything on screen shows the network as it was at this step. Training again continues from here and discards the later history.', [{ label: 'Back to latest', run: () => App.backToLive() }]);
     const nAbl = App.ablatedCount();
     if (nAbl) add('info', `${plural(nAbl, 'neuron')} ablated`, 'Ablated neurons are forced to output 0. Compare accuracy with and without them to see what they contributed.', [{ label: 'Restore all', run: () => App.restoreAll() }]);
-    if (act.id === 'linear' && L > 1) add('warn', 'Linear layers collapse', 'Stacking linear layers still produces a single linear function, so the decision boundary stays straight however many layers you add.', [{ label: 'Use ReLU', patch: { act: 'relu', train: 1500 } }]);
+    // activation choices across the hidden neurons
+    const hiddenLayers = NA.range(L - 1).map((i) => i + 1);
+    const linearLayers = hiddenLayers.filter((l) => net.layerActId(l) === 'linear');
+    if (L > 1 && linearLayers.length === hiddenLayers.length) add('warn', 'Linear layers collapse', 'Every hidden neuron is linear, and stacking linear layers still produces a single linear function, so the decision boundary stays straight however many layers you add.', [{ label: 'Use ReLU', patch: { act: 'relu', train: 1500 } }]);
+    else if (linearLayers.length) add('info', `${linearLayers.map((l) => App.layerName(l)).join(' and ')} ${linearLayers.length > 1 ? 'are' : 'is'} linear`, 'A linear layer adds no bends of its own; it only re-mixes the features of the layer before it.');
+    const mixed = hiddenLayers.filter((l) => net.layerActId(l) === 'mixed');
+    if (mixed.length) {
+      const l = mixed[0], count = {};
+      for (const id of net.actIds[l]) count[id] = (count[id] || 0) + 1;
+      const parts = Object.keys(count).map((id) => `${E.ACTIVATIONS[id].label} × ${count[id]}`).join(', ');
+      add('info', `Mixed activations in ${App.layerName(l)}${mixed.length > 1 ? ` and ${plural(mixed.length - 1, 'other layer')}` : ''}`, `${parts}. Each neuron bends its input with its own function; the small curve on each node shows which. Different shapes in one layer let it build features no single function would.`);
+    }
 
     if (step > 0 && last) {
       // quality of fit
-      if (cls && last.testAcc >= 0.97 && last.trainAcc - last.testAcc < 0.03) add('good', 'Generalizes well', `Test accuracy is ${fmtPct(last.testAcc, 1)} and close to training accuracy (${fmtPct(last.trainAcc, 1)}), so the network learned the underlying shape rather than individual points.`);
-      if (!cls && last.testAcc >= 0.95) add('good', 'Close fit', `R² on held-out points is ${fmt(last.testAcc, 3)}: the network explains ${fmtPct(last.testAcc, 1)} of the variance it has not seen.`);
+      if (cls && last.valAcc >= 0.97 && last.trainAcc - last.valAcc < 0.03) add('good', 'Generalizes well', `Validation accuracy is ${fmtPct(last.valAcc, 1)} and close to training accuracy (${fmtPct(last.trainAcc, 1)}), so the network learned the underlying shape rather than individual points.`);
+      if (!cls && last.valAcc >= 0.95) add('good', 'Close fit', `R² on validation points is ${fmt(last.valAcc, 3)}: the network explains ${fmtPct(last.valAcc, 1)} of the variance in points it never trained on.`);
       // overfitting
       if (pts.length > 12) {
         let best = pts[0];
-        for (const p of pts) if (p.step <= step && p.testLoss < best.testLoss) best = p;
-        if (last.testLoss > best.testLoss * 1.25 && last.testLoss - last.trainLoss > 0.08 && last.trainLoss < best.testLoss) {
+        for (const p of pts) if (p.step <= step && p.valLoss < best.valLoss) best = p;
+        if (last.valLoss > best.valLoss * 1.25 && last.valLoss - last.trainLoss > 0.08 && last.trainLoss < best.valLoss) {
           const snapIdx = nearestSnap(best.step);
-          add('warn', 'Overfitting', `Test loss bottomed out at ${fmt(best.testLoss, 3)} around step ${NA.fmtInt(best.step)} and has since risen to ${fmt(last.testLoss, 3)}, while training loss kept falling to ${fmt(last.trainLoss, 3)}. The network is memorising the training points.`,
+          add('warn', 'Overfitting', `Validation loss bottomed out at ${fmt(best.valLoss, 3)} around step ${NA.fmtInt(best.step)} and has since risen to ${fmt(last.valLoss, 3)}, while training loss kept falling to ${fmt(last.trainLoss, 3)}. The network is memorising the training points.`,
             [{ label: 'Add L2 0.01 and retrain', patch: { reg: 'l2', regRate: 0.01, reset: true, train: Math.max(500, step) } }, { label: `View step ${NA.fmtInt(App.history.snaps[snapIdx].step)}`, run: () => App.viewSnapshot(snapIdx) }]);
         }
       }
@@ -57,6 +68,14 @@
             L === 1 ? [{ label: 'Add a hidden layer', patch: { hidden: [6], act: 'relu', train: 1500 } }] : []);
         }
       }
+      // squared error on a probability output: slow when confidently wrong
+      if (cls && net.lossId === 'mse' && last.trainAcc < 0.97 && step > 200) add('info', 'Squared error on a classifier', `With squared error the error signal is (p − y)·p(1 − p), which shrinks toward 0 when the output is confidently wrong (p near 0 or 1). Cross-entropy drops the p(1 − p) factor, so the worst mistakes get the strongest push.`,
+        [{ label: 'Use cross-entropy', run: () => App.setLoss('xent') }]);
+      // the held-out test, once run
+      const tr = App.testResult;
+      if (tr) add('info', tr.version === App.version ? 'Held-out test result' : 'Held-out test is out of date',
+        `${cls ? `Test accuracy ${fmtPct(tr.acc, 1)} against ${fmtPct(tr.valAcc, 1)} on validation` : `Test R² ${fmt(tr.acc, 3)} against ${fmt(tr.valAcc, 3)} on validation`}, measured at step ${NA.fmtInt(tr.step)}.${tr.version === App.version ? '' : ' The model has changed since; run the test again for a current number.'}`,
+        [{ label: 'Open the report', run: () => App.emit('tab', 'training') }]);
       // oscillation
       if (pts.length > 16 && App.history.points.length) {
         const tail = pts.slice(-14);
@@ -70,18 +89,23 @@
     if (L > 1) {
       const stats = App.stats();
       for (let l = 1; l < L; l++) {
-        const dead = [], sat = [];
+        // each neuron is judged by its own activation function
+        const dead = [], flat = [], sat = [];
         for (let j = 0; j < net.sizes[l]; j++) {
           if (!net.mask[l][j]) continue;
-          const s = stats[l][j];
-          if (act.family === 'rectifier' ? s.activeFrac === 0 : s.std < 1e-4) dead.push({ l, j });
-          else if (s.satFrac > 0.9) sat.push({ l, j });
+          const kind = E.deadKind(net, stats, l, j), a = net.actFns[l][j];
+          if (kind === 'dead') dead.push({ l, j });
+          else if (kind === 'flat') flat.push({ l, j });
+          else if (a.sat && stats[l][j].satFrac > 0.9) sat.push({ l, j });
         }
-        if (dead.length && step > 0 && act.family === 'rectifier') add('warn', `${plural(dead.length, 'dead neuron')} in Hidden ${l}`, `${names(dead)} never switch on for any training input. Their output is always 0, so their gradient is 0 too and they cannot recover. ${act.id === 'relu' ? 'Leaky ReLU keeps a small slope below zero, so neurons can come back.' : ''}`,
-          [{ label: 'Show them', highlight: dead }].concat(act.id === 'relu' ? [{ label: 'Use Leaky ReLU', patch: { act: 'leaky', train: Math.max(500, step) } }] : []));
-        else if (dead.length && step > 0) add('warn', `${plural(dead.length, 'flat neuron')} in Hidden ${l}`, `${names(dead)} give almost the same output for every training input, so they carry no information about the input and pass almost no gradient back.`, [{ label: 'Show them', highlight: dead }]);
-        if (sat.length) add('warn', `${plural(sat.length, 'saturated neuron')} in Hidden ${l}`, `${names(sat)} sit on the flat tails of ${act.label} for more than 90% of inputs. The slope there is close to 0, so very little gradient passes through.`,
-          [{ label: 'Show them', highlight: sat }, { label: 'Use ReLU', patch: { act: 'relu', train: Math.max(500, step) } }]);
+        if (dead.length && step > 0) add('warn', `${plural(dead.length, 'dead neuron')} in Hidden ${l}`, `${names(dead)} never switch on for any training input. ReLU outputs 0 there and its slope is 0 too, so no gradient reaches them and they cannot recover. Leaky ReLU keeps a small slope below zero, so a neuron can come back.`,
+          [{ label: 'Show them', highlight: dead }, { label: 'Make them Leaky ReLU', run: () => App.setActs(dead, 'leaky') }]);
+        if (flat.length && step > 0) add('warn', `${plural(flat.length, 'flat neuron')} in Hidden ${l}`, `${names(flat)} give almost the same output for every training input, so they carry no information about the input and pass almost no gradient back.`, [{ label: 'Show them', highlight: flat }]);
+        if (sat.length) {
+          const fns = [...new Set(sat.map((n) => net.actFns[n.l][n.j].label))].join(' or ');
+          add('warn', `${plural(sat.length, 'saturated neuron')} in Hidden ${l}`, `${names(sat)} sit on the flat tails of ${fns} for more than 90% of inputs. The slope there is close to 0, so very little gradient passes through.`,
+            [{ label: 'Show them', highlight: sat }, { label: 'Make them ReLU', run: () => App.setActs(sat, 'relu') }]);
+        }
       }
     }
 
@@ -89,8 +113,12 @@
     if (L >= 3 && step > 0) {
       const g = App.gradReport().layerRms, first = g[0], lastG = g[L - 1];
       if (first > 0 && lastG / first > 50) {
-        add(lastG / first > 1000 ? 'critical' : 'warn', 'Vanishing gradients', `The gradient reaching the first layer is ${fmtRatio(lastG / first)} smaller than at the last layer, so the early layers barely change. ${act.family === 'squash' ? `Each ${act.label} layer multiplies the error signal by its slope, at most ${act.id === 'sigmoid' ? '0.25' : '1'}.` : ''}`,
-          [{ label: 'Show gradients', run: () => { App.setLens('edges', 'gradient'); App.setLens('nodes', 'gradient'); } }].concat(act.family === 'squash' ? [{ label: 'Use ReLU', patch: { act: 'relu', train: Math.max(800, step) } }] : []).concat(h.optimizer !== 'adam' ? [{ label: 'Use Adam', patch: { optimizer: 'adam', lr: 0.01 } }] : []));
+        // which squashing functions are in the way, if any
+        const squash = new Set();
+        for (let l = 1; l < L; l++) for (const a of net.actFns[l]) if (a.family === 'squash') squash.add(a.id);
+        const why = squash.size ? `Every ${[...squash].map((id) => E.ACTIVATIONS[id].label).join(' or ')} neuron multiplies the error signal by its slope, at most ${squash.has('sigmoid') ? '0.25 for sigmoid' : '1'}${squash.has('sigmoid') && squash.has('tanh') ? ' and 1 for tanh' : ''}, and those factors compound layer after layer.` : '';
+        add(lastG / first > 1000 ? 'critical' : 'warn', 'Vanishing gradients', `The gradient reaching the first layer is ${fmtRatio(lastG / first)} smaller than at the last layer, so the early layers barely change. ${why}`,
+          [{ label: 'Show gradients', run: () => { App.setLens('edges', 'gradient'); App.setLens('nodes', 'gradient'); } }].concat(squash.size ? [{ label: 'Use ReLU', patch: { act: 'relu', train: Math.max(800, step) } }] : []).concat(h.optimizer !== 'adam' ? [{ label: 'Use Adam', patch: { optimizer: 'adam', lr: 0.01 } }] : []));
       } else if (lastG > 0 && first / lastG > 50) {
         add('warn', 'Exploding gradients', `The first layer receives gradients ${fmtRatio(first / lastG)} larger than the last. Updates to early weights can become erratic.`, [{ label: 'Lower learning rate', patch: { lr: +(h.lr / 3).toPrecision(2) } }]);
       }
@@ -125,8 +153,8 @@
         if (!best || r.dLoss > best.r.dLoss) best = { l, j, r };
         if (Math.abs(r.dLoss) < 0.002 && Math.abs(r.dAcc) < 0.005) idle.push({ l, j });
       }
-      if (best && best.r.dLoss > 0.01) add('info', `Most important neuron: ${App.neuronName(best.l, best.j, true)}`, `Knocking it out raises test loss by ${fmt(best.r.dLoss, 3)}${cls ? ` and changes accuracy by ${fmtPct(best.r.dAcc, 1)}` : ''}. Select it to see what it computes.`, [{ label: 'Select it', run: () => App.select({ l: best.l, j: best.j }, { fromGraph: true }) }]);
-      if (idle.length >= 2) add('info', `${plural(idle.length, 'neuron')} barely matter`, `Removing any one of ${names(idle)} changes test loss by less than 0.002. Not every neuron ends up with a distinct job.`, [{ label: 'Show them', highlight: idle }]);
+      if (best && best.r.dLoss > 0.01) add('info', `Most important neuron: ${App.neuronName(best.l, best.j, true)}`, `Knocking it out raises validation loss by ${fmt(best.r.dLoss, 3)}${cls ? ` and changes accuracy by ${fmtPct(best.r.dAcc, 1)}` : ''}. Select it to see what it computes.`, [{ label: 'Select it', run: () => App.select({ l: best.l, j: best.j }, { fromGraph: true }) }]);
+      if (idle.length >= 2) add('info', `${plural(idle.length, 'neuron')} barely matter`, `Removing any one of ${names(idle)} changes validation loss by less than 0.002. Not every neuron ends up with a distinct job.`, [{ label: 'Show them', highlight: idle }]);
     }
     out.sort((a, b) => ORDER[a.level] - ORDER[b.level]);
     return out;

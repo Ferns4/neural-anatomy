@@ -25,7 +25,9 @@
     HS.canvas = el('canvas', { class: 'hs-canvas', 'aria-label': 'Data points as represented inside the selected layer' });
     HS.info = el('p', { class: 'hs-info', 'aria-live': 'polite' });
     HS.legend = el('div', { class: 'mini-legend' });
-    root.append(el('div', { class: 'hs-top' }, HS.chips, HS.playBtn), el('div', { class: 'canvas-wrap' }, HS.canvas), HS.info, HS.legend);
+    const host = el('div', { class: 'zoom-host' }, HS.canvas);
+    HS.zoom = new NA.ui.Zoom(HS.canvas, { host, panOne: true, max: 6, onChange: () => { HS.dirty = true; NA.tooltip.hide(); } });
+    root.append(el('div', { class: 'hs-top' }, HS.chips, HS.playBtn), el('div', { class: 'canvas-wrap' }, host), HS.info, HS.legend);
     if (App.isImage()) {
       const fc = el('div', { class: 'seg seg-sm seg-digits', role: 'group', 'aria-label': 'Highlight a digit' });
       for (let k = 0; k < 10; k++) fc.appendChild(el('button', { type: 'button', 'aria-pressed': 'false', dataset: { k } }, String(k)));
@@ -34,7 +36,11 @@
     }
     HS.canvas.addEventListener('pointermove', onMove);
     HS.canvas.addEventListener('pointerleave', () => { HS.hoverK = null; NA.tooltip.hide(); HS.dirty = true; });
-    HS.canvas.addEventListener('click', () => { if (HS.hoverK !== null && HS.hoverK !== undefined) App.setProbeSample(HS.hoverK); });
+    HS.canvas.addEventListener('click', (e) => {
+      if (HS.zoom.suppressClick) { HS.zoom.suppressClick = false; return; }
+      if (e.pointerType === 'touch' || HS.hoverK === null || HS.hoverK === undefined) onMove(e); // taps have no hover
+      if (HS.hoverK !== null && HS.hoverK !== undefined) App.setProbeSample(HS.hoverK);
+    });
     renderLegend();
   };
 
@@ -81,7 +87,7 @@
 
   function computeStages() {
     const ds = App.ds, net = App.net, L = net.L, F = App.dataPass(), N = F.n;
-    const idx = ds.kind === 'image' ? Array.from(ds.testIdx) : NA.range(ds.n);
+    const idx = ds.kind === 'image' ? Array.from(ds.valIdx) : NA.range(ds.n);
     const m = idx.length;
     // grid lines for the input plane
     let gridF = null, gridRaw = null;
@@ -195,13 +201,15 @@
     ctx.clearRect(0, 0, S, S);
     ctx.fillStyle = theme.c('panel-2'); rr(ctx, 0, 0, S, S, 8); ctx.fill();
     ctx.save(); rr(ctx, 0, 0, S, S, 8); ctx.clip();
+    HS.zoom.apply(ctx, HS.canvas._dpr || 1);
+    const zs = 1 / HS.zoom.k; // marks keep their on-screen size while the space magnifies
     // axes through the origin of the unit box
-    ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.c('line'); ctx.lineWidth = zs;
     ctx.beginPath(); ctx.moveTo(cxs, 0); ctx.lineTo(cxs, S); ctx.moveTo(0, cys); ctx.lineTo(S, cys); ctx.stroke();
     // warped grid
     const gA = from ? from.grid : null, gB = st.grid;
     if (gB && (!from || gA)) {
-      ctx.strokeStyle = theme.c('ink', theme.dark ? 0.2 : 0.16); ctx.lineWidth = 1;
+      ctx.strokeStyle = theme.c('ink', theme.dark ? 0.2 : 0.16); ctx.lineWidth = zs;
       for (let li = 0; li < data.lines; li++) {
         ctx.beginPath();
         for (let tt = 0; tt < data.pts; tt++) {
@@ -215,20 +223,20 @@
     if (!from) {
       if (st.line) {
         const { w0, w1, c } = st.line;
-        ctx.strokeStyle = theme.c('ink', 0.85); ctx.lineWidth = 1.8;
+        ctx.strokeStyle = theme.c('ink', 0.85); ctx.lineWidth = 1.8 * zs;
         ctx.beginPath();
         if (Math.abs(w1) > Math.abs(w0)) { const y1 = (-c - w0 * -2) / w1, y2 = (-c - w0 * 2) / w1; ctx.moveTo(cxs - 2 * k, cys - y1 * k); ctx.lineTo(cxs + 2 * k, cys - y2 * k); }
         else { const x1 = (-c - w1 * -2) / w0, x2 = (-c - w1 * 2) / w0; ctx.moveTo(cxs + x1 * k, cys + 2 * k); ctx.lineTo(cxs + x2 * k, cys - 2 * k); }
         ctx.stroke();
       } else if (st.vline !== undefined) {
-        ctx.strokeStyle = theme.c('ink', 0.85); ctx.lineWidth = 1.8;
+        ctx.strokeStyle = theme.c('ink', 0.85); ctx.lineWidth = 1.8 * zs;
         ctx.beginPath(); ctx.moveTo(cxs + st.vline * k, 0); ctx.lineTo(cxs + st.vline * k, S); ctx.stroke();
       }
     }
     // points
     const isImg = ds.kind === 'image';
-    const r = data.m > 450 ? 2.6 : 3.2;
-    if (isImg) { ctx.font = `600 10px ${NA.getFont('mono')}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+    const r = (data.m > 450 ? 2.6 : 3.2) * zs;
+    if (isImg) { ctx.font = `600 ${10 * zs}px ${NA.getFont('mono')}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
     for (let pass = 0; pass < 2; pass++) {
       for (let q = 0; q < data.m; q++) {
         const kk = data.idx[q], y = ds.y[kk];
@@ -241,7 +249,7 @@
           ctx.fillText(String(y), p[0], p[1]);
         } else {
           ctx.fillStyle = ds.task === 'regression' ? theme.divColor(clamp(y, -1, 1)) : theme.classColor(y);
-          ctx.beginPath(); ctx.arc(p[0], p[1], q === HS.hoverQ ? r + 2 : r, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(p[0], p[1], q === HS.hoverQ ? r + 2 * zs : r, 0, Math.PI * 2); ctx.fill();
         }
       }
     }
@@ -251,9 +259,9 @@
       const v = HS.stage === 0 && ds.kind === 'plane' ? App.probe.raw : HS.stage === L ? tr.z[L] : tr.a[HS.stage];
       const pp = st.toScreen(v);
       const px = cxs + pp[0] * k, py = cys - (st.method === 'strip' ? 0 : pp[1]) * k;
-      ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2);
-      ctx.lineWidth = 3.5; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
-      ctx.lineWidth = 2; ctx.strokeStyle = theme.c('ink'); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 7 * zs, 0, Math.PI * 2);
+      ctx.lineWidth = 3.5 * zs; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
+      ctx.lineWidth = 2 * zs; ctx.strokeStyle = theme.c('ink'); ctx.stroke();
     }
     ctx.restore();
     ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; rr(ctx, 0.5, 0.5, S - 1, S - 1, 8); ctx.stroke();
@@ -298,9 +306,10 @@
   function onMove(ev) {
     const data = HS.data;
     if (!data || HS.anim) return;
-    const r = HS.canvas.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top, S = HS.size, k = S * 0.43;
+    if (HS.zoom.busy) { NA.tooltip.hide(); return; }
+    const r = HS.canvas.getBoundingClientRect(), [mx, my] = HS.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top), S = HS.size, k = S * 0.43;
     const st = data.stages[HS.stage];
-    let best = null, bd = 9;
+    let best = null, bd = 9 / HS.zoom.k;
     for (let q = 0; q < data.m; q++) {
       const x = S / 2 + st.coords[2 * q] * k, y = S / 2 - st.coords[2 * q + 1] * k;
       const d = Math.hypot(x - mx, y - my);

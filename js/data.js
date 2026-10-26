@@ -287,15 +287,23 @@
     if (def.kind === 'plane') { made = def.make(n, spec.noise, rng); rawDim = 2; classes = def.classes; }
     else if (def.kind === 'line') { made = makeCurve(spec.dataset, n, spec.noise, rng); rawDim = 1; classes = 0; }
     else { made = makeDigits(n, rng, true); rawDim = IMG * IMG; classes = 10; }
+    // Three-way split: training data the model learns from, validation data tracked live while it
+    // trains, and a held-out test set that is only touched when you run the final test.
     const idx = NA.range(n);
     rng.shuffle(idx);
-    const nTrain = Math.max(2, Math.round(n * spec.trainRatio));
+    const nTrain = Math.min(n - 2, Math.max(2, Math.round(n * spec.trainRatio)));
+    const nVal = Math.ceil((n - nTrain) / 2);
     const ds = {
       id: spec.dataset, def, kind: def.kind, task: def.task, classes, n, rawDim,
       raw: made.raw, y: made.y, strokes: made.strokes || null,
-      trainIdx: Int32Array.from(idx.slice(0, nTrain)), testIdx: Int32Array.from(idx.slice(nTrain)),
+      trainIdx: Int32Array.from(idx.slice(0, nTrain)),
+      valIdx: Int32Array.from(idx.slice(nTrain, nTrain + nVal)),
+      testIdx: Int32Array.from(idx.slice(nTrain + nVal)),
       imgSize: def.kind === 'image' ? IMG : 0,
     };
+    ds.split = new Uint8Array(n); // 0 train, 1 validation, 2 test
+    for (const k of ds.valIdx) ds.split[k] = 1;
+    for (const k of ds.testIdx) ds.split[k] = 2;
     setFeatures(ds, spec.features);
     return ds;
   }

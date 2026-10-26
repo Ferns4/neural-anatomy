@@ -175,10 +175,12 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .lens-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .lens-label { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .net-stage { position: relative; flex: 1; min-height: 0; }
-.net-stage canvas { position: absolute; inset: 0; touch-action: manipulation; }
-.net-overlay { position: absolute; inset: 0; pointer-events: none; }
+.net-stage canvas { position: absolute; inset: 0; touch-action: pan-y; }
+[data-layout="mobile"] .net-stage canvas, .net-stage canvas.is-zoomed { touch-action: none; }
+.net-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .lh { position: absolute; top: 8px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 1px; pointer-events: auto; text-align: center; }
 .lh-title { font: 600 12px var(--font-ui); white-space: nowrap; }
+.net-stage canvas.is-zoomed ~ .net-overlay .lh { padding: 3px 7px 5px; border-radius: 9px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 0 0 1px var(--line); }
 .lh-meta { font: 500 10.5px var(--font-mono); color: var(--muted); white-space: nowrap; }
 .lh-row { display: flex; align-items: center; gap: 4px; }
 .lh-row .mini-btn { width: 18px; height: 18px; font-size: 13px; border-radius: 5px; }
@@ -402,6 +404,108 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
 .help-cols h3 { margin: 14px 0 0; font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .help-cols p { margin: 6px 0 0; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
 
+/* ---------------------------------------------------------------- activation functions, layer chips */
+.act-glyph { flex: none; overflow: visible; color: var(--ink); }
+.ag-axis { fill: none; stroke: var(--line-2); stroke-width: 1; }
+.ag-curve { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.lh-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; margin-top: 3px; padding: 0 7px 0 7px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); color: var(--ink); font: 500 11.5px var(--font-ui); white-space: nowrap; }
+.lh-chip:hover { border-color: var(--ink-2); }
+.lh-chip-text { overflow: hidden; text-overflow: ellipsis; }
+.lh-chip-count { display: none; font: 500 10.5px var(--font-mono); color: var(--muted); }
+.lh-chip-caret { font-size: 9px; color: var(--muted); }
+.lh-chip-mixed { font: 600 13px/1 var(--font-ui); color: var(--grad); }
+.lh-count { min-width: 18px; text-align: center; color: var(--ink-2); }
+.lh.is-compact .lh-size { display: flex; }
+.lh.is-compact .lh-chip { gap: 4px; padding: 0 6px; }
+.lh.is-tiny .lh-size { display: none; }
+.lh.is-tiny .lh-chip-text { display: none; }
+.lh.is-tiny .lh-chip-count { display: inline; }
+.lh.is-tiny .lh-chip-loss .lh-chip-text { display: inline; }
+.add-layer { position: absolute; top: 22px; transform: translateX(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 1px dashed var(--line-2); border-radius: 50%; background: var(--panel); color: var(--muted); font: 500 15px/1 var(--font-ui); pointer-events: auto; }
+.add-layer:hover:not(:disabled) { color: var(--ink); border-style: solid; border-color: var(--ink-2); }
+.depth-ctl .mini-btn { border-radius: 50%; }
+.lg-act { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px 1px 4px; border: 1px solid var(--line-2); border-radius: 4px; font: 500 10.5px var(--font-mono); color: var(--ink); }
+.tt-formula { font: 500 11.5px/1.45 var(--font-mono); color: var(--ink-2); }
+.tt-formula.tt-strong { color: var(--ink); font-weight: 600; }
+.dot-square { border-radius: 1.5px; border: 1.6px solid var(--ink-2); }
+
+/* zoom: a small control in the corner of each zoomable picture */
+.zoom-host { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.zoom-chip { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: inline-flex; align-items: center; padding: 2px; border: 1px solid var(--line-2); border-radius: 999px; background: color-mix(in srgb, var(--panel) 90%, transparent); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); opacity: 0.82; transition: opacity 0.15s; line-height: 1; }
+.zoom-chip:hover, .zoom-chip:focus-within, .zoom-chip.is-zoomed { opacity: 1; }
+.zc-btn { width: 26px; height: 26px; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--ink-2); font: 500 16px/1 var(--font-ui); }
+.zc-btn:hover { color: var(--ink); background: var(--panel-2); }
+.zc-level { min-width: 36px; height: 24px; padding: 0 6px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2); font: 600 11px var(--font-mono); }
+.zoom-chip.is-zoomed .zc-level { background: var(--ink); color: var(--panel); }
+.net-stage .zoom-chip { right: 10px; bottom: 8px; }
+.net-stage:has(.mpeek:not([hidden])) .zoom-chip { display: none; }
+
+/* option menu: a popover on desktop, a bottom sheet on phones */
+.menu-root { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
+.menu-root.is-sheet { pointer-events: auto; }
+.menu-scrim { position: absolute; inset: 0; background: var(--scrim); animation: na-fade 0.15s ease-out; }
+.menu-panel { position: fixed; display: flex; flex-direction: column; max-height: min(72vh, 540px); pointer-events: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; animation: na-pop 0.14s ease-out; }
+.menu-panel.is-sheet { left: 0; right: 0; bottom: 0; max-height: 80%; border-radius: 18px 18px 0 0; border-bottom: 0; padding: 0 max(0px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(0px, env(safe-area-inset-left, 0px)); animation: na-sheet 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.menu-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 12px 9px; border-bottom: 1px solid var(--line); }
+.menu-title { font: 600 12.5px var(--font-ui); }
+.menu-note { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--muted); max-width: 46ch; }
+.menu-list { display: flex; flex-direction: column; padding: 4px; overflow: auto; overscroll-behavior: contain; }
+.menu-item { display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; align-items: center; gap: 10px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--panel-2); outline: none; }
+.menu-item[aria-selected="true"] { background: color-mix(in srgb, var(--pos) 9%, transparent); }
+.menu-ico { width: 30px; height: 20px; display: grid; place-items: center; font: 600 14px/1 var(--font-ui); color: var(--ink-2); }
+.menu-text { display: flex; flex-direction: column; min-width: 0; }
+.menu-label { font: 500 13px/1.3 var(--font-ui); }
+.menu-sub { font: 400 11px/1.4 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-check { font: 700 12px var(--font-ui); color: var(--pos); text-align: center; }
+.menu-div { height: 1px; margin: 4px 8px; background: var(--line); }
+.menu-item.tone-danger, .menu-item.tone-danger .menu-ico { color: var(--critical); }
+@keyframes na-pop { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes na-sheet { from { transform: translateY(100%); } }
+@keyframes na-fade { from { opacity: 0; } }
+
+/* toast */
+.toast { position: fixed; z-index: 80; left: 50%; bottom: 24px; max-width: min(520px, calc(100% - 32px)); padding: 9px 14px; border-radius: 10px; background: var(--ink); color: var(--panel); font: 500 12.5px/1.4 var(--font-ui); box-shadow: var(--shadow); opacity: 0; transform: translate(-50%, 12px); pointer-events: none; transition: opacity 0.18s, transform 0.18s; }
+.toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+
+/* held-out test button in the control bar */
+.ro-test { display: flex; flex-direction: column; gap: 1px; padding: 3px 10px; border: 1px dashed var(--line-2); border-radius: 8px; background: transparent; text-align: left; }
+.ro-test:hover { border-color: var(--ink-2); border-style: solid; }
+.ro-test .ro-value { color: var(--ink-2); }
+.ro-test.has-result { border-style: solid; }
+.ro-test.has-result .ro-value { color: var(--ink); }
+.ro-test.is-stale .ro-value { color: var(--muted); }
+.sheet-actions { display: none; }
+
+/* inspector: pickers, formulas, the test report */
+.act-pick { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel); color: var(--ink); text-align: left; }
+.act-pick:hover { border-color: var(--ink-2); }
+.act-pick-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.act-pick-name { font: 600 13.5px var(--font-ui); }
+.act-pick-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-pick-formula { font-family: var(--font-mono); color: var(--ink-2); }
+.act-pick-mixed { width: 34px; text-align: center; font-size: 18px; }
+.layer-act { display: flex; flex-direction: column; gap: 6px; padding-top: 12px; }
+.fx { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border-radius: 8px; background: var(--panel-2); font: 500 12px/1.5 var(--font-mono); color: var(--ink-2); overflow-x: auto; }
+.fx-line { white-space: pre-wrap; }
+.fx-strong { color: var(--ink); font-weight: 600; }
+.fx-muted { color: var(--muted); }
+.fx-note { font: 400 11.5px/1.45 var(--font-ui); color: var(--muted); }
+.test-card { display: flex; flex-direction: column; gap: 10px; }
+.test-card .tiles { padding-top: 0; }
+.test-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.test-verdict { display: flex; flex-direction: column; gap: 6px; }
+.tv-line { margin: 0; display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.tv-line .pill { flex: none; margin-top: 1px; }
+.test-errs { display: flex; flex-direction: column; gap: 6px; }
+.err-list { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.err-row { display: grid; grid-template-columns: 108px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 4px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; font-size: 12px; }
+.err-row:hover { background: var(--panel-2); }
+.er-pos { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.act-pick .lh-chip-caret { font-size: 12px; }
+.er-what { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.er-v { font-size: 11.5px; color: var(--muted); }
+
 /* ---------------------------------------------------------------- responsive */
 @media (max-width: 1260px) {
   .app { height: auto; min-height: 100%; grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); grid-template-rows: auto auto minmax(560px, 72vh) auto auto; grid-template-areas: "top top" "ctrl ctrl" "data net" "insp insp" "time time"; }
@@ -482,6 +586,39 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 .mp-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 500 12.5px var(--font-mono); color: var(--ink); }
 .mp-stats b { color: var(--muted); font-weight: 500; margin-right: 4px; }
 [data-layout="mobile"] .mp-close { width: 34px; height: 34px; flex: none; font-size: 18px; }
+/* phone polish: screens slide in, menus and dialogs become bottom sheets, touch-sized controls */
+[data-layout="mobile"][data-screen] .panel { animation: na-screen 0.2s ease-out; }
+@keyframes na-screen { from { opacity: 0; transform: translateY(6px); } }
+[data-layout="mobile"] .insp-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 0 4px; }
+[data-layout="mobile"] .tab { padding: 12px 2px 10px; font-size: 12.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+[data-layout="mobile"] .insp-body { padding: 4px 16px 24px; }
+[data-layout="mobile"] .menu-item { padding: 10px; }
+[data-layout="mobile"] .menu-head { padding: 14px 16px 10px; }
+[data-layout="mobile"] .menu-title { font: 400 22px/1.15 var(--font-display); }
+[data-layout="mobile"] .menu-note { font-size: 12.5px; }
+[data-layout="mobile"] .menu-sub { white-space: normal; }
+[data-layout="mobile"] .menu-head .icon-btn { width: 36px; height: 36px; flex: none; }
+[data-layout="mobile"] .toast { bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
+[data-layout="mobile"] .zc-btn { width: 34px; height: 34px; font-size: 18px; }
+[data-layout="mobile"] .zc-level { height: 30px; min-width: 40px; font-size: 12px; }
+[data-layout="mobile"] .lh-chip { height: 28px; padding: 0 8px; font-size: 12.5px; }
+[data-layout="mobile"] .depth-ctl .mini-btn { width: 28px; height: 28px; }
+[data-layout="mobile"] .add-layer { width: 28px; height: 28px; }
+[data-layout="mobile"] .act-pick { padding: 10px 12px; }
+[data-layout="mobile"] .err-row { padding: 10px 4px; }
+[data-layout="mobile"] .g-item canvas { width: 34px; height: 34px; }
+[data-layout="mobile"] .sheet-actions { display: grid; grid-column: 1 / -1; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 4px; }
+[data-layout="mobile"] .sheet-actions .btn { height: 44px; font-size: 14px; }
+[data-layout="mobile"] .modal { padding: 0; place-items: end stretch; overflow: hidden; }
+[data-layout="mobile"] .modal .sheet { max-height: 90%; overflow: auto; overscroll-behavior: contain; border-radius: 18px 18px 0 0; border-bottom: 0; padding: 0 max(16px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); animation: na-sheet 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+[data-layout="mobile"] .modal .sheet-head { position: sticky; top: 0; z-index: 1; margin: 0 -4px 6px; padding: 16px 4px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+[data-layout="mobile"] .sheet-title { font-size: 26px; }
+[data-layout="mobile"] .sheet-sub { font-size: 12.5px; }
+[data-layout="mobile"] .zoo-grid { grid-template-columns: minmax(0, 1fr); }
+[data-layout="mobile"] .zoo-card { padding: 12px 10px; }
+.mp-tools { display: flex; align-items: center; gap: 6px; flex: none; }
+.mp-chip { margin-top: 0; }
+.mp-fx { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: 8px; background: var(--panel-2); font: 500 11.5px/1.45 var(--font-mono); color: var(--ink-2); overflow-wrap: anywhere; }
 @media (max-height: 680px) {
   [data-layout="mobile"][data-screen="network"] .timeline { display: none; }
 }
@@ -548,8 +685,9 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
       <div class="readout ro-keep"><span class="ro-label">Step</span><span class="ro-value" id="roStep">0</span></div>
       <div class="readout"><span class="ro-label">Epoch</span><span class="ro-value" id="roEpoch">0</span></div>
       <div class="readout"><span class="ro-label">Train loss</span><span class="ro-value" id="roTrain">—</span></div>
-      <div class="readout"><span class="ro-label">Test loss</span><span class="ro-value" id="roTest">—</span></div>
-      <div class="readout ro-keep"><span class="ro-label" id="roAccLabel">Test accuracy</span><span class="ro-value" id="roAcc">—</span></div>
+      <div class="readout"><span class="ro-label">Val. loss</span><span class="ro-value" id="roVal">—</span></div>
+      <div class="readout ro-keep"><span class="ro-label" id="roAccLabel">Val. accuracy</span><span class="ro-value" id="roAcc">—</span></div>
+      <button class="ro-test" id="btnTest" type="button" title="Score the model on the held-out test set (T)"><span class="ro-label">Held-out test</span><span class="ro-value" id="roTestRun">Run</span></button>
     </div>
     <button class="icon-btn" id="btnSettings" type="button" aria-label="Training settings" title="Training settings" aria-haspopup="dialog">
       <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="4.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="6" cy="11.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
@@ -559,12 +697,17 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
       <label class="field"><span>Learning rate</span><select id="hpLr"></select></label>
       <label class="field"><span>Optimizer</span><select id="hpOpt"><option value="sgd">SGD</option><option value="momentum">Momentum</option><option value="adam">Adam</option></select></label>
       <label class="field"><span>Batch</span><select id="hpBatch"></select></label>
-      <label class="field"><span>Activation</span><select id="hpAct"><option value="relu">ReLU</option><option value="leaky">Leaky ReLU</option><option value="tanh">Tanh</option><option value="sigmoid">Sigmoid</option><option value="gelu">GELU</option><option value="linear">Linear</option></select></label>
+      <label class="field"><span>Activation</span><select id="hpAct" title="Sets every hidden neuron. Change single neurons or layers on the diagram."></select></label>
+      <label class="field"><span>Loss</span><select id="hpLoss" title="The function training minimises"></select></label>
       <label class="field"><span>Regularization</span><select id="hpReg"><option value="none">None</option><option value="l2">L2</option><option value="l1">L1</option></select></label>
       <label class="field"><span>Reg. rate</span><select id="hpRegRate"></select></label>
       <label class="field"><span>Init</span><select id="hpInit"><option value="auto">He / Xavier</option><option value="small">Tiny (σ 0.01)</option><option value="large">Large (σ 1.6)</option></select></label>
       <div class="field"><span>Seed</span><div class="seed-row"><input id="hpSeed" type="number" min="1" max="999" aria-label="Random seed"><button class="icon-btn" id="btnSeed" type="button" title="Next seed: new initial weights" aria-label="Next seed"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5.6" cy="5.6" r="1.1" fill="currentColor"/><circle cx="10.4" cy="10.4" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/></svg></button></div></div>
       <label class="field"><span>Speed</span><select id="hpSpeed" title="How many training steps run per screen refresh"><option value="slow">Slow (6/s)</option><option value="normal">Normal</option><option value="fast">Fast</option><option value="max">Max</option></select></label>
+      <div class="sheet-actions">
+        <button class="btn" id="btnSheetFF" type="button">Train 500 steps</button>
+        <button class="btn" id="btnSheetTest" type="button">Run held-out test</button>
+      </div>
     </div>
   </section>
 
@@ -606,6 +749,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
           <button class="chip" type="button" data-toggle="values" aria-pressed="false" title="Print the number under each neuron (V)">Values</button>
           <button class="chip" type="button" data-toggle="bias" aria-pressed="false" title="Show each neuron’s bias as a bar (B)">Bias</button>
           <button class="chip" type="button" data-toggle="flow" aria-pressed="false" title="Animate the signal (or, in Gradient mode, the error) moving through the network (F)">Flow</button>
+          <button class="chip" type="button" data-toggle="acts" aria-pressed="false" title="Label each neuron with its activation function; zoom in to read the formula (A)">Functions</button>
           <button class="chip" type="button" data-toggle="health" aria-pressed="false" title="Mark dead and saturated neurons (H)">Health</button>
         </div>
       </div>
@@ -687,6 +831,12 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
         <p>One input is always being traced through the network. Hover over the Output map to move it, click to pin it, or click a data point to use that example. The Neuron tab shows its arithmetic.</p>
         <h3>Maps</h3>
         <p>With Maps on, each neuron shows what it outputs for every possible input, so you can watch simple shapes in the first layer combine into complex ones deeper in.</p>
+        <h3>Building the network</h3>
+        <p>Use − and + under a layer to change its size, the + between layers or the Hidden layers control to add depth, and the chip under each layer to pick its activation function. To give one neuron its own function, select it and use the Neuron tab. The chip under Output picks the loss function.</p>
+        <h3>Validation and test data</h3>
+        <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run test, once you have finished tuning.</p>
+        <h3>Zoom</h3>
+        <p>Pinch, double-tap or Ctrl + scroll on the network, the output map or the hidden space to zoom into that part; drag to pan. Labels stay readable and show full formulas once there is room.</p>
         <div id="helpInstall" hidden>
           <h3>Install as an app</h3>
           <p>On an iPhone or iPad, open this site in Safari, tap Share, then Add to Home Screen. On Android, open the browser menu and tap Install app. On a computer, use the install button in the address bar. The app opens full-screen and keeps working offline.</p>
@@ -700,7 +850,8 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
           <dt><kbd>R</kbd></dt><dd>Re-initialize the weights</dd>
           <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Connections: weight, signal, gradient</dd>
           <dt><kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></dt><dd>Neurons: activation, pre-activation, gradient</dd>
-          <dt><kbd>M</kbd> <kbd>V</kbd> <kbd>B</kbd> <kbd>F</kbd> <kbd>H</kbd></dt><dd>Maps, values, bias, flow, health</dd>
+          <dt><kbd>M</kbd> <kbd>V</kbd> <kbd>B</kbd> <kbd>F</kbd> <kbd>A</kbd> <kbd>H</kbd></dt><dd>Maps, values, bias, flow, functions, health</dd>
+          <dt><kbd>T</kbd></dt><dd>Run the held-out test</dd>
           <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Step through history (with the timeline focused)</dd>
         </dl>
       </div>
@@ -713,6 +864,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 <script src="js/data.js"></script>
 <script src="js/presets.js"></script>
 <script src="js/app.js"></script>
+<script src="js/ui.js"></script>
 <script src="js/network-view.js"></script>
 <script src="js/data-view.js"></script>
 <script src="js/hidden-space.js"></script>

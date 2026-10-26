@@ -20,12 +20,15 @@
     V.overlay = document.getElementById('netOverlay');
     V.legend = document.getElementById('netLegend');
     new ResizeObserver(() => V.resize()).observe(V.stage);
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
     const mark = () => { V.dirty = true; };
     ['weights', 'probe', 'selection', 'hover', 'walk', 'highlight', 'ablation', 'overlay'].forEach((t) => App.on(t, mark));
-    App.on('model', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; buildHeaders(); renderLegend(); });
+    App.on('model', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; V.zoom.reset(); buildHeaders(); renderLegend(); });
+    App.on('arch', () => { V.dirty = true; buildHeaders(); renderLegend(); });
+    App.on('hyper', () => { if (V.lossKey !== App.net.lossId) { V.lossKey = App.net.lossId; buildHeaders(); } });
     App.on('lens', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; renderLegend(); });
     App.on('walk', renderLegend);
     theme.onChange(() => { V.thumbsKey = ''; V.dirty = true; });
@@ -58,7 +61,7 @@
     const rightPad = narrow ? (ds.task === 'multiclass' && !img ? 66 : 58) : ds.task === 'regression' ? 84 : 124;
     const x0 = leftPad, x1 = W - rightPad, nCols = L + 1;
     const compact = nCols > 1 && (x1 - x0) / (nCols - 1) < 128;
-    const top = compact ? (narrow ? 78 : 66) : 50, bottom = 20;
+    const top = compact ? 60 : 78, bottom = 46; // room for the depth and zoom controls along the bottom
     const avail = Math.max(60, H - top - bottom);
     const imgSide = imgSideGuess;
     const xs = [];
@@ -241,8 +244,8 @@
         cx.putImageData(im, 0, 0);
       }
     }
-    // deeper layers: average of the test images that activate the neuron most
-    const F = App.dataPass(), N = F.n, idx = ds.testIdx, ink = theme.tokens.ink, base = theme.tokens['panel-2'];
+    // deeper layers: average of the validation images that activate the neuron most
+    const F = App.dataPass(), N = F.n, idx = ds.valIdx, ink = theme.tokens.ink, base = theme.tokens['panel-2'];
     for (let l = 2; l <= L; l++) {
       const A = F.a[l];
       for (let j = 0; j < net.sizes[l]; j++) {
@@ -267,6 +270,8 @@
     ensureThumbs(now);
     const st = gather();
     ctx.clearRect(0, 0, V.W, V.H);
+    ctx.save();
+    V.zoom.apply(ctx, V.canvas._dpr || 1); // everything below is drawn in unzoomed layout coordinates
     drawBands(ctx, lay, st);
     drawEdges(ctx, lay, st, now);
     V.labels = [];
@@ -274,9 +279,18 @@
       if (col.image) drawInputImage(ctx, col, st);
       else col.nodes.forEach((nd) => drawNode(ctx, nd, st, now));
     }
-    drawNodeLabels(ctx);
+    drawNodeLabels(ctx, lay);
     drawLabels(ctx, lay, st);
+    ctx.restore();
     V.dirty = false; V.lastDraw = now;
+  }
+
+  // Which neurons get an activation label: all of them with the Functions overlay, otherwise only
+  // those in layers that mix several activation functions.
+  function showsAct(l) {
+    const net = App.net;
+    if (l <= 0 || l >= net.L) return false;
+    return !!App.lenses.acts || net.layerActId(l) === 'mixed';
   }
 
   function drawBands(ctx, lay, st) {
@@ -450,15 +464,14 @@
     // health
     let healthTag = '';
     if (st.stats && l > 0 && l < net.L && !ablated) {
-      const sd = st.stats[l][j];
-      const dead = net.act.family === 'rectifier' ? sd.activeFrac === 0 : sd.std < 1e-4;
+      const sd = st.stats[l][j], dead = NA.engine.deadKind(net, st.stats, l, j);
       if (dead) {
         ctx.save(); rr(ctx, x, y, s, s, r); ctx.clip();
         ctx.fillStyle = theme.c('panel-2', 0.75); ctx.fillRect(x, y, s, s);
         ctx.strokeStyle = theme.c('muted', 0.9); ctx.lineWidth = 1;
         for (let k = -s; k < s; k += 5) { ctx.beginPath(); ctx.moveTo(x + k, y + s); ctx.lineTo(x + k + s, y); ctx.stroke(); }
         ctx.restore();
-        healthTag = net.act.family === 'rectifier' ? 'dead' : 'flat';
+        healthTag = dead;
       } else if (sd.satFrac > 0.9) {
         ctx.strokeStyle = theme.c('serious'); ctx.lineWidth = 2;
         rr(ctx, x - 2, y - 2, s + 4, s + 4, r + 2); ctx.stroke();
@@ -490,7 +503,8 @@
       else if (mode === 'preact') txt = fmt(tr.z[l][j], 2);
       else txt = fmt(tr.a[l][j], 2);
     }
-    if (txt || healthTag) V.labels.push({ nd, text: [txt, healthTag].filter(Boolean).join(' · '), health: !!healthTag });
+    const act = showsAct(l) && !st.walk ? net.actOf(l, j) : null;
+    if (txt || healthTag || act) V.labels.push({ nd, act, text: [txt, healthTag].filter(Boolean).join(' · '), health: !!healthTag });
     // selection / hover / highlight rings
     const sel = App.selected && App.selected.l === l && App.selected.j === j;
     const hov = App.hover && App.hover.l === l && App.hover.j === j;
@@ -507,20 +521,35 @@
     ctx.restore();
   }
 
-  // Values and health tags on small backings: below a neuron when there is room, else beside it.
-  function drawNodeLabels(ctx) {
-    ctx.font = `500 9.5px ${getFont('mono')}`;
+  // Labels under (or beside) neurons: the activation function's curve, name and formula, the value and
+  // health tags. They keep a constant on-screen size, so zooming in makes room for the full formula.
+  function drawNodeLabels(ctx, lay) {
+    const sc = 1 / V.zoom.k, h = 13 * sc, pad = 3.5 * sc, gw = 15 * sc, gh = 9 * sc;
+    const colGap = lay.cols.length > 1 ? lay.cols[1].x - lay.cols[0].x : 200;
+    ctx.font = `500 ${9.5 * sc}px ${getFont('mono')}`;
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     for (const lb of V.labels) {
-      const nd = lb.nd, s = nd.s, h = 13, w = ctx.measureText(lb.text).width + 7;
+      const nd = lb.nd, s = nd.s, below = nd.gap >= h + sc;
+      // a function-only label beside the node would crowd the wiring: in a layer that shares one function
+      // (already named on its header chip) it waits for zooming in, and anywhere it waits until it fits
+      if (!below && !lb.text && ((s + nd.gap) * V.zoom.k < 15 || (V.zoom.k < 1.5 && App.net.layerActId(nd.l) !== 'mixed'))) continue;
+      const room = below ? colGap * 0.94 : colGap - s - 10 * sc;
+      const tail = lb.text ? (lb.act ? ' · ' : '') + lb.text : '';
+      let main = lb.act ? lb.act.short : '';
+      if (lb.act) {
+        const full = `${lb.act.short}  f(z) = ${lb.act.formula}`;
+        if (ctx.measureText(full + tail).width + gw + 3 * pad <= room) main = full;
+      }
+      const text = main + tail, w = ctx.measureText(text).width + 2 * pad + (lb.act ? gw + 3 * sc : 0);
       let x, y;
-      if (nd.gap >= h + 1) { x = nd.x - w / 2; y = nd.y + s / 2 + 1; }
-      else { x = nd.x + s / 2 + 4; y = nd.y + s / 2 - h + 3; }
-      ctx.fillStyle = theme.c('panel', 0.9);
-      rr(ctx, x, y, w, h, 3); ctx.fill();
-      if (lb.health) { ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; rr(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 3); ctx.stroke(); }
-      ctx.fillStyle = theme.c(lb.health ? 'ink' : 'ink-2');
-      ctx.fillText(lb.text, x + 3.5, y + h / 2 + 0.5);
+      if (below) { x = nd.x - w / 2; y = nd.y + s / 2 + sc; } else { x = nd.x + s / 2 + 4 * sc; y = nd.y + s / 2 - h + 3 * sc; }
+      ctx.fillStyle = theme.c('panel', 0.92);
+      rr(ctx, x, y, w, h, 3 * sc); ctx.fill();
+      if (lb.health || lb.act) { ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = sc; rr(ctx, x + sc / 2, y + sc / 2, w - sc, h - sc, 3 * sc); ctx.stroke(); }
+      let tx = x + pad;
+      if (lb.act) { NA.ui.drawActGlyph(ctx, lb.act, tx, y + (h - gh) / 2, gw, gh, theme.c('ink'), theme.c('line-2'), sc); tx += gw + 3 * sc; }
+      ctx.fillStyle = theme.c(lb.health || lb.act ? 'ink' : 'ink-2');
+      ctx.fillText(text, tx, y + h / 2 + sc / 2);
     }
   }
 
@@ -626,58 +655,131 @@
   NA.getFont = getFont;
 
   // ------------------------------------------------------------------ headers & architecture controls
+  // Chip showing a hidden layer's activation (curve + name); opens the layer menu.
+  function actChip(l) {
+    const id = App.net.layerActId(l), act = id !== 'mixed' ? NA.engine.ACTIVATIONS[id] : null;
+    const b = el('button', { class: 'lh-chip', type: 'button', 'aria-haspopup': 'listbox',
+      title: act ? `${act.label}: f(z) = ${act.formula}. Click to change it for the whole layer.` : 'Neurons in this layer use different activation functions. Click to set one for all.' },
+      act ? NA.ui.actGlyph(id, 18, 12) : el('span', { class: 'lh-chip-mixed', 'aria-hidden': 'true', text: '≋' }),
+      el('span', { class: 'lh-chip-text', text: act ? act.short : 'mixed' }),
+      el('span', { class: 'lh-chip-count', text: String(App.net.sizes[l]) }),
+      el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+    b.setAttribute('aria-label', `Activation for ${App.layerName(l)}: ${act ? act.label : 'mixed'}. Change`);
+    b.addEventListener('click', () => openLayerMenu(l, b));
+    return b;
+  }
+  function openLayerMenu(l, anchor) {
+    const net = App.net, id = net.layerActId(l), h = l - 1, n = net.sizes[l], max = App.isImage() ? 48 : 32;
+    const items = NA.ui.activationItems(id).concat([
+      { divider: true },
+      n < max ? { id: '+n', label: `Add a neuron (${n} → ${n + 1})`, icon: '+' } : null,
+      n > 1 ? { id: '-n', label: `Remove a neuron (${n} → ${n - 1})`, icon: '−' } : null,
+      { id: '+after', label: 'Add a layer after this one', icon: '⊕' },
+      { id: '+before', label: 'Add a layer before this one', icon: '⊕' },
+      { id: 'remove', label: 'Remove this layer', icon: '×', tone: 'danger' },
+    ].filter(Boolean));
+    NA.ui.menu.open({
+      anchor, title: `${App.layerName(l)} · ${n} neuron${n > 1 ? 's' : ''}`,
+      note: id === 'mixed' ? 'Its neurons use different functions. Pick one to set them all, or tap a single neuron to change just that one.' : 'Applies to every neuron in this layer. Tap a single neuron to change just that one.',
+      items,
+      onSelect: (v) => {
+        if (v === '+n') App.resizeLayer(h, 1);
+        else if (v === '-n') App.resizeLayer(h, -1);
+        else if (v === '+after') App.addLayer(h);
+        else if (v === '+before') App.addLayer(h - 1);
+        else if (v === 'remove') App.removeLayer(h);
+        else App.setLayerAct(l, v);
+      },
+    });
+  }
+  // Activation chooser for one neuron, with a shortcut to give its whole layer the same function.
+  NA.openNeuronMenu = function (l, j, anchor) {
+    const act = App.net.actOf(l, j);
+    NA.ui.menu.open({
+      anchor, title: `Activation for ${App.neuronName(l, j)}`, note: 'Only this neuron changes; its weights are kept so you can see the effect at once.',
+      items: NA.ui.activationItems(act.id).concat([{ divider: true }, { id: '@layer', label: `Use ${act.label} for all of ${App.layerName(l)}`, icon: '≡' }]),
+      onSelect: (v) => { if (v === '@layer') App.setLayerAct(l, act.id); else if (v !== act.id) App.setNeuronAct(l, j, v); },
+    });
+  };
+  // Loss chooser shared by the output header, the inspector and the settings.
+  NA.openLossMenu = function (anchor) {
+    const net = App.net, E = NA.engine;
+    NA.ui.menu.open({
+      anchor, title: 'Loss function', note: E.LOSSES[net.lossId].hint,
+      items: E.LOSS_FOR[net.out].map((id) => ({ id, label: E.LOSSES[id].label, sub: E.LOSSES[id].formula[net.out], selected: id === net.lossId, icon: 'L' })),
+      onSelect: (id) => { if (id !== net.lossId) App.setLoss(id); },
+    });
+  };
+  function lossChip() {
+    const net = App.net, Ls = NA.engine.LOSSES[net.lossId];
+    const b = el('button', { class: 'lh-chip lh-chip-loss', type: 'button', 'aria-haspopup': 'listbox', title: `Loss: ${Ls.label}, ${Ls.formula[net.out]}. Click to change.` },
+      el('span', { class: 'lh-chip-text', text: Ls.short, dataset: { full: Ls.short, tiny: 'Loss' } }), el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+    b.setAttribute('aria-label', `Loss function: ${Ls.label}. Change`);
+    b.addEventListener('click', () => NA.openLossMenu(b));
+    return b;
+  }
+  NA.openLayerMenu = openLayerMenu;
+
   function buildHeaders() {
     NA.clear(V.overlay);
-    const net = App.net, ds = App.ds, L = net.L;
+    V.stage.querySelectorAll('.depth-ctl').forEach((n) => n.remove());
+    const net = App.net, ds = App.ds, L = net.L, max = ds.kind === 'image' ? 48 : 32;
+    V.lossKey = net.lossId;
     V.headers = [];
     for (let l = 0; l <= L; l++) {
-      const meta = l === 0 ? (ds.kind === 'image' ? `${ds.imgSize}×${ds.imgSize} px` : ds.kind === 'line' ? '1 input' : `${net.sizes[0]} feature${net.sizes[0] > 1 ? 's' : ''}`)
-        : l === L ? (ds.task === 'regression' ? 'linear' : ds.task === 'binary' ? 'sigmoid' : `softmax · ${net.sizes[L]}`)
-          : `${net.sizes[l]} · ${net.act.label}`;
-      const short = l === 0 ? (ds.kind === 'image' ? '14×14' : String(net.sizes[0])) : l === L ? (ds.task === 'regression' ? 'linear' : ds.task === 'binary' ? 'σ' : 'softmax') : String(net.sizes[l]);
-      const metaRow = el('div', { class: 'lh-row' }, el('span', { class: 'lh-meta', text: meta, dataset: { full: meta, short } }));
-      if (l > 0 && l < L) {
-        const max = ds.kind === 'image' ? 48 : 32;
-        metaRow.append(
-          el('button', { class: 'mini-btn', type: 'button', 'aria-label': `Remove a neuron from hidden layer ${l}`, title: 'Remove a neuron', disabled: net.sizes[l] <= 1, onclick: () => changeNeurons(l, -1) }, '−'),
-          el('button', { class: 'mini-btn', type: 'button', 'aria-label': `Add a neuron to hidden layer ${l}`, title: 'Add a neuron', disabled: net.sizes[l] >= max, onclick: () => changeNeurons(l, 1) }, '+'));
+      const hidden = l > 0 && l < L;
+      const h = el('div', { class: 'lh' + (hidden ? ' lh-hidden' : '') }, el('div', { class: 'lh-title', text: App.layerName(l) }));
+      if (hidden) {
+        h.append(
+          el('div', { class: 'lh-row lh-size' },
+            el('button', { class: 'mini-btn', type: 'button', 'aria-label': `Remove a neuron from hidden layer ${l}`, title: 'Remove a neuron', disabled: net.sizes[l] <= 1, onclick: () => App.resizeLayer(l - 1, -1) }, '−'),
+            el('span', { class: 'lh-meta lh-count', text: String(net.sizes[l]), title: `${net.sizes[l]} neurons` }),
+            el('button', { class: 'mini-btn', type: 'button', 'aria-label': `Add a neuron to hidden layer ${l}`, title: 'Add a neuron', disabled: net.sizes[l] >= max, onclick: () => App.resizeLayer(l - 1, 1) }, '+')),
+          actChip(l));
+      } else {
+        const meta = l === 0 ? (ds.kind === 'image' ? `${ds.imgSize}×${ds.imgSize} px` : ds.kind === 'line' ? '1 input' : `${net.sizes[0]} feature${net.sizes[0] > 1 ? 's' : ''}`)
+          : ds.task === 'regression' ? 'linear' : ds.task === 'binary' ? 'sigmoid' : `softmax · ${net.sizes[L]}`;
+        const short = l === 0 ? (ds.kind === 'image' ? '14×14' : String(net.sizes[0])) : ds.task === 'regression' ? 'linear' : ds.task === 'binary' ? 'σ' : 'softmax';
+        h.append(el('div', { class: 'lh-row' }, el('span', { class: 'lh-meta', text: meta, dataset: { full: meta, short } })));
+        if (l === L) h.append(lossChip());
       }
-      const h = el('div', { class: 'lh' + (l > 0 && l < L ? ' lh-hidden' : '') }, el('div', { class: 'lh-title', text: App.layerName(l) }), metaRow);
       V.overlay.appendChild(h);
       V.headers.push(h);
     }
-    const depth = el('div', { class: 'depth-ctl' },
+    // an inviting "+" between the last hidden layer and the output
+    V.addBtn = el('button', { class: 'add-layer', type: 'button', title: 'Add a hidden layer here', 'aria-label': 'Add a hidden layer before the output', disabled: L - 1 >= 6, onclick: () => App.addLayer() }, '+');
+    V.overlay.appendChild(V.addBtn);
+    V.stage.appendChild(el('div', { class: 'depth-ctl' },
       el('span', { class: 'depth-label', text: 'Hidden layers' }),
-      el('button', { class: 'mini-btn', type: 'button', 'aria-label': 'Remove the last hidden layer', disabled: L - 1 <= 0, onclick: () => changeLayers(-1) }, '−'),
+      el('button', { class: 'mini-btn', type: 'button', 'aria-label': 'Remove the last hidden layer', disabled: L - 1 <= 0, onclick: () => App.removeLayer() }, '−'),
       el('span', { class: 'depth-n', text: String(L - 1) }),
-      el('button', { class: 'mini-btn', type: 'button', 'aria-label': 'Add a hidden layer', disabled: L - 1 >= 6, onclick: () => changeLayers(1) }, '+'));
-    V.overlay.appendChild(depth);
+      el('button', { class: 'mini-btn', type: 'button', 'aria-label': 'Add a hidden layer', disabled: L - 1 >= 6, onclick: () => App.addLayer() }, '+')));
     positionHeaders();
   }
   function positionHeaders() {
     if (!V.layout || !V.headers) return;
-    const cols = V.layout.cols, gap = cols.length > 1 ? cols[1].x - cols[0].x : 999;
+    // headers keep their size and stay along the top while zoomed, following their column sideways
+    const z = V.zoom, k = z ? z.k : 1, tx = z ? z.tx : 0, W = V.stage.clientWidth;
+    const cols = V.layout.cols, gap = (cols.length > 1 ? cols[1].x - cols[0].x : 999) * k;
     const compact = gap < 128, tiny = gap < 74;
     cols.forEach((c, i) => {
       const h = V.headers[i];
       if (!h) return;
-      h.style.left = c.x + 'px';
+      const x = c.x * k + tx;
+      h.style.left = x + 'px';
+      h.hidden = x < -30 || x > W + 30;
       h.classList.toggle('is-compact', compact);
-      const m = h.querySelector('.lh-meta'), t = h.querySelector('.lh-title');
+      h.classList.toggle('is-tiny', tiny);
+      const m = h.querySelector('.lh-meta[data-full]'), t = h.querySelector('.lh-title'), lt = h.querySelector('.lh-chip-text[data-full]');
+      if (lt) lt.textContent = tiny ? lt.dataset.tiny : lt.dataset.full;
       if (m) m.textContent = compact ? m.dataset.short : m.dataset.full;
       if (t) t.textContent = !tiny ? App.layerName(c.l) : c.l === 0 ? 'In' : c.l === App.net.L ? 'Out' : 'H' + c.l;
     });
-  }
-  function changeNeurons(l, d) {
-    const hidden = App.arch.hidden.slice();
-    hidden[l - 1] = clamp(hidden[l - 1] + d, 1, App.isImage() ? 48 : 32);
-    App.applyPatch({ hidden });
-  }
-  function changeLayers(d) {
-    const hidden = App.arch.hidden.slice();
-    if (d > 0 && hidden.length < 6) hidden.push(hidden.length ? hidden[hidden.length - 1] : 4);
-    else if (d < 0 && hidden.length) hidden.pop();
-    App.applyPatch({ hidden });
+    if (V.addBtn) {
+      const a = cols[cols.length - 2], b = cols[cols.length - 1];
+      V.addBtn.hidden = compact || !a || !b;
+      if (a && b) V.addBtn.style.left = ((a.x + b.x) / 2) * k + tx + 'px';
+    }
   }
 
   // ------------------------------------------------------------------ legend
@@ -697,7 +799,13 @@
       items.push(el('span', { class: 'lg-item' }, ramp(L.edges === 'gradient' ? 'ramp-grad' : 'ramp-div'), edgeText));
       const nodeText = { activation: 'neuron = activation a for the probe', preact: 'neuron = pre-activation z for the probe', gradient: 'neuron = RMS error signal δ, log scale' }[L.nodes];
       items.push(el('span', { class: 'lg-item' }, ramp(L.nodes === 'gradient' ? 'ramp-grad' : 'ramp-div'), nodeText + (L.maps ? ' (corner square)' : '')));
-      if (L.maps) items.push(el('span', { class: 'lg-item' }, ramp('ramp-map'), ds.kind === 'plane' ? 'thumbnail = the neuron’s output over the whole input plane, dot = probe' : ds.kind === 'line' ? 'thumbnail = the neuron’s output as x goes from −1 to 1' : 'thumbnail = hidden weights as a 14×14 image; outputs = average of their top test images'));
+      if (L.maps) items.push(el('span', { class: 'lg-item' }, ramp('ramp-map'), ds.kind === 'plane' ? 'thumbnail = the neuron’s output over the whole input plane, dot = probe' : ds.kind === 'line' ? 'thumbnail = the neuron’s output as x goes from −1 to 1' : 'thumbnail = hidden weights as a 14×14 image; outputs = average of their top validation images'));
+      let mixed = false;
+      for (let l = 1; l < App.net.L; l++) if (App.net.layerActId(l) === 'mixed') mixed = true;
+      if (App.net.L > 1 && (L.acts || mixed)) {
+        const a = App.net.actOf(1, 0);
+        items.push(el('span', { class: 'lg-item' }, el('span', { class: 'lg-act' }, NA.ui.actGlyph(a.id, 16, 10), a.short), L.acts ? 'label = the neuron’s activation function; zoom in to read its formula' : 'labelled neurons use their own activation function'));
+      }
     }
     items.push(el('span', { class: 'lg-item lg-signs' }, el('i', { class: 'sw sw-neg' }), 'negative', el('i', { class: 'sw sw-pos' }), 'positive'));
     NA.clear(V.legend).append(...items);
@@ -742,7 +850,8 @@
 
   function onMove(ev) {
     if (ev.pointerType === 'touch') return; // touch has no hover; a tap selects and the phone layout shows a peek card
-    const r = V.canvas.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
+    if (V.zoom.busy) { NA.tooltip.hide(); return; }
+    const r = V.canvas.getBoundingClientRect(), [px, py] = V.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top);
     const h = hit(px, py);
     const prevEdge = V.hoverEdge, prevPix = V.hoverPixel;
     V.hoverEdge = h && h.type === 'edge' ? h.e : null;
@@ -762,24 +871,37 @@
   }
   function onLeave() { App.setHover(null); V.hoverEdge = null; V.hoverPixel = null; V.dirty = true; NA.tooltip.hide(); }
   function onClick(ev) {
-    const r = V.canvas.getBoundingClientRect(), h = hit(ev.clientX - r.left, ev.clientY - r.top);
+    if (V.zoom.suppressClick) { V.zoom.suppressClick = false; return; } // the gesture was a pan or pinch
+    const r = V.canvas.getBoundingClientRect(), [px, py] = V.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top), h = hit(px, py);
     if (h && h.type === 'node') App.select({ l: h.nd.l, j: h.nd.j }, { fromGraph: true });
     else if (h && h.type === 'edge') App.select({ l: h.e.l + 1, j: h.e.j }, { fromGraph: true, weight: h.e.i });
   }
 
   function row(label, value) { return el('div', { class: 'tt-row' }, el('span', { class: 'tt-k', text: label }), el('span', { class: 'tt-v', text: value })); }
+  // "f(z) = …" and "a = f(<this z>) = …" for any neuron, including the output's squashing function.
+  function actLines(l, j, tr) {
+    const net = App.net, z = fmt(tr.z[l][j], 3), a = fmt(tr.a[l][j], 3);
+    if (l === net.L) {
+      if (net.out === 'softmax') return ['p = softmax(z): e^z divided by the sum over all outputs', `p = ${a}`];
+      if (net.out === 'identity') return ['ŷ = z (linear output)', `ŷ = ${a}`];
+    }
+    const act = net.actOf(l, j);
+    return [`${act.label}:  f(z) = ${act.formula}`, `${l === net.L ? 'p' : 'a'} = ${act.apply(z)} = ${a}`];
+  }
+  NA.actLines = actLines;
   function nodeTip(l, j) {
     const net = App.net, tr = App.walk && App.walk.active ? App.walk.trace : App.probeTrace();
     const kids = [el('div', { class: 'tt-title', text: App.neuronName(l, j) })];
     if (l === 0) kids.push(row('input value', fmt(tr.a[0][j], 3)));
     else {
-      kids.push(row('z (pre-activation)', fmt(tr.z[l][j], 3)));
-      kids.push(row(l === net.L ? (App.ds.task === 'regression' ? 'ŷ' : 'probability') : 'a = f(z)', fmt(tr.a[l][j], 3)));
+      kids.push(row('z = w·a + b', fmt(tr.z[l][j], 3)));
+      const [fx, ax] = actLines(l, j, tr);
+      kids.push(el('div', { class: 'tt-formula', text: fx }), el('div', { class: 'tt-formula tt-strong', text: ax }));
       kids.push(row('bias b', fmt(net.b[l - 1][j], 3)));
       if (tr.delta) kids.push(row('δ for this sample', fmt(tr.delta[l][j], 4)));
       if (l < net.L && !net.mask[l][j]) kids.push(el('div', { class: 'tt-note', text: 'Ablated: forced to output 0' }));
     }
-    kids.push(el('div', { class: 'tt-hint', text: 'Click to inspect' }));
+    kids.push(el('div', { class: 'tt-hint', text: l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect' }));
     return kids;
   }
   function edgeTip(e) {

@@ -173,9 +173,18 @@
     zmax = Math.min(zmax * 1.08, 12);
     if (zProbe !== null && isFinite(zProbe)) zmax = Math.max(zmax, Math.min(12, Math.abs(zProbe) * 1.1));
     const lo = -zmax, hi = zmax;
-    let flo, fhi;
-    if (act.family === 'squash') { flo = act.lo - 0.1; fhi = act.hi + 0.1; }
-    else { flo = Math.min(-0.5, act.f(lo) - 0.2); fhi = act.f(hi) * 1.05 + 0.1; }
+    // value range of f over the window (always showing 0), and the slope f′ scaled to 45% of it,
+    // sharing f's zero line, so curves with negative slopes (sine, Gaussian) fit as well
+    let fmin = 0, fmax = 0, dmin = 0, dmax = 0;
+    for (let i = 0; i <= 120; i++) {
+      const z = lo + ((hi - lo) * i) / 120, a = act.f(z), d = act.d(z, a);
+      fmin = Math.min(fmin, a); fmax = Math.max(fmax, a); dmin = Math.min(dmin, d); dmax = Math.max(dmax, d);
+    }
+    if (act.lo !== undefined) { fmin = Math.min(fmin, act.lo); fmax = Math.max(fmax, act.hi); }
+    if (fmax - fmin < 1e-6) fmax = fmin + 1;
+    const dk = (0.45 * (fmax - fmin)) / Math.max(1e-9, dmax, -dmin);
+    const pad = Math.max(0.1, 0.06 * (fmax - fmin));
+    const flo = Math.min(fmin, dmin * dk) - pad, fhi = Math.max(fmax, dmax * dk) + pad;
     const X = (z) => padL + ((z - lo) / (hi - lo)) * w, Y = (a) => padT + h - ((a - flo) / (fhi - flo)) * h;
     ctx.clearRect(0, 0, W, H);
     // distribution of z as soft columns behind the curve
@@ -195,7 +204,7 @@
     // slope f'(z), scaled into the same box
     ctx.strokeStyle = theme.c('muted', 0.8); ctx.lineWidth = 1.2;
     ctx.beginPath();
-    for (let i = 0; i <= 120; i++) { const z = lo + ((hi - lo) * i) / 120, a = act.f(z), d = act.d(z, a); const y = Y(flo + (d / (act.id === 'sigmoid' ? 0.25 : 1)) * (fhi - flo) * 0.45); i ? ctx.lineTo(X(z), y) : ctx.moveTo(X(z), y); }
+    for (let i = 0; i <= 120; i++) { const z = lo + ((hi - lo) * i) / 120, a = act.f(z), y = Y(act.d(z, a) * dk); i ? ctx.lineTo(X(z), y) : ctx.moveTo(X(z), y); }
     ctx.stroke();
     // f(z)
     ctx.strokeStyle = theme.c('ink'); ctx.lineWidth = 2; ctx.lineJoin = 'round';

@@ -85,17 +85,31 @@
   }
 
   function renderNeuron(P) {
-    const { l, j } = App.selected, net = App.net, tr = App.probeTrace();
-    const kind = l === 0 ? 'Input' : l === net.L ? 'Output' : `Hidden ${l} · ${net.act.label}`;
+    const { l, j } = App.selected, net = App.net, tr = App.probeTrace(), L = net.L;
+    const kind = l === 0 ? 'Input' : l === L ? 'Output' : `Hidden ${l}`;
     const stat = (k, v) => el('span', null, el('b', { text: k }), v);
-    const stats = l === 0
-      ? [stat('value', fmt(tr.a[0][j], 3))]
-      : [stat('z', fmt(tr.z[l][j], 3)), stat(l === net.L && App.ds.task !== 'regression' ? 'p' : 'a', fmt(tr.a[l][j], 3)), stat('bias', fmt(net.b[l - 1][j], 2))];
-    const ablatable = l > 0 && l < net.L;
+    // the neuron's function (or, for the output, the loss) is one tap away; its formula is spelled out
+    let chip = null;
+    if (l > 0 && l < L) {
+      const act = net.actOf(l, j);
+      chip = el('button', { class: 'lh-chip mp-chip', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Activation: ${act.label}. Change for this neuron` },
+        NA.ui.actGlyph(act.id, 18, 12), el('span', { class: 'lh-chip-text', text: act.label }), el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+      chip.addEventListener('click', () => NA.openNeuronMenu(l, j, chip));
+    } else if (l === L) {
+      const Ls = NA.engine.LOSSES[net.lossId];
+      chip = el('button', { class: 'lh-chip mp-chip', type: 'button', 'aria-haspopup': 'listbox', 'aria-label': `Loss function: ${Ls.label}. Change` },
+        el('span', { class: 'lh-chip-text', text: 'Loss: ' + Ls.short }), el('span', { class: 'lh-chip-caret', 'aria-hidden': 'true', text: '▾' }));
+      chip.addEventListener('click', () => NA.openLossMenu(chip));
+    }
+    const fx = l > 0 ? NA.actLines(l, j, tr) : null;
+    const stats = l === 0 ? [stat('value', fmt(tr.a[0][j], 3))] : [stat('z', fmt(tr.z[l][j], 3)), stat('bias', fmt(net.b[l - 1][j], 2))];
+    if (l === L && tr.delta) stats.push(stat('loss', fmt(tr.loss, 3)));
+    const ablatable = l > 0 && l < L;
     NA.clear(P).append(
       el('div', { class: 'mp-head' },
-        el('div', null, el('div', { class: 'eyebrow', text: kind }), el('div', { class: 'mp-title', text: l === 0 ? App.neuronName(0, j) : App.neuronName(l, j) })),
-        closeBtn(() => { M.peek = null; renderPeek(); })),
+        el('div', null, el('div', { class: 'eyebrow', text: kind }), el('div', { class: 'mp-title', text: l > 0 && l < L ? `Neuron ${j + 1}` : App.neuronName(l, j) })),
+        el('div', { class: 'mp-tools' }, chip, closeBtn(() => { M.peek = null; renderPeek(); }))),
+      fx ? el('div', { class: 'mp-fx' }, el('div', { text: fx[0] }), el('div', { class: 'fx-strong', text: fx[1] + (ablatable && !net.mask[l][j] ? '  (ablated → 0)' : '') })) : null,
       el('div', { class: 'mp-stats' }, ...stats),
       el('div', { class: 'btn-row' },
         el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { M.go('insp'); App.emit('tab', 'neuron'); } }, 'Inspect neuron'),
