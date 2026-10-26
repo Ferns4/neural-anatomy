@@ -16,6 +16,7 @@
     { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "screenshots": [
-    { "src": "og-image.jpg", "sizes": "1200x630", "type": "image/jpeg", "form_factor": "wide", "label": "The Deep Spiral model with neuron maps and its decision boundary" }
+    { "src": "og-image.jpg", "sizes": "1200x630", "type": "image/jpeg", "form_factor": "wide", "label": "The Deep Spiral model with neuron maps and its decision boundary" },
+    { "src": "screenshot-phone.jpg", "sizes": "469x1015", "type": "image/jpeg", "form_factor": "narrow", "label": "The phone layout showing the network diagram" }
   ]
 }
