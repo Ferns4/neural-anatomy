@@ -164,7 +164,7 @@
     $('#roEpoch').textContent = fmt(App.epoch(step), 1);
     $('#roTrain').textContent = fmt(m.trainLoss, 3);
     $('#roTest').textContent = fmt(m.testLoss, 3);
-    $('#roAccLabel').textContent = cls ? 'Test accuracy' : 'Test R²';
+    $('#roAccLabel').textContent = document.body.dataset.layout === 'mobile' ? (cls ? 'Test acc.' : 'Test R²') : (cls ? 'Test accuracy' : 'Test R²');
     $('#roAcc').textContent = cls ? fmtPct(m.testAcc, 1) : fmt(m.testAcc, 3);
     const state = $('#roState');
     if (App.diverged) { state.textContent = 'Diverged'; state.className = 'state-pill pill-critical'; }
@@ -317,6 +317,7 @@
     NA.dataView.init();
     NA.inspector.init();
     CH.init();
+    if (NA.mobile) NA.mobile.init();
     const refreshTheme = () => { theme.read(); App.emit('weights'); CH.tlDirty = true; CH.roDirty = true; };
     if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshTheme);
     new MutationObserver(refreshTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });

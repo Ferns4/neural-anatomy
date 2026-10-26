@@ -48,7 +48,7 @@
   };
 
   IN.frame = function (now) {
-    if (!IN.dirty || !App.net) return;
+    if (!IN.dirty || !App.net || !IN.body.offsetParent) return; // a hidden screen renders when shown
     if (App.training && now - IN.lastRender < 380) return;
     IN.lastRender = now; IN.dirty = false;
     const T = TABS[IN.tab];

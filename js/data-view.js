@@ -78,6 +78,7 @@
   };
 
   DV.frame = function (now) {
+    if (!DV.root.offsetParent) return; // skip while its screen is hidden
     if (DV.view === 'hidden') { NA.hiddenSpace.frame(now); return; }
     if (!DV.dirty || !DV.ctx) return;
     if (App.training && now - DV.lastDraw < 50) return;

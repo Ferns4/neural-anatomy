@@ -44,6 +44,19 @@
     return { type: 'update', layer: null };
   }
 
+  function phaseTitle(ph) {
+    const info = phaseInfo(ph);
+    if (info.type === 'input') return 'The input';
+    if (info.type === 'forward') return `Forward through ${App.layerName(info.layer)}`;
+    if (info.type === 'loss') return 'Prediction and loss';
+    if (info.type === 'outdelta') return 'Error signal at the output';
+    if (info.type === 'backprop') return `Backpropagate into ${App.layerName(info.layer)}`;
+    return 'Update the weights';
+  }
+  // used by the phone layout's walkthrough bar
+  WK.summary = () => ({ phase: WK.phase, total: WK.nPhases, title: phaseTitle(WK.phase) });
+  WK.step = (d) => go(WK.phase + d);
+
   function publish() {
     const L = App.net.L, info = phaseInfo(WK.phase), tr = WK.trace;
     const fwdUpTo = info.type === 'input' ? 0 : info.type === 'forward' ? info.layer : L;

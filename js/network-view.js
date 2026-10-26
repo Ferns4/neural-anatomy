@@ -41,7 +41,7 @@
   };
 
   V.frame = function (now) {
-    if (!App.net || !V.ctx) return;
+    if (!App.net || !V.ctx || !V.stage.offsetParent) return; // skip while its screen is hidden
     const animating = (App.lenses.flow && !NA.prefersReducedMotion()) || (App.highlight && now < App.highlight.until);
     if (!V.dirty && !animating) return;
     if (App.training && now - V.lastDraw < (App.isImage() ? 60 : 32)) return;
@@ -54,10 +54,11 @@
     const img = ds.kind === 'image';
     const narrow = W < 520;
     const imgSideGuess = img ? clamp(Math.min((H - 70) * 0.62, W * 0.2), 84, 176) : 0;
-    const leftPad = img ? 14 + imgSideGuess / 2 : narrow ? 40 : 58, rightPad = ds.task === 'regression' ? 84 : narrow ? 104 : 124;
+    const leftPad = img ? 14 + imgSideGuess / 2 : narrow ? 40 : 58;
+    const rightPad = narrow ? (ds.task === 'multiclass' && !img ? 66 : 58) : ds.task === 'regression' ? 84 : 124;
     const x0 = leftPad, x1 = W - rightPad, nCols = L + 1;
     const compact = nCols > 1 && (x1 - x0) / (nCols - 1) < 128;
-    const top = compact ? 66 : 50, bottom = 20;
+    const top = compact ? (narrow ? 78 : 66) : 50, bottom = 20;
     const avail = Math.max(60, H - top - bottom);
     const imgSide = imgSideGuess;
     const xs = [];
@@ -576,11 +577,19 @@
     }
     // output labels
     const cL = lay.cols[L];
+    const narrow = V.W < 520;
     for (const nd of cL.nodes) {
-      const lx = nd.x + nd.s / 2 + 10;
+      const lx = nd.x + nd.s / 2 + (narrow ? 6 : 10);
       const outW = Math.max(40, Math.min(84, V.W - lx - 8));
       const a = tr.a[L][nd.j];
       ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      if (narrow) {
+        if (st.walk && st.walk.nodeMode(L) === 'pending') continue;
+        const txt = ds.task === 'regression' ? fmt(a, 2) : ds.task === 'binary' ? NA.fmtPct(a) : `${App.isImage() ? nd.j : 'C' + nd.j} ${NA.fmtPct(a)}`;
+        ctx.font = `600 10.5px ${mono}`; ctx.fillStyle = theme.c('ink');
+        ctx.fillText(txt, lx, nd.y);
+        continue;
+      }
       if (ds.task === 'regression') {
         ctx.font = `600 12px ${mono}`; ctx.fillStyle = theme.c('ink');
         ctx.fillText('ŷ ' + fmt(a, 3), lx, nd.y);
@@ -732,6 +741,7 @@
   }
 
   function onMove(ev) {
+    if (ev.pointerType === 'touch') return; // touch has no hover; a tap selects and the phone layout shows a peek card
     const r = V.canvas.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top;
     const h = hit(px, py);
     const prevEdge = V.hoverEdge, prevPix = V.hoverPixel;

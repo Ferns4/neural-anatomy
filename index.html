@@ -6,6 +6,12 @@
 <meta name="theme-color" content="#e8ebef" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#08090c" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NN Anatomy">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="canonical" href="https://ferns4.github.io/neural-anatomy/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Neural Anatomy">
@@ -415,6 +421,74 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
   .tl-wrap { flex-basis: 100%; order: 3; }
   .lg-signs { margin-left: 0; }
 }
+/* ---------------------------------------------------------------- phone layout
+   mobile.js puts data-layout="mobile" on <body> for phones: one screen at a time, chosen from a
+   bottom tab bar, with the training settings in a bottom sheet. */
+.mnav, .sheet-bar, #btnSettings, .mpeek { display: none; }
+body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
+[data-layout="mobile"] .app { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 8px; padding-block: 0 70px; }
+[data-layout="mobile"] .topbar { flex: none; flex-wrap: nowrap; gap: 8px; padding-block: 8px 0; }
+[data-layout="mobile"] .wordmark, [data-layout="mobile"] .mp-eyebrow, [data-layout="mobile"] .mp-arch, [data-layout="mobile"] .topbar-sub { display: none; }
+[data-layout="mobile"] .model-picker { order: 0; flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 12px 0 14px; justify-content: space-between; }
+[data-layout="mobile"] .mp-name { overflow: hidden; text-overflow: ellipsis; }
+[data-layout="mobile"] .topbar-actions { margin-left: 0; }
+[data-layout="mobile"] .icon-btn { width: 40px; height: 40px; border-radius: 10px; }
+[data-layout="mobile"] .controlbar { flex: none; flex-wrap: nowrap; gap: 8px; padding: 6px 8px; }
+[data-layout="mobile"] .transport { gap: 4px; }
+[data-layout="mobile"] .play-btn { min-width: 0; width: 48px; height: 40px; padding: 0; }
+[data-layout="mobile"] .pl-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+[data-layout="mobile"] .ff-progress { left: 46px; right: 46px; }
+[data-layout="mobile"] #btnFF { display: none; }
+[data-layout="mobile"] .readouts { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; justify-content: flex-end; gap: 12px; }
+[data-layout="mobile"] .readouts > :not(.ro-keep) { display: none; }
+[data-layout="mobile"] .readout { min-width: 0; }
+[data-layout="mobile"] .ro-value { font-size: 13px; }
+[data-layout="mobile"] #btnSettings { display: inline-grid; flex: none; }
+[data-layout="mobile"] .hyper { display: none; }
+[data-layout="mobile"][data-sheet="settings"] .hyper { display: grid; position: fixed; z-index: 47; left: 0; right: 0; bottom: 0; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; margin: 0; max-height: 82%; overflow: auto; padding: 14px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); background: var(--panel); border-top: 1px solid var(--line-2); border-radius: 18px 18px 0 0; box-shadow: var(--shadow); }
+[data-layout="mobile"] .sheet-bar { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; padding-bottom: 4px; }
+.sheet-bar-title { font: 400 25px/1.1 var(--font-display); }
+[data-layout="mobile"] .hyper .field { min-width: 0; }
+[data-layout="mobile"] .hyper .field select, [data-layout="mobile"] .hyper .field input { width: 100%; height: 42px; }
+[data-layout="mobile"] .seed-row input { flex: 1 1 auto; width: auto; }
+[data-layout="mobile"] .seed-row .icon-btn { width: 42px; height: 42px; flex: none; }
+[data-layout="mobile"] select, [data-layout="mobile"] input[type="number"] { font-size: 16px; }
+.mscrim { position: fixed; inset: 0; z-index: 46; background: var(--scrim); }
+[data-layout="mobile"] .panel-data, [data-layout="mobile"] .panel-net, [data-layout="mobile"] .panel-insp, [data-layout="mobile"] .timeline { display: none; }
+[data-layout="mobile"] .panel { flex: 1 1 auto; height: auto; min-height: 0; overflow: hidden; }
+[data-layout="mobile"][data-screen="network"] .panel-net, [data-layout="mobile"][data-screen="data"] .panel-data, [data-layout="mobile"][data-screen="insp"] .panel-insp { display: flex; }
+[data-layout="mobile"][data-screen="network"] .timeline { display: flex; }
+[data-layout="mobile"] .panel-data .panel-scroll, [data-layout="mobile"] .panel-insp .insp-body { overflow: auto; overscroll-behavior: contain; }
+[data-layout="mobile"] .lensbar { flex-wrap: nowrap; overflow-x: auto; gap: 14px; padding: 8px 10px; scrollbar-width: none; }
+[data-layout="mobile"] .lensbar::-webkit-scrollbar, [data-layout="mobile"] .net-legend::-webkit-scrollbar { display: none; }
+[data-layout="mobile"] .lens-group, [data-layout="mobile"] .lensbar .chip-row, [data-layout="mobile"] .lensbar .seg { flex: none; flex-wrap: nowrap; }
+[data-layout="mobile"] .seg button { padding: 7px 11px; font-size: 13px; }
+[data-layout="mobile"] .chip { padding: 7px 12px 7px 10px; font-size: 13px; }
+[data-layout="mobile"] .tab { padding: 11px 10px 10px; font-size: 13.5px; }
+[data-layout="mobile"] .net-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding: 6px 10px; }
+[data-layout="mobile"] .lg-signs { margin-left: 0; }
+[data-layout="mobile"] .lh-row .mini-btn { width: 24px; height: 24px; font-size: 15px; }
+[data-layout="mobile"] .timeline { flex: none; flex-wrap: nowrap; padding: 6px 8px; gap: 8px; }
+[data-layout="mobile"] .tl-head { display: none; }
+[data-layout="mobile"] .tl-wrap { flex: 1 1 auto; flex-basis: auto; order: 0; }
+[data-layout="mobile"] button { touch-action: manipulation; }
+[data-layout="mobile"] .mnav { display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); background: var(--panel); border-top: 1px solid var(--line); }
+.mnav button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: transparent; color: var(--muted); font: 600 11.5px var(--font-ui); }
+.mnav button[aria-current="page"] { color: var(--ink); }
+.mnav button[aria-current="page"]::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 2.5px; border-radius: 0 0 3px 3px; background: var(--ink); }
+[data-layout="mobile"] .mpeek { display: flex; flex-direction: column; gap: 8px; position: absolute; z-index: 6; left: 8px; right: 8px; bottom: 8px; padding: 10px 12px 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); }
+.mp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.mp-title { font: 400 22px/1.1 var(--font-display); }
+.mp-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 500 12.5px var(--font-mono); color: var(--ink); }
+.mp-stats b { color: var(--muted); font-weight: 500; margin-right: 4px; }
+[data-layout="mobile"] .mp-close { width: 34px; height: 34px; flex: none; font-size: 18px; }
+@media (max-height: 680px) {
+  [data-layout="mobile"][data-screen="network"] .timeline { display: none; }
+}
+@media (max-height: 560px) {
+  [data-layout="mobile"] .net-legend { display: none; }
+  [data-layout="mobile"] .topbar { padding-block: 4px 0; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
@@ -443,6 +517,9 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
     </button>
     <span class="topbar-sub">Pick a model, then turn on lenses to see what each neuron computes and how it learns.</span>
     <div class="topbar-actions">
+      <button class="icon-btn" id="installBtn" type="button" aria-label="Install the app" title="Install the app" hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2M5 6.9 8 9.9l3-3M3 11.2v1.3c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch to dark theme" hidden></button>
       <button class="icon-btn" id="helpBtn" type="button" aria-label="How to read this and keyboard shortcuts" aria-haspopup="dialog" aria-controls="help">?</button>
     </div>
@@ -468,13 +545,17 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
     </div>
     <div class="readouts" aria-live="off">
       <span class="state-pill" id="roState">Untrained</span>
-      <div class="readout"><span class="ro-label">Step</span><span class="ro-value" id="roStep">0</span></div>
+      <div class="readout ro-keep"><span class="ro-label">Step</span><span class="ro-value" id="roStep">0</span></div>
       <div class="readout"><span class="ro-label">Epoch</span><span class="ro-value" id="roEpoch">0</span></div>
       <div class="readout"><span class="ro-label">Train loss</span><span class="ro-value" id="roTrain">—</span></div>
       <div class="readout"><span class="ro-label">Test loss</span><span class="ro-value" id="roTest">—</span></div>
-      <div class="readout"><span class="ro-label" id="roAccLabel">Test accuracy</span><span class="ro-value" id="roAcc">—</span></div>
+      <div class="readout ro-keep"><span class="ro-label" id="roAccLabel">Test accuracy</span><span class="ro-value" id="roAcc">—</span></div>
     </div>
-    <div class="hyper">
+    <button class="icon-btn" id="btnSettings" type="button" aria-label="Training settings" title="Training settings" aria-haspopup="dialog">
+      <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="4.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="6" cy="11.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+    </button>
+    <div class="hyper" id="hyperSheet">
+      <div class="sheet-bar"><span class="sheet-bar-title">Training settings</span><button class="btn btn-primary" id="btnSheetDone" type="button">Done</button></div>
       <label class="field"><span>Learning rate</span><select id="hpLr"></select></label>
       <label class="field"><span>Optimizer</span><select id="hpOpt"><option value="sgd">SGD</option><option value="momentum">Momentum</option><option value="adam">Adam</option></select></label>
       <label class="field"><span>Batch</span><select id="hpBatch"></select></label>
@@ -532,6 +613,7 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
     <div class="net-stage" id="netStage">
       <canvas id="netCanvas" aria-label="Network diagram. Hover a neuron or connection for details; click a neuron to inspect it."></canvas>
       <div class="net-overlay" id="netOverlay"></div>
+      <div class="mpeek" id="mpeek" aria-live="polite" hidden></div>
     </div>
     <div class="net-legend" id="netLegend"></div>
   </section>
@@ -555,7 +637,23 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
       <button class="btn" id="btnLive" type="button" hidden>Back to latest</button>
     </div>
   </footer>
+
+  <nav class="mnav" id="mnav" aria-label="Screens">
+    <button type="button" data-screen="network" aria-current="page">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 7l6-3M5 7l6 7M5 15l6-1M5 15l6 4M11 4l6 7M11 14l6-3M11 19l6-8" opacity=".55"/><circle cx="5" cy="7" r="2"/><circle cx="5" cy="15" r="2"/><circle cx="11" cy="4" r="2"/><circle cx="11" cy="14" r="2"/><circle cx="11" cy="19" r="1.6"/><circle cx="17" cy="11" r="2.2"/></g></svg>
+      <span>Network</span>
+    </button>
+    <button type="button" data-screen="data" aria-current="false">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="3" y="3" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 17C9 13 9 6 18 5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="14" cy="14" r="1.3" fill="currentColor"/><circle cx="15.5" cy="10" r="1.3" fill="currentColor"/></svg>
+      <span class="mnav-data">Output</span>
+    </button>
+    <button type="button" data-screen="insp" aria-current="false">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="9.5" cy="9.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.6 13.6 18 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M7 10.5l1.6-2 1.6 1.4 1.8-2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Inspect</span>
+    </button>
+  </nav>
 </div>
+<div class="mscrim" id="mscrim" hidden></div>
 
 <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
 
@@ -589,6 +687,10 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
         <p>One input is always being traced through the network. Hover over the Output map to move it, click to pin it, or click a data point to use that example. The Neuron tab shows its arithmetic.</p>
         <h3>Maps</h3>
         <p>With Maps on, each neuron shows what it outputs for every possible input, so you can watch simple shapes in the first layer combine into complex ones deeper in.</p>
+        <div id="helpInstall" hidden>
+          <h3>Install as an app</h3>
+          <p>On an iPhone or iPad, open this site in Safari, tap Share, then Add to Home Screen. On Android, open the browser menu and tap Install app. On a computer, use the install button in the address bar. The app opens full-screen and keeps working offline.</p>
+        </div>
       </div>
       <div>
         <h3>Keyboard</h3>
@@ -618,6 +720,8 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
 <script src="js/insights.js"></script>
 <script src="js/inspector.js"></script>
 <script src="js/walkthrough.js"></script>
+<script src="js/mobile.js"></script>
 <script src="js/chrome.js"></script>
+<script src="pwa.js"></script>
 </body>
 </html>
