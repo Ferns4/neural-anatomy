@@ -28,6 +28,10 @@
     if (App.viewing !== null) add('info', `Viewing step ${NA.fmtInt(step)} from history`, 'Everything on screen shows the network as it was at this step. Training again continues from here and discards the later history.', [{ label: 'Back to latest', run: () => App.backToLive() }]);
     const nAbl = App.ablatedCount();
     if (nAbl) add('info', `${plural(nAbl, 'neuron')} ablated`, 'Ablated neurons are forced to output 0. Compare accuracy with and without them to see what they contributed.', [{ label: 'Restore all', run: () => App.restoreAll() }]);
+    if (h.dropout > 0 && L > 1) {
+      const p = fmtPct(h.dropout, 0);
+      add('info', `Dropout ${p}`, `Every training step switches off a random ${p} of the hidden neurons for each example and scales the rest up by 1/(1 − ${h.dropout}) = ${fmt(1 / (1 - h.dropout), 2)}, so no neuron can count on any other being there. Pause, or train at Slow speed, to see the last example’s dropped neurons dashed on the diagram. Losses and accuracy are measured with every neuron on, as when the model is used.`, [{ label: 'Turn dropout off', patch: { dropout: 0 } }]);
+    }
     // activation choices across the hidden neurons
     const hiddenLayers = NA.range(L - 1).map((i) => i + 1);
     const linearLayers = hiddenLayers.filter((l) => net.layerActId(l) === 'linear');

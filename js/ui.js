@@ -278,5 +278,25 @@
     return c;
   }
 
+  /* Screen readers. A canvas has no text, so a picture registers a function that describes what it shows now
+     (a11y.describe(canvas, () => 'text')); descriptions of the pictures on screen are refreshed every 2 s.
+     a11y.announce(message) speaks a short message, such as a training run finishing. */
+  const a11y = { items: new Map(), live: null };
+  a11y.describe = (canvas, fn) => { a11y.items.set(canvas, fn); canvas.setAttribute('role', 'img'); };
+  a11y.refresh = () => {
+    for (const [c, fn] of a11y.items) {
+      if (!c.isConnected) { a11y.items.delete(c); continue; }
+      if (!c.offsetParent) continue;
+      try { const t = fn(); if (t && c.getAttribute('aria-label') !== t) c.setAttribute('aria-label', t); } catch (e) { /* a picture mid-update */ }
+    }
+  };
+  a11y.announce = (msg) => {
+    if (!a11y.live) { a11y.live = el('div', { class: 'sr-only', 'aria-live': 'polite', role: 'status' }); document.body.append(a11y.live); }
+    a11y.live.textContent = '';
+    setTimeout(() => { a11y.live.textContent = msg; }, 60);
+  };
+  if (typeof setInterval !== 'undefined') setInterval(a11y.refresh, 2000);
+  NA.a11y = a11y;
+
   NA.ui = { actGlyph, drawActGlyph, menu, activationItems, toast, Zoom, digitCanvas };
 })(window.NA);

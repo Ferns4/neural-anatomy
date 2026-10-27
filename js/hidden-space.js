@@ -25,6 +25,7 @@
     HS.canvas = el('canvas', { class: 'hs-canvas', 'aria-label': 'Data points as represented inside the selected layer' });
     HS.info = el('p', { class: 'hs-info', 'aria-live': 'polite' });
     HS.legend = el('div', { class: 'mini-legend' });
+    if (NA.a11y) NA.a11y.describe(HS.canvas, () => `Hidden space: the data points as ${HS.stage === 0 ? 'the input layer' : App.layerName(HS.stage)} represents them. ${HS.info.textContent}`);
     const host = el('div', { class: 'zoom-host' }, HS.canvas);
     HS.zoom = new NA.ui.Zoom(HS.canvas, { host, panOne: true, max: 6, onChange: () => { HS.dirty = true; NA.tooltip.hide(); } });
     root.append(el('div', { class: 'hs-top' }, HS.chips, HS.playBtn), el('div', { class: 'canvas-wrap' }, host), HS.info, HS.legend);

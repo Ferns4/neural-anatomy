@@ -177,8 +177,54 @@
       el('h3', { class: 'sec-title', text: 'What to look for' }),
       el('ul', { class: 'look-list' }, ...p.look.map((t) => el('li', { text: t }))),
       el('h3', { class: 'sec-title', text: 'Experiments' }),
-      el('ol', { class: 'try-list' }, ...p.try.map((t) => el('li', null, el('p', { text: t.text }), el('button', { class: 'btn btn-try', type: 'button', onclick: () => onTry(t) }, t.label + ' →')))));
+      UI.tryList(p.try, onTry));
   };
+  /* A model's experiments: what to try and a button that does it. tries: preset entries { text, label, ... };
+     onTry(t) runs one. Shared by the labs' cards and the main app's inspector. */
+  UI.tryList = function (tries, onTry) {
+    return el('ol', { class: 'try-list' }, ...tries.map((t) => el('li', null, el('p', { text: t.text }), t.predict ? predictBox(t, onTry) : null,
+      el('button', { class: 'btn btn-try', type: 'button', onclick: () => onTry(t) }, (t.predict ? 'Just run it: ' : '') + t.label + ' →'))));
+  };
+  /* Predict, then see: an experiment with predict: { q, options, answer, why } asks first, runs the experiment
+     on the pick and then reveals the answer. onTry(t) may return a promise of a line with the measured result,
+     shown with it. The state lives here rather than in the page, because panels are rebuilt while the
+     experiment trains; every box drawn for an experiment shows its latest state. */
+  const PREDICT = new Map(), BOXES = new Map();
+  function predictBox(t, onTry) {
+    const box = el('div', { class: 'predict', role: 'group', 'aria-label': 'Predict first: ' + t.predict.q });
+    if (!BOXES.has(t)) BOXES.set(t, new Set());
+    BOXES.get(t).add(box);
+    box._draw = () => drawPredict(box, t, onTry);
+    box._draw();
+    return box;
+  }
+  function drawPredict(box, t, onTry) {
+    const P = t.predict, st = PREDICT.get(t);
+    const choose = (i) => {
+      const s = { pick: i, done: false, measured: '' };
+      PREDICT.set(t, s);
+      redraw(t);
+      Promise.resolve(onTry(t)).then((m) => { s.measured = typeof m === 'string' ? m : ''; }, () => {}).then(() => {
+        s.done = true;
+        redraw(t);
+        if (NA.a11y) NA.a11y.announce((i === P.answer ? 'Right. ' : 'Not quite. ') + P.why + (s.measured ? ' ' + s.measured : ''));
+      });
+    };
+    const opts = P.options.map((o, i) => {
+      const b = el('button', { class: 'predict-opt', type: 'button', 'aria-pressed': String(!!st && st.pick === i), disabled: !!st, onclick: () => choose(i) }, o);
+      if (st && st.done && i === P.answer) b.classList.add('is-answer');
+      else if (st && st.done && i === st.pick) b.classList.add('is-wrong');
+      return b;
+    });
+    const out = !st ? null : !st.done ? el('p', { class: 'predict-result' }, 'Running the experiment: the answer appears when it finishes.')
+      : el('p', { class: 'predict-result' }, el('strong', { text: st.pick === P.answer ? 'Right. ' : 'Not quite. ' }), P.why, st.measured ? el('span', { class: 'predict-measured', text: ' ' + st.measured }) : null, ' ',
+        el('button', { class: 'link-btn', type: 'button', onclick: () => { PREDICT.delete(t); redraw(t); } }, 'Ask again'));
+    NA.clear(box).append(...[el('p', { class: 'predict-q' }, el('span', { class: 'predict-tag', text: 'Predict first' }), P.q), el('div', { class: 'predict-opts' }, ...opts), out].filter(Boolean));
+  }
+  function redraw(t) {
+    const set = BOXES.get(t);
+    if (set) for (const b of [...set]) { if (b.isConnected) b._draw(); else set.delete(b); }
+  }
 
   // A panel header with a title and optional tools, and a scrolling body.
   UI.panel = function (root, title, tools) {

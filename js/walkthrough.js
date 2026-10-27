@@ -171,6 +171,8 @@
         if (off) P(off === 1 ? `1 of ${n} neurons is a ReLU with z ≤ 0 for this example, so it outputs exactly 0 and will pass no gradient back either.` : `${off} of ${n} neurons are ReLUs with z ≤ 0 for this example, so they output exactly 0 and will pass no gradient back either.`);
         const sat = NA.range(n).filter((q) => fns[q].sat && fns[q].sat(tr.a[l][q])).length;
         if (sat) P(sat === 1 ? `1 of ${n} neurons sits on a flat tail of its activation here: its slope is nearly 0, so little error will flow back through it.` : `${sat} of ${n} neurons sit on a flat tail of their activation here: their slope is nearly 0, so little error will flow back through them.`);
+        const p = App.hyper.dropout;
+        if (p > 0) P(`Dropout is on (${fmtPct(p, 0)}). In a real training step each of these neurons would be switched off for this example with probability ${p}, and the ones kept scaled up by 1/(1 − p) = ${fmt(1 / (1 - p), 2)}. This walkthrough keeps every neuron on, as when the model is used, so each number can be checked by hand.`);
       }
     } else if (info.type === 'loss') {
       WK.titleEl.textContent = 'Prediction and loss';

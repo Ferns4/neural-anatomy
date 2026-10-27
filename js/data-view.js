@@ -42,29 +42,39 @@
     NA.$$('[data-view]', DV.tabs).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === v)));
     DV.outEl.hidden = v !== 'output';
     DV.hsEl.hidden = v !== 'hidden';
+    DV.lsEl.hidden = v !== 'landscape';
     DV.layout();
     DV.dirty = true;
     if (v === 'hidden') NA.hiddenSpace.enter();
+    if (v === 'landscape') NA.landscape.enter();
   };
 
   // ------------------------------------------------------------------ construction per model
+  // what the output picture shows, for screen readers
+  function describeOutput() {
+    const m = App.metrics(), ds = App.ds;
+    if (!m) return '';
+    const score = App.isRegression() ? `validation R² ${fmt(m.valAcc, 3)}` : `validation accuracy ${fmtPct(m.valAcc, 1)}`;
+    if (ds.kind === 'plane') return `The network’s output over the input plane, with ${NA.fmtInt(ds.n)} data points in ${ds.classes || 2} classes; ${score} at step ${NA.fmtInt(App.displayStep())}.`;
+    if (ds.kind === 'line') return `The network’s output plotted against x, over the ${NA.fmtInt(ds.n)} data points; ${score} at step ${NA.fmtInt(App.displayStep())}.`;
+    return `A pad to draw a digit on, and the network’s reading of it; ${score} on validation digits.`;
+  }
   DV.build = function () {
     const ds = App.ds;
     NA.clear(DV.body);
     const outTab = DV.tabs.querySelector('[data-view="output"]'), hsTab = DV.tabs.querySelector('[data-view="hidden"]');
     outTab.textContent = ds.kind === 'image' ? 'Draw' : 'Output';
-    hsTab.hidden = ds.kind === 'line';
-    DV.tabs.hidden = ds.kind === 'line';
-    let title = DV.tabs.parentElement.querySelector('.panel-title');
-    if (!title) { title = el('span', { class: 'panel-title', text: 'Network output vs. x' }); DV.tabs.parentElement.appendChild(title); }
-    title.hidden = ds.kind !== 'line';
+    hsTab.hidden = ds.kind === 'line'; // a curve has no hidden space to show: its output view plots the function instead
     DV.outEl = el('div', { class: 'dv-out' });
     DV.hsEl = el('div', { class: 'dv-hs', hidden: true });
-    DV.body.append(DV.outEl, DV.hsEl);
+    DV.lsEl = el('div', { class: 'dv-hs dv-ls', hidden: true });
+    DV.body.append(DV.outEl, DV.hsEl, DV.lsEl);
     if (ds.kind === 'plane') buildPlane();
     else if (ds.kind === 'line') buildLine();
     else buildImage();
     NA.hiddenSpace.build(DV.hsEl);
+    NA.landscape.build(DV.lsEl);
+    if (NA.a11y && DV.canvas) NA.a11y.describe(DV.canvas, describeOutput);
     buildDataControls();
     DV.setView(DV.view);
   };
@@ -75,7 +85,7 @@
   }
 
   DV.layout = function () {
-    if (!DV.canvas || !DV.outEl || DV.outEl.hidden) { if (NA.hiddenSpace && DV.view === 'hidden') NA.hiddenSpace.layout(); return; }
+    if (!DV.canvas || !DV.outEl || DV.outEl.hidden) { if (NA.hiddenSpace && DV.view === 'hidden') NA.hiddenSpace.layout(); if (DV.view === 'landscape') NA.landscape.layout(); return; }
     const w = Math.max(160, DV.outEl.clientWidth || DV.body.clientWidth);
     if (App.isPlane()) { DV.size = Math.min(w, 520); DV.ctx = NA.fitCanvas(DV.canvas, DV.size, DV.size); }
     else if (App.isLine()) { DV.cw = w; DV.ch = Math.round(clamp(w * 0.82, 220, 360)); DV.ctx = NA.fitCanvas(DV.canvas, DV.cw, DV.ch); }
@@ -86,6 +96,7 @@
   DV.frame = function (now) {
     if (!DV.root.offsetParent) return; // skip while its screen is hidden
     if (DV.view === 'hidden') { NA.hiddenSpace.frame(now); return; }
+    if (DV.view === 'landscape') { NA.landscape.frame(now); return; }
     if (!DV.dirty || !DV.ctx) return;
     if (App.training && now - DV.lastDraw < 50) return;
     DV.lastDraw = now; DV.dirty = false;

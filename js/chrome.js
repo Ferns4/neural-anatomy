@@ -29,7 +29,9 @@
     lr: [0.0003, 0.001, 0.003, 0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 0.1, 0.3, 1, 3],
     batch: [1, 4, 8, 10, 16, 32, 64, 128],
     regRate: [0, 0.0001, 0.001, 0.003, 0.01, 0.03, 0.1],
+    dropout: [0, 0.1, 0.2, 0.3, 0.5],
   };
+  const dropLabel = (v) => (+v ? fmtPct(+v, 0) : 'Off');
   function fillSelect(sel, values, label) {
     NA.clear(sel);
     for (const v of values) sel.appendChild(el('option', { value: v }, label ? label(v) : String(v)));
@@ -49,12 +51,13 @@
     fillSelect($('#hpLr'), OPTIONS.lr);
     fillSelect($('#hpBatch'), OPTIONS.batch);
     fillSelect($('#hpRegRate'), OPTIONS.regRate);
+    fillSelect($('#hpDrop'), OPTIONS.dropout, dropLabel);
     // every activation for the whole network, plus a "mixed" state shown when neurons differ
     const actSel = $('#hpAct');
     for (const id of E.ACTIVATION_ORDER) actSel.appendChild(el('option', { value: id }, E.ACTIVATIONS[id].label));
-    actSel.appendChild(el('option', { value: 'mixed', disabled: true }, 'Mixed (per neuron)'));
+    actSel.appendChild(el('option', { value: 'mixed', disabled: true }, 'Mixed'));
     // shown (disabled) for a network with no hidden layer, whose only neuron is the output
-    actSel.appendChild(el('option', { value: 'none', disabled: true }, 'No hidden layer'));
+    actSel.appendChild(el('option', { value: 'none', disabled: true }, 'None'));
     const on = (id, fn) => $(id).addEventListener('change', (e) => fn(e.target.value));
     on('#hpLr', (v) => App.applyPatch({ lr: +v }));
     on('#hpOpt', (v) => App.applyPatch({ optimizer: v }));
@@ -66,6 +69,10 @@
     $('#btnSheetFF').addEventListener('click', () => { if (NA.mobile) NA.mobile.sheet(false); App.fastForward(500); });
     on('#hpReg', (v) => App.applyPatch({ reg: v, regRate: v !== 'none' && !App.hyper.regRate ? 0.001 : v === 'none' ? 0 : App.hyper.regRate }));
     on('#hpRegRate', (v) => App.applyPatch({ regRate: +v, reg: +v > 0 && App.hyper.reg === 'none' ? 'l2' : +v === 0 ? 'none' : App.hyper.reg }));
+    on('#hpDrop', (v) => {
+      App.applyPatch({ dropout: +v });
+      App.toast(+v ? `Dropout ${dropLabel(v)}: every training step now switches off a random ${dropLabel(v)} of the hidden neurons. Pause to see which.` : 'Dropout off: training uses every neuron again.');
+    });
     on('#hpInit', (v) => App.applyPatch({ init: v }));
     on('#hpSpeed', (v) => { App.speed = v; NA.store.set('speed2', v); });
     on('#hpSeed', (v) => App.applyPatch({ seed: Math.max(1, Math.round(+v) || 1) }));
@@ -83,6 +90,8 @@
     $('#buildBtn').addEventListener('click', () => { if (!App.preset || App.preset.id !== 'builder') App.loadPreset('builder'); });
     $('#zoo').addEventListener('click', (e) => { if (e.target.id === 'zoo' || e.target.closest('[data-close]')) CH.closeZoo(); });
     $('#helpBtn').addEventListener('click', () => CH.toggleHelp());
+    $('#btnTour').addEventListener('click', () => NA.tour.start());
+    $('#btnGlossary').addEventListener('click', () => NA.glossary.open());
     $('#help').addEventListener('click', (e) => { if (e.target.id === 'help' || e.target.closest('[data-close]')) CH.toggleHelp(false); });
     buildZoo();
 
@@ -158,6 +167,8 @@
     lossSel.value = net.lossId;
     $('#hpReg').value = h.reg;
     setSelect($('#hpRegRate'), h.regRate, OPTIONS.regRate);
+    setSelect($('#hpDrop'), h.dropout || 0, OPTIONS.dropout, dropLabel);
+    $('#hpDrop').disabled = App.arch.hidden.length === 0;
     $('#hpInit').value = h.init;
     $('#hpSeed').value = h.seed;
     $('#hpAct').disabled = App.arch.hidden.length === 0;
@@ -272,7 +283,8 @@
     syncTimelineActions();
     c.setAttribute('aria-valuenow', String(App.displayStep()));
     c.setAttribute('aria-valuemax', String(App.step));
-    c.setAttribute('aria-valuetext', `Step ${App.displayStep()}`);
+    const first = pts[0], cur = App.metrics();
+    c.setAttribute('aria-valuetext', first && cur ? `Step ${fmtInt(App.displayStep())} of ${fmtInt(App.step)}: training loss ${fmt(cur.trainLoss, 3)} (${fmt(first.trainLoss, 3)} at the start), validation loss ${fmt(cur.valLoss, 3)}` : `Step ${App.displayStep()}`);
   }
 
   // Score the held-out test set and open its report.
@@ -345,6 +357,7 @@
   // ------------------------------------------------------------------ keyboard
   function onKey(e) {
     if (e.key === 'Escape') { if (!$('#zoo').hidden) CH.closeZoo(); if (!$('#help').hidden) CH.toggleHelp(false); return; }
+    if ($('.modal:not([hidden])') || (NA.tour && NA.tour.isOpen())) return; // a dialog (share, challenges) or the tour has the keyboard
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (!$('#zoo').hidden) return;
@@ -421,10 +434,15 @@
     if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshTheme);
     new MutationObserver(refreshTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { App.emit('lens'); App.emit('weights'); });
-    const hash = (location.hash || '').slice(1);
+    const hash = (location.hash || '').slice(1), shared = NA.share && NA.share.readLink();
     let start = NA.presets.byId[hash] ? hash : NA.store.get('preset', 'spiral');
     if (!NA.presets.byId[start]) start = 'spiral';
-    App.loadPreset(start, { sync: true });
+    // a share link opens its own model and settings; a plain network then retrains where you can watch it
+    if (!shared || !NA.share.open(shared)) App.loadPreset(start, { sync: true });
+    // the first visit of each kind of page (a network, the model builder, another lab) starts with a short tour
+    if (NA.tour) { NA.tour.maybeStart(); App.on('mode', () => NA.tour.maybeStart()); App.on('preset', () => NA.tour.maybeStart()); }
+    // screen readers hear when a run of training ends
+    App.on('ffdone', () => { const m = App.metrics(); if (NA.a11y && m) NA.a11y.announce(`Training paused at step ${fmtInt(App.step)}. Validation ${App.isRegression() ? `R² ${fmt(m.valAcc, 3)}` : `accuracy ${fmtPct(m.valAcc, 1)}`}.`); });
     requestAnimationFrame((t) => App.frame(t));
   }
   NA.chrome = CH;

@@ -14,6 +14,8 @@
     curve: { label: 'Fit a curve', losses: ['mse', 'mae', 'huber'], metric: 'r2', template: 'mlp', icon: '∿' },
     digits: { label: 'Read digits', losses: ['xent', 'mse', 'hinge'], metric: 'accuracy', template: 'cnn', icon: '▦' },
     sequence: { label: 'Sequences', losses: ['xent'], metric: 'tokens', template: 'transformer', icon: '⋯' },
+    // a table of your own: classes or a value, depending on the column it predicts (BT.lossesFor gives the losses)
+    table: { label: 'Your data', losses: ['xent', 'mse', 'hinge', 'mae', 'huber'], metric: 'auto', template: 'mlp', icon: '▤' },
   };
   BT.PROBLEMS = [
     { id: 'spiral', family: 'plane', dataset: 'spiral', label: 'Two spirals', hint: 'Two arms wound around each other: needs curved, layered boundaries.' },
@@ -34,6 +36,7 @@
     { id: 'copy', family: 'sequence', task: 'copy', label: 'Copy a sequence', hint: '3 1 4 → 3 1 4. The easiest look-back task.' },
     { id: 'language', family: 'sequence', task: 'language', label: 'Tiny language', hint: 'Predict the next word of short stories, like the Tiny Transformer model.' },
     { id: 'sentences', family: 'sequence', task: 'sentences', custom: true, label: 'Your own sentences', hint: 'Type some text; the model learns to predict each next word.' },
+    { id: 'csv', family: 'table', custom: true, label: 'Your table (CSV)', hint: 'A table of numbers from a CSV file, or a sample: the model learns to predict one column from the others.' },
   ];
   BT.byId = Object.fromEntries(BT.PROBLEMS.map((p) => [p.id, p]));
   BT.CLASS_COLOURS = ['s1', 's2', 's4', 's7'];
@@ -44,26 +47,161 @@
     if (f === 'plane') return { noise: p.id === 'xor' || p.id === 'blobs' ? 0.1 : 0.15, n: 600 };
     if (f === 'curve') return { noise: 0.05, n: 200, formula: 'sin(5x) + x^2' };
     if (f === 'digits') return { n: 2000 };
+    if (f === 'table') return { target: -1, kind: 'auto' };
     if (p.task === 'language') return { n: 1500, embed: 32 };
     if (p.task === 'sentences') return { window: 8, embed: 32, text: SAMPLE_TEXT };
     return { len: 4, n: 3000, embed: 32 };
   };
   const SAMPLE_TEXT = 'the sun is hot . the snow is cold . the fire is hot . the ice is cold .\nthe cat sat on the mat . the dog sat on the log .\nred and blue make purple . blue and yellow make green . red and yellow make orange .';
 
+  // training settings: the defaults, and what each kind of data starts with when you switch to it
+  BT.DEFAULT_TRAIN = { opt: 'adam', lr: 0.01, batch: 32, wd: 0, sched: 'const', clip: 0, init: 'auto', seed: 1, steps: 3000 };
+  BT.trainFor = (p) => {
+    if (p.family === 'sequence') return { lr: 0.003, batch: p.task === 'language' ? 16 : 32, steps: p.task === 'language' ? 3000 : p.task === 'sentences' ? 1500 : 1000, clip: 1 };
+    if (p.family === 'digits') return { lr: 0.003, batch: 32, steps: 1500, clip: 0 };
+    if (p.family === 'table') return { lr: 0.01, batch: 32, steps: 2000, clip: 0 };
+    return { lr: 0.01, batch: 32, steps: 3000, clip: 0 };
+  };
+
   // ------------------------------------------------------------------ templates
   const D = (units, act = 'relu') => ({ type: 'dense', units, act });
   BT.TEMPLATES = [
     { id: 'empty', label: 'Empty', hint: 'Just the embedding and the output: build the rest yourself.', families: ['sequence'], blocks: () => [] },
-    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'digits'], blocks: () => [] },
-    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(16), D(16)] },
-    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
-    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(64)] },
+    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [] },
+    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(16), D(16)] },
+    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
+    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(64)] },
     { id: 'cnn', label: 'Small CNN', hint: 'Two convolution + pooling stages, then a dense layer.', families: ['digits'], blocks: () => [{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'conv', filters: 16, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'flatten' }, D(32)] },
     { id: 'transformer', label: 'Tiny transformer', hint: 'Two transformer blocks with two attention heads each.', families: ['sequence'], blocks: () => [{ type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'layernorm' }] },
     { id: 'attention', label: 'One attention layer', hint: 'A single attention layer and an MLP, the smallest model that can look back.', families: ['sequence'], blocks: () => [{ type: 'attention', heads: 1, causal: true, residual: true }, { type: 'dense', units: 32, act: 'relu', residual: false }] },
     { id: 'noattn', label: 'No attention', hint: 'An MLP applied to each position alone: it cannot look at other positions, so reversing fails.', families: ['sequence'], blocks: () => [D(64), D(32)] },
   ];
   BT.templatesFor = (family) => BT.TEMPLATES.filter((t) => t.families.includes(family));
+  // the losses that suit a problem; a table's depend on whether its data is classes or a value
+  BT.lossesFor = (p, d) => (p.family !== 'table' ? BT.FAMILIES[p.family].losses : d && d.output && d.output.kind === 'value' ? ['mse', 'mae', 'huber'] : ['xent', 'mse', 'hinge']);
+  // a template's blocks for a kind of data: dense layers need a flat vector, so on pictures the layer-based templates start with a Flatten
+  BT.templateBlocks = (t, family) => {
+    const blocks = t.blocks();
+    if (family === 'digits' && (!blocks.length || blocks[0].type === 'dense')) blocks.unshift({ type: 'flatten' });
+    return blocks;
+  };
+
+
+  // ------------------------------------------------------------------ your own table (CSV)
+  /* A table from a CSV file: { name, header: [column names], rows: [[cells as text]], delim, hasHeader }. The model
+     learns to predict one column (the target) from the columns that hold numbers. A target with text, or with few
+     different whole numbers, is a set of classes; any other number column is a value to predict. Kept small, since
+     the setup is saved in the browser: at most 3,000 rows and 40 columns. */
+  BT.TABLE_LIMITS = { rows: 3000, cols: 40, classes: 20 };
+  const isNumText = (s) => s !== '' && Number.isFinite(Number(s));
+  function splitLine(line, delim) {
+    const out = [];
+    let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"' && cur.trim() === '') { q = true; cur = ''; }
+      else if (ch === delim) { out.push(cur.trim()); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur.trim());
+    return out;
+  }
+  // Reads CSV text: the separator (comma, semicolon or tab) is guessed from the first line, and the first row is
+  // taken as column names when its cells are text where the next row's are numbers. Returns a table or { error }.
+  BT.parseCSV = function (text, name = 'table.csv') {
+    const lines = String(text).replace(/^﻿/, '').split(/\r\n|\n|\r/).filter((l) => l.trim() !== '');
+    if (lines.length < 2) return { error: 'The file needs at least two lines: a table of rows.' };
+    const count = (c) => lines[0].split(c).length - 1, delim = ['\t', ';', ','].reduce((b, c) => (count(c) > count(b) ? c : b), ',');
+    let rows = lines.map((l) => splitLine(l, delim));
+    // with semicolons between columns, a comma is usually the decimal mark: 1,5 means 1.5
+    if (delim === ';') rows = rows.map((r) => r.map((v) => (/^[-+]?\d+,\d+$/.test(v) ? v.replace(',', '.') : v)));
+    const C = Math.max(...rows.slice(0, 50).map((r) => r.length));
+    if (C < 2) return { error: 'Only one column found: the table needs at least one column to learn from and one to predict. Columns are separated by commas, semicolons or tabs.' };
+    if (C > BT.TABLE_LIMITS.cols) return { error: `${C} columns: the builder takes at most ${BT.TABLE_LIMITS.cols}.` };
+    const first = rows[0], second = rows[1];
+    const hasHeader = first.some((v, i) => !isNumText(v) && isNumText(second[i] || ''));
+    const header = hasHeader ? first.map((v, i) => v || `column ${i + 1}`) : NA.range(C).map((i) => `column ${i + 1}`);
+    while (header.length < C) header.push(`column ${header.length + 1}`);
+    rows = (hasHeader ? rows.slice(1) : rows).map((r) => { const q = r.slice(0, C); while (q.length < C) q.push(''); return q; });
+    const cut = rows.length > BT.TABLE_LIMITS.rows ? rows.length - BT.TABLE_LIMITS.rows : 0;
+    if (cut) rows = rows.slice(0, BT.TABLE_LIMITS.rows);
+    return { name, header, rows, delim, hasHeader, cut };
+  };
+  // For each column: does it hold numbers, how many different values, how many cells are empty.
+  BT.tableColumns = function (t) {
+    return t.header.map((h, i) => {
+      let num = 0, empty = 0;
+      const seen = new Set();
+      for (const r of t.rows) { const v = r[i]; if (v === '') { empty++; continue; } if (isNumText(v)) num++; seen.add(v); }
+      return { index: i, name: h, numeric: num > 0 && num === t.rows.length - empty, unique: seen.size, empty };
+    });
+  };
+  // the target column (the last by default) and whether it is classes or a value
+  BT.tableTarget = function (t, s) {
+    const cols = BT.tableColumns(t), target = Number.isInteger(s.target) && s.target >= 0 && s.target < cols.length ? s.target : cols.length - 1, c = cols[target];
+    let kind = s.kind === 'classes' || s.kind === 'value' ? s.kind : c.numeric && c.unique > 12 ? 'value' : 'classes';
+    if (!c.numeric) kind = 'classes';
+    return { cols, target, kind, col: c };
+  };
+  function tableData(t, s, seed) {
+    const none = { family: 'plane', table: true, input: { kind: 'vector', dim: 1 }, output: { kind: 'classes', k: 2 } };
+    if (!t || !Array.isArray(t.rows) || !t.rows.length) return Object.assign(none, { error: 'No table yet: choose a CSV file, or one of the samples, in the Input block’s settings.', empty: true });
+    const { cols, target, kind } = BT.tableTarget(t, s);
+    const feats = cols.filter((c) => c.index !== target && c.numeric).map((c) => c.index);
+    if (!feats.length) return Object.assign(none, { error: 'No column of numbers to learn from: the model reads the columns that hold numbers.' });
+    const rows = t.rows.filter((r) => feats.every((i) => isNumText(r[i])) && r[target] !== '' && (kind === 'classes' || isNumText(r[target])));
+    if (rows.length < 10) return Object.assign(none, { error: `Only ${rows.length} rows have a number in every input column and something to predict: at least 10 are needed.` });
+    const F = feats.length, n = rows.length, X = new Float32Array(n * F), mean = new Array(F).fill(0), std = new Array(F).fill(0);
+    rows.forEach((r, k) => feats.forEach((c, j) => { X[k * F + j] = Number(r[c]); }));
+    for (let j = 0; j < F; j++) {
+      for (let k = 0; k < n; k++) mean[j] += X[k * F + j] / n;
+      for (let k = 0; k < n; k++) std[j] += (X[k * F + j] - mean[j]) ** 2 / n;
+      std[j] = Math.sqrt(std[j]) || 1;
+      for (let k = 0; k < n; k++) X[k * F + j] = (X[k * F + j] - mean[j]) / std[j];
+    }
+    let Y, labels = null, ystats = null;
+    if (kind === 'classes') {
+      const numeric = cols[target].numeric, key = (v) => (numeric ? String(Number(v)) : v);
+      labels = [...new Set(rows.map((r) => key(r[target])))].sort((a, b) => (numeric ? Number(a) - Number(b) : a.localeCompare(b)));
+      if (labels.length < 2) return Object.assign(none, { error: `The column to predict, ${t.header[target]}, has only one value: there is nothing to tell apart.` });
+      if (labels.length > BT.TABLE_LIMITS.classes) return Object.assign(none, { error: `${t.header[target]} has ${labels.length} different values: too many classes (at most ${BT.TABLE_LIMITS.classes}).${cols[target].numeric ? ' Predict it as a number instead.' : ''}` });
+      const idx = Object.fromEntries(labels.map((l, i) => [l, i]));
+      Y = Int32Array.from(rows.map((r) => idx[key(r[target])]));
+    } else {
+      const y = rows.map((r) => Number(r[target])), m = y.reduce((a, b) => a + b, 0) / n, sd = Math.sqrt(y.reduce((a, b) => a + (b - m) ** 2, 0) / n) || 1;
+      Y = Float32Array.from(y.map((v) => (v - m) / sd));
+      ystats = { mean: m, std: sd };
+    }
+    const rng = new NA.RNG(seed * 11 + 7), [tr, va] = split(n, rng, 0.8), K = labels ? labels.length : 1;
+    return {
+      family: kind === 'value' ? 'curve' : 'plane', table: true, kind, input: { kind: 'vector', dim: F }, output: kind === 'value' ? { kind: 'value', k: 1 } : { kind: 'classes', k: K },
+      classes: labels ? K : 0, names: labels || [], featNames: feats.map((i) => t.header[i]), feats, target, targetName: t.header[target], stats: { mean, std, y: ystats },
+      rowsUsed: n, rowsDropped: t.rows.length - n, ignored: cols.filter((c) => c.index !== target && !c.numeric).map((c) => c.name),
+      Xtr: gather(X, F, tr, Float32Array), Ytr: kind === 'value' ? Float32Array.from(tr.map((k) => Y[k])) : Int32Array.from(tr.map((k) => Y[k])), nTr: tr.length,
+      Xva: gather(X, F, va, Float32Array), Yva: kind === 'value' ? Float32Array.from(va.map((k) => Y[k])) : Int32Array.from(va.map((k) => Y[k])), nVa: va.length,
+    };
+  }
+  // Two made-up tables to try it without a file: fruit to tell apart (classes), and house prices (a value).
+  BT.SAMPLES = {
+    fruit: { label: 'Fruit (classes)', make() {
+      const rng = new NA.RNG(41), rows = [], kinds = [['apple', 160, 7.5, 7, 0.75], ['orange', 140, 7.2, 7.3, 0.55], ['lemon', 90, 5.5, 7.5, 0.15], ['pear', 170, 6.5, 9.5, 0.35]];
+      for (let i = 0; i < 240; i++) {
+        const [nm, w, wd, h, col] = kinds[i % 4], f = rng.gauss(1, 0.12);
+        rows.push([(w * f * f + rng.gauss(0, 12)).toFixed(0), (wd * f + rng.gauss(0, 0.45)).toFixed(1), (h * f + rng.gauss(0, 0.5)).toFixed(1), NA.clamp(col + rng.gauss(0, 0.1), 0, 1).toFixed(2), nm]);
+      }
+      return { name: 'fruit.csv', header: ['weight_g', 'width_cm', 'height_cm', 'redness', 'fruit'], rows, delim: ',', hasHeader: true, cut: 0 };
+    } },
+    houses: { label: 'House prices (a number)', make() {
+      const rng = new NA.RNG(43), rows = [];
+      for (let i = 0; i < 300; i++) {
+        const area = NA.clamp(rng.gauss(110, 35), 35, 260), rooms = NA.clamp(Math.round(area / 28 + rng.gauss(0, 0.8)), 1, 9), age = Math.floor(rng.uniform(0, 80)), km = rng.uniform(0.5, 25);
+        const price = 2.1 * area + 9 * rooms - 0.9 * age - 8 * Math.sqrt(km) + 120 + rng.gauss(0, 18);
+        rows.push([area.toFixed(0), String(rooms), String(age), km.toFixed(1), price.toFixed(0)]);
+      }
+      return { name: 'houses.csv', header: ['area_m2', 'rooms', 'age_years', 'km_to_centre', 'price_k'], rows, delim: ',', hasHeader: true, cut: 0 };
+    } },
+  };
 
   // ------------------------------------------------------------------ making data
   /* Returns { family, input, output, Xtr, Ytr, nTr, Xva, Yva, nVa, classes, names, vocab, ... }: inputs as
@@ -74,6 +212,7 @@
     if (fam === 'plane') return p.custom ? drawnPoints(custom.points || [], seed) : planeData(p, s, seed);
     if (fam === 'curve') return curveData(p, s, seed);
     if (fam === 'digits') return digitData(s, seed);
+    if (fam === 'table') return tableData(custom.table, s, seed);
     if (p.task === 'language') return languageData(s, seed);
     if (p.task === 'sentences') return sentenceData(s, seed);
     return algoData(p.task, s, seed);

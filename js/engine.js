@@ -105,6 +105,13 @@
       this.a = S.map((n) => new Float64Array(n));
       this.delta = S.map((n) => new Float64Array(n));
       this.mask = S.map((n) => new Uint8Array(n).fill(1)); // 0 = ablated (forced to output 0)
+      /* Dropout. While trainBatch runs, dropP is the rate: each hidden neuron is switched off for an example with
+         probability p (dropMask 0) and the survivors are scaled by 1/(1 − p), so a layer's expected output is
+         unchanged and nothing needs rescaling afterwards. Every other forward pass (evaluation, the views) uses
+         the whole network. lastDrop is the rate the latest step used; dropMask then still holds the mask of its
+         last example. dropFrozen keeps one mask fixed (gradient checks). */
+      this.dropMask = S.map((n) => new Uint8Array(n).fill(1));
+      this.dropP = 0; this.lastDrop = 0; this.dropFrozen = false;
       this.gradRms = new Float64Array(this.L);
       this.updateRatio = new Float64Array(this.L);
       this.opt = null;
@@ -144,6 +151,10 @@
         for (let i = 0; i < W.length; i++) W[i] = rng.gauss(0, sd);
         for (let j = 0; j < b.length; j++) b[j] = last ? 0 : rng.gauss(0, mode === 'small' ? 0.01 : 0.1);
       }
+      // dropout masks come from their own stream, so a run with the same seed drops the same neurons
+      this.dropRng = new NA.RNG((seed * 104729 + 3) >>> 0);
+      for (const dm of this.dropMask) dm.fill(1);
+      this.lastDrop = 0;
       this.resetOptimizer();
       this.t = 0;
     }
@@ -156,7 +167,7 @@
 
     // ------------------------------------------------------------ forward
     forward(x, off = 0) {
-      const S = this.sizes, L = this.L, a0 = this.a[0], m0 = this.mask[0];
+      const S = this.sizes, L = this.L, a0 = this.a[0], m0 = this.mask[0], dp = this.dropP;
       for (let i = 0; i < S[0]; i++) a0[i] = m0[i] ? x[off + i] : 0;
       for (let l = 0; l < L; l++) {
         const nIn = S[l], nOut = S[l + 1], W = this.W[l], b = this.b[l], aIn = this.a[l], z = this.z[l + 1], a = this.a[l + 1];
@@ -168,10 +179,19 @@
         }
         if (l < L - 1) {
           const fns = this.actFns[l + 1], m = this.mask[l + 1];
-          for (let j = 0; j < nOut; j++) a[j] = m[j] ? fns[j].f(z[j]) : 0;
+          if (dp > 0) {
+            const dm = this.dropMask[l + 1], keep = 1 / (1 - dp);
+            for (let j = 0; j < nOut; j++) a[j] = m[j] && dm[j] ? fns[j].f(z[j]) * keep : 0;
+          } else for (let j = 0; j < nOut; j++) a[j] = m[j] ? fns[j].f(z[j]) : 0;
         } else this._outAct(z, a);
       }
       return this.a[L];
+    }
+
+    // A new dropout mask for the next training example: each hidden neuron stays on with probability 1 − p.
+    _sampleDrop() {
+      const p = this.dropP, rng = this.dropRng;
+      for (let l = 1; l < this.L; l++) { const dm = this.dropMask[l]; for (let j = 0; j < dm.length; j++) dm[j] = rng.next() < p ? 0 : 1; }
     }
 
     _outAct(z, a) {
@@ -235,17 +255,18 @@
     }
 
     // δ[l] = (W[l]ᵀ δ[l+1]) ⊙ f'(z[l]), using each neuron's own activation; for l = 0 this is the
-    // gradient with respect to the inputs.
+    // gradient with respect to the inputs. Under dropout a dropped neuron passes nothing back and a kept one
+    // carries the 1/(1 − p) scale; its slope is taken at the unscaled activation f(z).
     _propagate(toInput) {
-      const S = this.sizes;
+      const S = this.sizes, dp = this.dropP, keep = dp > 0 ? 1 / (1 - dp) : 1;
       for (let l = this.L - 1; l >= (toInput ? 0 : 1); l--) {
         const nIn = S[l], nOut = S[l + 1], W = this.W[l], dOut = this.delta[l + 1], dIn = this.delta[l], m = this.mask[l];
-        const zIn = this.z[l], aIn = this.a[l], fns = this.actFns[l];
+        const zIn = this.z[l], aIn = this.a[l], fns = this.actFns[l], dm = dp > 0 && l > 0 ? this.dropMask[l] : null;
         for (let i = 0; i < nIn; i++) {
-          if (!m[i]) { dIn[i] = 0; continue; }
+          if (!m[i] || (dm && !dm[i])) { dIn[i] = 0; continue; }
           let s = 0;
           for (let j = 0; j < nOut; j++) s += W[j * nIn + i] * dOut[j];
-          dIn[i] = l === 0 ? s : s * fns[i].d(zIn[i], aIn[i]);
+          dIn[i] = l === 0 ? s : dm ? s * fns[i].d(zIn[i], fns[i].f(zIn[i])) * keep : s * fns[i].d(zIn[i], aIn[i]);
         }
       }
     }
@@ -274,6 +295,7 @@
       const n = Math.max(1, end - start);
       for (let s = start; s < end; s++) {
         const k = idx ? idx[s] : s;
+        if (this.dropP > 0 && !this.dropFrozen) this._sampleDrop();
         this.forward(X, k * d0);
         loss += this.lossOf(Y[k]);
         this.backward(Y[k]);
@@ -324,8 +346,12 @@
       }
     }
 
+    // One training step. With h.dropout > 0 the returned loss is that of the thinned networks the step trained.
     trainBatch(X, Y, idx, start, end, h) {
+      this.dropP = h.dropout > 0 && this.L > 1 ? Math.min(h.dropout, 0.9) : 0;
       const loss = this.computeGrad(X, Y, idx, start, end, h.reg, h.regRate);
+      this.lastDrop = this.dropP;
+      this.dropP = 0;
       this.step(h);
       return loss;
     }

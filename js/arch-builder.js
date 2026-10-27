@@ -180,11 +180,16 @@
     const inputLabel = (idx) => {
       const q = d.input || {};
       if (q.kind === 'image') { const HW = q.h * q.w, c = Math.floor(idx / HW), y = Math.floor((idx % HW) / q.w), x = idx % q.w; return `${q.c > 1 ? `channel ${c + 1}, ` : ''}pixel (${x}, ${y})`; }
+      if (d.table) return d.featNames[idx];
       return q.dim === 1 ? 'x' : `x${NA.sub(idx + 1)}`;
     };
     const exampleText = () => {
       if (!P) return '';
       const fam = d.family;
+      if (d.table) {
+        const raw = (j) => P.x[j] * d.stats.std[j] + d.stats.mean[j], show = d.featNames.slice(0, 3).map((nm, j) => `${nm} ${fmt(raw(j), 2)}`).join(', ');
+        return `a row with ${show}${d.featNames.length > 3 ? ', …' : ''}, whose ${d.targetName} is ${d.kind === 'value' ? fmt(target[0] * d.stats.y.std + d.stats.y.mean, 2) : names[target[0]]}`;
+      }
       if (fam === 'plane') return `the point (${fmt(P.x[0], 2)}, ${fmt(P.x[1], 2)}), ${names[target[0]] || 'class ' + (target[0] + 1)}`;
       if (fam === 'curve') return `x = ${fmt(P.x[0], 3)}, whose target is ${fmt(target[0], 3)}`;
       if (fam === 'digits') return `a handwritten ${names[target[0]]}`;
@@ -1140,7 +1145,7 @@ print(torch.allclose(out, block(x), atol=1e-6))    # True`;
       const q = d.input || {}, s = inputShape(), base = { id: 'input', title: 'Input', tone: 's3' };
       const prob = d.error ? { reason: d.error } : null;
       base.sub = d.error ? 'no data' : q.kind === 'vector' ? `${q.dim} number${q.dim === 1 ? '' : 's'}` : q.kind === 'image' ? `${q.h} × ${q.w} picture` : `${q.len} tokens`;
-      const about0 = d.error ? `The data could not be made: ${d.error}` : q.kind === 'vector' ? `The model reads ${q.dim === 1 ? 'one number, x' : `${q.dim} numbers, a point's coordinates`} per example${d.family === 'curve' ? ', and has to predict the curve\'s value there' : ', and has to say which class the point belongs to'}.`
+      const about0 = d.error ? `The data could not be made: ${d.error}` : q.kind === 'vector' ? (d.table ? `The model reads one row of your table: ${q.dim === 1 ? 'the number column' : `the ${q.dim} number columns`} ${d.featNames.join(', ')}, each scaled to mean 0 and spread 1, and has to ${d.kind === 'value' ? `predict ${d.targetName}` : `say which ${d.targetName} the row belongs to`}.` : `The model reads ${q.dim === 1 ? 'one number, x' : `${q.dim} numbers, a point's coordinates`} per example${d.family === 'curve' ? ', and has to predict the curve\'s value there' : ', and has to say which class the point belongs to'}.`)
         : q.kind === 'image' ? `The model reads a picture of ${q.h} × ${q.w} pixels, each a number from 0 (paper) to 1 (ink), ${q.h * q.w} numbers in all.`
           : `The model reads ${q.len} tokens, each a whole number standing for one ${vocab.every((w) => w.length <= 1) ? 'symbol' : 'word'} of a vocabulary of ${q.vocab}. The embedding then turns each into a vector of ${q.embed} numbers.${d.len ? ` The first ${d.len} digits are the question and → marks where the answer starts; after it come the answer's digits, and at every position the model predicts the next token from the ones before it (it only learns from the answer positions: the question is random).` : d.task === 'language' ? ' This is a short story in the tiny language, padded with full stops to a fixed length; at every position the model predicts the next word.' : d.task === 'sentences' ? ' This is a window of your own text; at every position the model predicts the next word.' : ''}`;
       const code = q.kind === 'tokens' ? `ids = Xva[:1]                                      # (1, ${q.len}): the token ids of one example\nprint([VOCAB[i] for i in ids[0]] if 'VOCAB' in dir() else ids)` : q.kind === 'image' ? `import matplotlib.pyplot as plt\nx = Xva[:1]                                        # (1, ${q.c}, ${q.h}, ${q.w}): one picture\nplt.imshow(x[0, 0], cmap="gray_r")\nplt.show()` : `x, y = Xva[:1], Yva[:1]                            # the first validation example\nprint(x, y)\nprint(model(x))                                    # the model's output for it`;
@@ -1178,16 +1183,19 @@ print(torch.allclose(out, block(x), atol=1e-6))    # True`;
       // a point (or a number) among the data it came from
       const plot = W2([0.52, 0.02, 0.48, 0.96], [0.12, 0.2, 0.76, 0.5]), bars = W2([0, 0.5, 0.42, 0.3], [0, 0.8, 1, 0.16]);
       const drawPlot = (ctx, r, S) => {
-        const sq = Math.min(r.w, r.h), b = { x: r.x + (r.w - sq) / 2, y: r.y, w: sq, h: sq }, curve = d.family === 'curve';
-        let y0 = -1, y1 = 1;
-        if (curve) { y0 = Infinity; y1 = -Infinity; for (const v of d.Ytr) { if (v < y0) y0 = v; if (v > y1) y1 = v; } const sp = (y1 - y0) || 1; y0 -= sp * 0.1; y1 += sp * 0.1; }
-        const X0 = (v) => b.x + ((v + 1) / 2) * b.w, Y0 = (v) => b.y + b.h - ((v - y0) / (y1 - y0)) * b.h;
+        const sq = Math.min(r.w, r.h), b = { x: r.x + (r.w - sq) / 2, y: r.y, w: sq, h: sq }, curve = d.family === 'curve', F = q.dim;
+        // a table's rows sit on its first two input columns (classes) or the first against the value
+        const ax = (k) => d.Xtr[k * F], ay = (k) => (curve ? d.Ytr[k] : F > 1 ? d.Xtr[k * F + 1] : 0);
+        const span = (f) => { let lo = Infinity, hi = -Infinity; for (let k = 0; k < d.nTr; k++) { const v = f(k); if (v < lo) lo = v; if (v > hi) hi = v; } const sp = (hi - lo) || 1; return [lo - sp * 0.1, hi + sp * 0.1]; };
+        let x0 = -1, x1 = 1, y0 = -1, y1 = 1;
+        if (d.table) { [x0, x1] = span(ax); [y0, y1] = span(ay); } else if (curve) [y0, y1] = span(ay);
+        const X0 = (v) => b.x + ((v - x0) / (x1 - x0)) * b.w, Y0 = (v) => b.y + b.h - ((v - y0) / (y1 - y0)) * b.h;
         ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(b.x, b.y, b.w, b.h); S.frame(ctx, b);
         for (let k = 0; k < d.nTr; k++) {
-          const px = X0(d.Xtr[curve ? k : 2 * k]), py = curve ? Y0(d.Ytr[k]) : Y0(d.Xtr[2 * k + 1]);
+          const px = X0(ax(k)), py = Y0(ay(k));
           ctx.fillStyle = curve ? theme.c('s1', 0.5) : theme.c(BV ? BV.classColour(d, d.Ytr[k]) : 's1', 0.45); ctx.beginPath(); ctx.arc(px, py, Math.max(1.4, sq / 160), 0, Math.PI * 2); ctx.fill();
         }
-        const px = X0(P.x[0]), py = curve ? Y0(target[0]) : Y0(P.x[1]);
+        const px = X0(P.x[0]), py = curve ? Y0(target[0]) : Y0(F > 1 ? P.x[1] : 0);
         ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(px, py, Math.max(5, sq / 40), 0, Math.PI * 2); ctx.stroke();
         if (curve && nums) { ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(px, Y0(clamp(P.logits[0], y0, y1)), 3.2, 0, Math.PI * 2); ctx.fill(); }
       };

@@ -28,6 +28,7 @@
   };
 
   App.register = function (c) { this.components.push(c); return c; };
+  App.DEFAULT_LENSES = DEFAULT_LENSES; App.DEFAULT_OVERLAYS = DEFAULT_OVERLAYS; // share links store differences from these
 
   // ------------------------------------------------------------------ naming helpers
   App.isPlane = () => App.ds && App.ds.kind === 'plane';
@@ -124,7 +125,9 @@
     this.emit('history');
   };
 
-  // sync: train before the first paint (used at start-up so the page opens on a trained model)
+  /* sync: train before the first paint (used at start-up so the page opens on a trained model). setup(App): a
+     function that changes the data, layers or settings before the network is built (a share link); steps: how
+     many steps to train instead of the preset's own. */
   App.loadPreset = function (id, opts = {}) {
     const p = NA.presets.byId[id] || NA.presets.PRESETS[0];
     const copy = (o) => JSON.parse(JSON.stringify(o));
@@ -147,12 +150,15 @@
     if (NA.prefersReducedMotion()) this.lenses.flow = false;
     this.overlays = Object.assign({}, DEFAULT_OVERLAYS, p.overlays);
     this.selected = null;
+    if (opts.setup) opts.setup(this);
     this.rebuild({ data: true });
     this.emit('preset', p);
     this.emit('lens');
     this.emit('hyper');
-    if (opts.sync) this.trainNow(p.pretrain);
-    else this.fastForward(p.pretrain);
+    const steps = opts.steps !== undefined ? opts.steps : p.pretrain;
+    if (!steps) { /* untrained */ }
+    else if (opts.sync) this.trainNow(steps);
+    else this.fastForward(steps);
     NA.store.set('preset', p.id);
   };
   App.trainNow = function (n) {
@@ -186,7 +192,7 @@
     if (p.loss) { h.loss = p.loss; if (this.net) { this.net.setLoss(p.loss); h.loss = this.net.lossId; this.version++; this.caches = {}; this._pt = null; } }
     if (p.seed !== undefined) { h.seed = p.seed; model = true; }
     if (p.init && p.init !== h.init) { h.init = p.init; model = true; }
-    for (const k of ['lr', 'optimizer', 'batch', 'reg', 'regRate']) if (p[k] !== undefined) h[k] = p[k];
+    for (const k of ['lr', 'optimizer', 'batch', 'reg', 'regRate', 'dropout']) if (p[k] !== undefined) h[k] = p[k];
     if (p.optimizer !== undefined && this.net) this.net.resetOptimizer(p.optimizer);
     if (data || model || p.reset) this.rebuild({ data, keepSelection: true });
     else if (p.loss) { this.recordPoint(); this.emit('weights'); this.emit('history'); }
@@ -195,6 +201,23 @@
     if (p.tab) this.emit('tab', p.tab);
     if (p.view) this.emit('view', p.view);
     if (p.sampleDigit !== undefined) this.emit('sampleDigit', p.sampleDigit);
+  };
+
+  /* Runs one of the preset's experiments. One that asks for a prediction resolves, once training stops, to a
+     line with the measured result: "Measured: validation accuracy 100.0% → 48.3%." (just the new value when the
+     experiment changes the data, which makes a before-and-after meaningless). */
+  App.runTry = function (t) {
+    const P = t.predict, before = this.metrics(), data = this.spec.dataset;
+    this.applyPatch(t.patch);
+    if (!P || !P.metric) return undefined;
+    const measure = () => {
+      const after = this.metrics(), loss = P.metric === 'valLoss', reg = this.isRegression();
+      const name = loss ? 'validation loss' : reg ? 'validation R²' : 'validation accuracy';
+      const f = (m) => (loss ? NA.fmtSci(m.valLoss, 3) : reg ? NA.fmt(m.valAcc, 3) : NA.fmtPct(m.valAcc, 1));
+      return `Measured: ${name} ${data === this.spec.dataset ? f(before) + ' → ' : ''}${f(after)}.`;
+    };
+    if (!this.training) return Promise.resolve(measure());
+    return new Promise((resolve) => { const off = this.on('training', () => { if (!this.training) { off(); resolve(measure()); } }); });
   };
 
   // ------------------------------------------------------------------ architecture edits

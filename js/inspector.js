@@ -86,7 +86,7 @@
         el('h3', { class: 'sec-title', text: 'What to look for' }),
         el('ul', { class: 'look-list' }, ...p.look.map((t) => el('li', { text: t }))),
         el('h3', { class: 'sec-title', text: 'Experiments' }),
-        el('ol', { class: 'try-list' }, ...p.try.map((t) => el('li', null, el('p', { text: t.text }), el('button', { class: 'btn btn-try', type: 'button', onclick: () => App.applyPatch(t.patch) }, t.label + ' →')))));
+        NA.labUI.tryList(p.try, (t) => App.runTry(t)));
       root.append(card, section('Diagnostics', el('p', { class: 'sec-note', text: 'Read automatically from the network’s statistics and training history. They update as it trains.' }), this.diagEl));
     },
     update() {

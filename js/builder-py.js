@@ -169,6 +169,33 @@ def story():
       } else out.push(`x = -1 + 2 * (torch.arange(${s.n}) + torch.rand(${s.n})) / ${s.n}     # spread evenly over [-1, 1]`, `y = ${CURVE_PY[p.dataset]}`);
       out.push('top = y.abs().max()', 'if top > 1.5 or top < 0.25:                      # keep the values near 1 (the page does too)', '    y = y / top',
         `X, Y = x[:, None], y + ${num(s.noise)} * torch.randn_like(y)          # X: (${s.n}, 1), Y: noisy values`, ...SPLIT(0.75));
+    } else if (fam === 'table') {
+      const t = setup.custom.table;
+      if (!t || d.error) out.push(`# ${d.error || 'Choose a CSV file on the page first.'}`);
+      else {
+        const used = [...d.feats, d.target], nums = d.kind === 'value' || BT.tableColumns(t).find((c) => c.index === d.target).numeric;
+        const cell = (v, i) => (i < d.feats.length || nums ? num(Number(v)) : JSON.stringify(v));
+        // a small table goes into the script; a big one is read from the file
+        const keep = t.rows.filter((r) => d.feats.every((i) => r[i] !== '' && Number.isFinite(Number(r[i]))) && r[d.target] !== '' && (d.kind === 'classes' || Number.isFinite(Number(r[d.target]))));
+        if (keep.length * used.length <= 2400) {
+          out.push(`# ${t.name}: the ${keep.length} complete rows the page used, as [${used.map((i) => t.header[i]).join(', ')}]`, 'rows = [',
+            ...keep.map((r) => '    [' + used.map((i, k) => cell(r[i], k)).join(', ') + '],'), ']',
+            `FEATURES, TARGET = list(range(${d.feats.length})), ${d.feats.length}`);
+        } else {
+          out.push(`# ${t.name}: put the file next to this script`, `with open(${JSON.stringify(t.name)}, newline="") as f:`, `    rows = list(csv.reader(f${t.delim !== ',' ? `, delimiter=${JSON.stringify(t.delim)}` : ''}))`,
+            t.hasHeader ? 'rows = rows[1:]                                   # the first row names the columns' : null,
+            t.delim === ';' ? 'rows = [[c.replace(",", ".") for c in r] for r in rows]   # with semicolons, 1,5 means 1.5 (the page reads it so too)' : null,
+            `FEATURES = [${d.feats.join(', ')}]   # ${d.featNames.join(', ')}`, `TARGET = ${d.target}   # ${d.targetName}`,
+            'def is_number(s):', '    try:', '        return math.isfinite(float(s))', '    except ValueError:', '        return False',
+            `rows = [r for r in rows if len(r) > max(FEATURES + [TARGET]) and all(is_number(r[i]) for i in FEATURES) and r[TARGET].strip() != ""${d.kind === 'value' ? ' and is_number(r[TARGET])' : ''}]`);
+        }
+        out.push('X = torch.tensor([[float(r[i]) for i in FEATURES] for r in rows])',
+          'X = (X - X.mean(0)) / X.std(0, correction=0).clamp_min(1e-8)   # each input column to mean 0, spread 1 (the page does too)');
+        if (d.kind === 'value') out.push('y = torch.tensor([float(r[TARGET]) for r in rows])', 'Y = (y - y.mean()) / y.std(correction=0)       # the value too; R² is the same either way');
+        else if (nums) out.push(`CLASSES = [${d.names.map((v) => num(Number(v))).join(', ')}]`, 'Y = torch.tensor([CLASSES.index(float(r[TARGET])) for r in rows])');
+        else out.push(`CLASSES = [${d.names.map((v) => JSON.stringify(v)).join(', ')}]`, 'Y = torch.tensor([CLASSES.index(r[TARGET].strip()) for r in rows])');
+        out.push(...SPLIT(0.8));
+      }
     } else if (fam === 'digits') {
       out.push(DIGITS_PY, '', `n = ${s.n}`, 'X = torch.stack([draw_digit(i % 10) for i in range(n)])     # (n, 1, 14, 14), ink in [0, 1]',
         'Y = torch.arange(n) % 10', ...SPLIT(0.8));
@@ -369,7 +396,7 @@ def story():
     if (!d || d.error) return `# ${d && d.error ? d.error : 'Pick a problem first.'}`;
     const chk = NA.bx ? NA.bx.check(setup.blocks, d.input, d.output) : { ok: false, shapes: [] };
     if (!chk.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((chk.problem || (chk.shapes.find((s) => s && s.problem) || {}).problem) || { reason: 'See the block marked in red.' }).reason}`);
-    const needs = ['import math', d.family === 'digits' || p.task === 'language' ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
+    const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, d.family === 'digits' || p.task === 'language' ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
     const lossName = NA.bx.LOSSES[setup.loss.id] ? NA.bx.LOSSES[setup.loss.id].label : setup.loss.id;
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt];
     const evalEvery = Math.max(50, Math.round(steps / 10 / 50) * 50);

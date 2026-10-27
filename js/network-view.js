@@ -19,6 +19,13 @@
     V.canvas = document.getElementById('netCanvas');
     V.overlay = document.getElementById('netOverlay');
     V.legend = document.getElementById('netLegend');
+    if (NA.a11y) NA.a11y.describe(V.canvas, () => {
+      const net = App.net;
+      if (!net || App.mode !== 'mlp') return '';
+      const hidden = net.sizes.slice(1, -1), acts = NA.range(hidden.length).map((h) => { const id = net.layerActId(h + 1); return id === 'mixed' ? 'mixed' : NA.engine.ACTIVATIONS[id].label; });
+      const lens = { weight: 'weights', signal: 'the signal for the probe input', gradient: 'gradients' }[App.lenses.edges];
+      return `Network diagram: ${net.sizes[0]} input${net.sizes[0] === 1 ? '' : 's'}, ${hidden.length ? `hidden layers of ${hidden.map((n, i) => `${n} ${acts[i]}`).join(', ')} neurons` : 'no hidden layer'}, and ${net.sizes[net.L]} output${net.sizes[net.L] === 1 ? '' : 's'}; connections coloured by ${lens}.${App.selected ? ` Selected: ${App.neuronName(App.selected.l, App.selected.j)}.` : ''} Step ${NA.fmtInt(App.displayStep())}.`;
+    });
     new ResizeObserver(() => V.resize()).observe(V.stage);
     // zooming far into a neuron opens it (net-deep.js). A touch screen gets more room to zoom before that
     // happens: a pinch to read the labels should not fall into a neuron.
@@ -167,6 +174,15 @@
     p.bezierCurveTo(e.x1 + dx, e.y1, e.x2 - dx, e.y2, e.x2, e.y2);
   }
 
+  /* Dropout: the hidden neurons the latest training step switched off for its last example. Shown while paused
+     or training at Slow speed (faster, it would flicker), and never for history or in the walkthrough. */
+  function dropShown(walk) {
+    const net = App.net;
+    if (walk || !(net.lastDrop > 0) || !(App.hyper.dropout > 0) || App.viewing !== null) return null;
+    if (App.training && (App.speed !== 'slow' || App.ffTarget !== null || NA.prefersReducedMotion())) return null;
+    return net.dropMask;
+  }
+
   // ------------------------------------------------------------------ lens data
   function gather() {
     const net = App.net, L = net.L;
@@ -174,7 +190,7 @@
     const trace = walk ? walk.trace : App.probeTrace();
     const lens = App.lenses;
     const needGrad = !walk && (lens.edges === 'gradient' || lens.nodes === 'gradient');
-    const st = { net, L, walk, trace, lens, grad: needGrad ? App.gradReport() : null, scale: App.layerScale(), stats: lens.health ? App.stats() : null };
+    const st = { net, L, walk, trace, lens, grad: needGrad ? App.gradReport() : null, scale: App.layerScale(), stats: lens.health ? App.stats() : null, drop: dropShown(walk) };
     st.focus = App.hover || App.selected;
     // per weight-layer edge values: signed in [-1,1] ('div') or magnitude in [0,1] ('grad')
     st.edgeMode = [];
@@ -321,6 +337,7 @@
     const lay = V.layout;
     ensureThumbs(now);
     const st = gather();
+    if (!!st.drop !== !!V.dropLegend) { V.dropLegend = !!st.drop; renderLegend(); }
     ctx.clearRect(0, 0, V.W, V.H);
     ctx.save();
     V.zoom.apply(ctx, V.canvas._dpr || 1); // everything below is drawn in unzoomed layout coordinates
@@ -363,10 +380,15 @@
     const focus = st.focus, dimAll = !!App.hover && !st.walk;
     const buckets = new Map();
     const strong = [];
-    const net = st.net;
+    const net = st.net, drop = st.drop;
+    let dropPath = null; // wiring of dropped neurons: it carried nothing in the last training example
     for (const e of lay.edges) {
       const mode = st.edgeMode[e.l];
       if (mode === 'off') continue;
+      if (drop && ((e.l > 0 && !drop[e.l][e.i]) || (e.l + 1 < net.L && !drop[e.l + 1][e.j]))) {
+        if (!e.dense) pathEdge(dropPath || (dropPath = new Path2D()), e);
+        continue;
+      }
       const v = st.edgeVals[e.l][e.w];
       const mag = Math.abs(v);
       const level = Math.min(BUCKETS - 1, Math.floor(mag * BUCKETS));
@@ -388,6 +410,10 @@
       ctx.strokeStyle = b.mode === 'grad' ? theme.gradColor(0.25 + 0.75 * t, alpha) : theme.divColor(b.sign * (0.3 + 0.7 * t), alpha);
       ctx.lineWidth = (b.dense ? 0.6 : 0.7) + (b.dense ? 1.2 : 3.6) * t;
       ctx.stroke(b.path);
+    }
+    if (dropPath) {
+      ctx.strokeStyle = theme.c('line-2', 0.7); ctx.lineWidth = 0.7; ctx.setLineDash([2, 3]);
+      ctx.stroke(dropPath); ctx.setLineDash([]);
     }
     if (st.walk) {
       // pending connections drawn as quiet wiring
@@ -535,6 +561,12 @@
       ctx.fillStyle = theme.c('panel', 0.72); ctx.fill();
       ctx.strokeStyle = theme.c('critical'); ctx.lineWidth = 1.6;
       ctx.beginPath(); ctx.moveTo(x + 4, y + 4); ctx.lineTo(x + s - 4, y + s - 4); ctx.moveTo(x + s - 4, y + 4); ctx.lineTo(x + 4, y + s - 4); ctx.stroke();
+    } else if (st.drop && l > 0 && l < net.L && !st.drop[l][j]) {
+      // switched off by dropout for the last training example
+      rr(ctx, x, y, s, s, r);
+      ctx.fillStyle = theme.c('panel', 0.7); ctx.fill();
+      ctx.setLineDash([3, 2.5]); ctx.strokeStyle = theme.c('ink', 0.6); ctx.lineWidth = 1.3;
+      rr(ctx, x - 2.5, y - 2.5, s + 5, s + 5, r + 2.5); ctx.stroke(); ctx.setLineDash([]);
     }
     // bias marker
     if (App.lenses.bias && l > 0) {
@@ -893,6 +925,7 @@
         items.push(el('span', { class: 'lg-item' }, el('span', { class: 'lg-act' }, NA.ui.actGlyph(a.id, 16, 10), a.short), L.acts ? 'label: its activation function (zoom in for the formula)' : 'labelled neurons use their own activation'));
       }
     }
+    if (V.dropLegend) items.push(el('span', { class: 'lg-item' }, el('i', { class: 'sw sw-drop' }), `dashed: dropped for the last training example (dropout ${NA.fmtPct(App.net.lastDrop, 0)})`));
     items.push(el('span', { class: 'lg-item lg-signs' }, el('i', { class: 'sw sw-neg' }), 'negative', el('i', { class: 'sw sw-pos' }), 'positive'));
     NA.clear(V.legend).append(...items);
   }
@@ -986,6 +1019,10 @@
       kids.push(row('bias b', fmt(net.b[l - 1][j], 3)));
       if (tr.delta) kids.push(row('δ for this sample', fmt(tr.delta[l][j], 4)));
       if (l < net.L && !net.mask[l][j]) kids.push(el('div', { class: 'tt-note', text: 'Ablated: forced to output 0' }));
+      else if (l < net.L) {
+        const drop = dropShown(App.walk && App.walk.active);
+        if (drop && !drop[l][j]) kids.push(el('div', { class: 'tt-note', text: 'Dropout switched it off for the last training example: it passed nothing forward and got no update from that example. The values above have every neuron on, as when the model is used.' }));
+      }
     }
     kids.push(el('div', { class: 'tt-hint', text: (l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect') + ' · double-click or zoom in to open it' }));
     return kids;

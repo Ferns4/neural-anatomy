@@ -12,7 +12,9 @@
   const rgb = (name) => theme.tokens[name] || [128, 128, 128];
   // a caption that fits its width: shortened with an ellipsis rather than cut mid-word by the edge
   const fit = (ctx, s, w, size = 10.5, weight = 600) => { ctx.font = font(weight, size); if (ctx.measureText(s).width <= w) return s; let t = s; while (t.length > 1 && ctx.measureText(t + '…').width > w) t = t.slice(0, -1); return t.trimEnd() + '…'; };
-  V.classColour = (data, k) => BT.CLASS_COLOURS[(data.colourOf ? data.colourOf[k] : k) % 4];
+  // a table can have up to 20 classes: eight colours, then they repeat
+  const TABLE_COLOURS = ['s1', 's2', 's4', 's7', 's3', 's5', 's6', 's8'];
+  V.classColour = (data, k) => (data.table ? TABLE_COLOURS[k % 8] : BT.CLASS_COLOURS[(data.colourOf ? data.colourOf[k] : k) % 4]);
   const softmax = (o, base, K) => { let m = -Infinity; for (let k = 0; k < K; k++) m = Math.max(m, o[base + k]); const e = []; let z = 0; for (let k = 0; k < K; k++) { e.push(Math.exp(o[base + k] - m)); z += e[k]; } return e.map((v) => v / z); };
 
   // ------------------------------------------------------------------ the plane: regions and points
@@ -216,11 +218,81 @@
     void Vn;
   }
 
+  // ------------------------------------------------------------------ tables (your CSV)
+  /* Classes: before training, the rows on the first two input columns, coloured by class; once trained, the
+     confusion matrix of the validation rows. A value: before training, the value against the first input column;
+     once trained, the model's answer against the true value for the validation rows (right answers on the
+     diagonal), in the table's own units. */
+  function drawTable(ctx, r, L) {
+    const d = L.data, m = L.model, F = d.input.dim;
+    if (d.kind === 'classes' && m && L.confusion) return drawConfusion(ctx, r, L.confusion, d.names, `true ${d.targetName} (rows) × the model’s answer (columns)`);
+    const pts = [];
+    let xl, yl, diag = false;
+    if (d.kind === 'value' && m) {
+      const n = Math.min(d.nVa, 600), o = m.predict(d.Xva.subarray(0, n * F), n), ys = d.stats.y;
+      for (let k = 0; k < n; k++) pts.push({ x: d.Yva[k] * ys.std + ys.mean, y: o[k] * ys.std + ys.mean, c: 's2', ring: true });
+      xl = `true ${d.targetName}`; yl = 'the model’s answer'; diag = true;
+    } else {
+      const n = Math.min(d.nTr, 800);
+      for (let k = 0; k < n; k++) {
+        if (d.kind === 'value') pts.push({ x: d.Xtr[k * F], y: d.Ytr[k], c: 's1' });
+        else pts.push({ x: d.Xtr[k * F], y: F > 1 ? d.Xtr[k * F + 1] : 0, c: V.classColour(d, d.Ytr[k]) });
+      }
+      xl = d.featNames[0]; yl = d.kind === 'value' ? d.targetName : F > 1 ? d.featNames[1] : '';
+    }
+    scatter(ctx, r, pts, xl, yl, diag);
+  }
+  function scatter(ctx, r, pts, xl, yl, diag) {
+    if (!pts.length) return;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+    if (diag) { x0 = y0 = Math.min(x0, y0); x1 = y1 = Math.max(x1, y1); }
+    const px = (x1 - x0) * 0.06 || 1, py = (y1 - y0) * 0.06 || 1;
+    x0 -= px; x1 += px; y0 -= py; y1 += py;
+    const left = 46, bottom = 34, q = { x: r.x + left, y: r.y + 6, w: Math.max(40, r.w - left - 8), h: Math.max(40, r.h - bottom - 6) };
+    if (diag) { const s = Math.min(q.w, q.h); q.x += (q.w - s) / 2; q.w = q.h = s; }
+    const X = (v) => q.x + ((v - x0) / (x1 - x0)) * q.w, Y = (v) => q.y + q.h - ((v - y0) / (y1 - y0)) * q.h;
+    ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(q.x, q.y, q.w, q.h);
+    ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; ctx.strokeRect(q.x + 0.5, q.y + 0.5, q.w - 1, q.h - 1);
+    if (diag) { ctx.strokeStyle = theme.c('ink', 0.35); ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(X(x0), Y(y0)); ctx.lineTo(X(x1), Y(y1)); ctx.stroke(); ctx.setLineDash([]); }
+    const rad = clamp(Math.min(q.w, q.h) / 120, 1.8, 3.2);
+    for (const p of pts) {
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), rad, 0, Math.PI * 2);
+      if (p.ring) { ctx.strokeStyle = theme.c(p.c, 0.85); ctx.lineWidth = 1.2; ctx.stroke(); } else { ctx.fillStyle = theme.c(p.c, 0.7); ctx.fill(); }
+    }
+    const lab = (v) => (Math.abs(v) >= 1000 ? NA.fmtInt(v) : fmt(v, Math.abs(v) >= 10 ? 0 : 2));
+    text(ctx, lab(x0 + px), X(x0 + px), q.y + q.h + 10, { size: 10, align: 'center', color: theme.c('muted'), mono: true });
+    text(ctx, lab(x1 - px), X(x1 - px), q.y + q.h + 10, { size: 10, align: 'center', color: theme.c('muted'), mono: true });
+    text(ctx, lab(y0 + py), q.x - 6, Y(y0 + py), { size: 10, align: 'right', color: theme.c('muted'), mono: true });
+    text(ctx, lab(y1 - py), q.x - 6, Y(y1 - py), { size: 10, align: 'right', color: theme.c('muted'), mono: true });
+    if (xl) text(ctx, fit(ctx, xl, q.w - 80, 10.5), q.x + q.w / 2, q.y + q.h + 24, { size: 10.5, align: 'center', color: theme.c('ink-2'), w: 600 });
+    if (yl) { ctx.save(); ctx.translate(r.x + 10, q.y + q.h / 2); ctx.rotate(-Math.PI / 2); text(ctx, fit(ctx, yl, q.h - 20, 10.5), 0, 0, { size: 10.5, align: 'center', color: theme.c('ink-2'), w: 600 }); ctx.restore(); }
+  }
+  // K × K: row i, column j counts the validation examples of class i the model put in class j
+  function drawConfusion(ctx, r, M, names, title) {
+    const K = M.length, labW = Math.min(110, r.w * 0.28), top = 44, cs = Math.max(4, Math.min((r.w - labW - 8) / K, (r.h - top - 4) / K));
+    const q = { x: r.x + labW, y: r.y + top, s: cs * K };
+    text(ctx, fit(ctx, title, r.w, 10.5), r.x, r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+    let mx = 1; for (let i = 0; i < K; i++) for (let j = 0; j < K; j++) if (i !== j) mx = Math.max(mx, M[i][j]);
+    for (let i = 0; i < K; i++) {
+      const tot = M[i].reduce((a, b) => a + b, 0) || 1;
+      text(ctx, fit(ctx, names[i], labW - 8, 10, 500), q.x - 6, q.y + (i + 0.5) * cs, { size: 10, align: 'right', color: theme.c('ink-2') });
+      if (cs >= 14) text(ctx, fit(ctx, names[i], Math.max(cs, 30), 9.5, 500).slice(0, Math.max(2, Math.floor(cs / 6))), q.x + (i + 0.5) * cs, q.y - 9, { size: 9.5, align: 'center', color: theme.c('muted') });
+      for (let j = 0; j < K; j++) {
+        const v = M[i][j];
+        ctx.fillStyle = i === j ? theme.c('good', 0.12 + 0.75 * (v / tot)) : v ? theme.c('critical', 0.15 + 0.7 * (v / mx)) : theme.c('panel-2');
+        ctx.fillRect(q.x + j * cs + 0.5, q.y + i * cs + 0.5, cs - 1, cs - 1);
+        if (cs > 20 && v) text(ctx, String(v), q.x + j * cs + cs / 2, q.y + i * cs + cs / 2, { size: clamp(cs * 0.32, 9, 13), align: 'center', color: theme.c('ink'), mono: true });
+      }
+    }
+  }
+
   // ------------------------------------------------------------------ entry points
   V.draw = function (ctx, r, L) {
     const d = L.data;
     if (!d) return;
     if (d.error) return; // the lab shows the problem's error as text above the picture
+    if (d.table) return drawTable(ctx, r, L);
     if (d.family === 'plane') return drawPlane(ctx, r, L);
     if (d.family === 'curve') return drawCurve(ctx, r, L);
     if (d.family === 'digits') return drawDigits(ctx, r, L);
@@ -233,6 +305,7 @@
   V.preview = function (ctx, W, Hh, d) {
     ctx.clearRect(0, 0, W, Hh);
     if (!d || d.error) return;
+    if (d.table) { drawTable(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }); return; }
     if (d.family === 'plane') { drawPlane(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }, { dataOnly: true }); return; }
     if (d.family === 'curve') { drawCurve(ctx, { x: 0, y: 0, w: W, h: Hh + 18 }, { data: d, model: null }); return; }
     if (d.family === 'digits') { drawDigits(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: { ...d, nVa: 12 }, model: null }); return; }
