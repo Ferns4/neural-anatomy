@@ -13,7 +13,7 @@
     on(type, fn) { return this.ev.on(type, fn); },
     emit(type, payload) { this.ev.emit(type, payload); },
 
-    preset: null, spec: null, arch: null, hyper: null,
+    preset: null, spec: null, arch: null, hyper: null, mode: 'mlp',
     lenses: Object.assign({}, DEFAULT_LENSES),
     overlays: Object.assign({}, DEFAULT_OVERLAYS),
     speed: 'normal',
@@ -113,6 +113,17 @@
   App.loadPreset = function (id, opts = {}) {
     const p = NA.presets.byId[id] || NA.presets.PRESETS[0];
     const copy = (o) => JSON.parse(JSON.stringify(o));
+    if (p.lab) {
+      // a lab (transformer, PINN, diffusion) takes over the panels; an MLP stays loaded underneath
+      if (!this.net) this.loadPreset('spiral', { sync: true });
+      if (this.training) this.pause();
+      this.preset = p; this.mode = 'lab';
+      NA.labHost.enter(p);
+      this.emit('preset', p); this.emit('mode', 'lab'); this.emit('training');
+      NA.store.set('preset', p.id);
+      return;
+    }
+    if (this.mode === 'lab') { NA.labHost.exit(); this.mode = 'mlp'; this.emit('mode', 'mlp'); }
     this.preset = p;
     this.spec = Object.assign({ features: ['x1', 'x2'] }, copy(p.data));
     this.arch = copy(p.arch);

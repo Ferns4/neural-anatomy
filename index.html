@@ -506,17 +506,115 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
 .er-what { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .er-v { font-size: 11.5px; color: var(--muted); }
 
+/* ---------------------------------------------------------------- labs: transformer, PINN, diffusion
+   body[data-mode="lab"] swaps the MLP panels, readouts and settings for the active lab's own. */
+.lab-panel, .lab-readouts, .lab-hyper { display: none; }
+.lab-left { grid-area: data; } .lab-center { grid-area: net; } .lab-right { grid-area: insp; }
+.lab-ro, .lab-hyper-body { display: contents; }
+body[data-mode="lab"] .panel-data, body[data-mode="lab"] .panel-net, body[data-mode="lab"] .panel-insp, body[data-mode="lab"] .timeline,
+body[data-mode="lab"] .controlbar > .readouts:not(.lab-readouts), body[data-mode="lab"] .controlbar > .hyper:not(.lab-hyper) { display: none; }
+body:not([data-mode="lab"]) .controlbar > .lab-hyper { display: none; }
+body[data-mode="lab"] .lab-panel { display: flex; }
+body[data-mode="lab"] .lab-readouts { display: flex; }
+body[data-mode="lab"] .lab-hyper { display: flex; }
+.lab-center { position: relative; }
+.lab-stage { position: relative; flex: 1; min-height: 0; }
+.lab-stage canvas { position: absolute; inset: 0; touch-action: pan-y; }
+.lab-stage canvas.is-zoomed { touch-action: none; }
+.lab-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.lab-foot { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-2); }
+.lab-right .insp-body { padding-bottom: 24px; }
+.field input[type="range"] { height: 28px; }
+.lab-hyper .field select { min-width: 84px; }
+/* diffusion and PINN labs */
+.df-scrub { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.df-scrub input[type="range"] { flex: 1; min-width: 0; }
+.df-t { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; min-width: 128px; text-align: right; }
+.pinn-eq .fx-line { white-space: normal; }
+/* transformer lab */
+.lm-prompt-row { display: flex; gap: 8px; align-items: center; }
+.lm-prompt-row select { height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); padding: 0 6px; font-size: 12.5px; max-width: 46%; }
+.lm-input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); font: 500 13px var(--font-mono); }
+.lm-input:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+.lm-warn { margin: 0; font-size: 12px; color: var(--critical); }
+.tok-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.tok { display: inline-flex; flex-direction: column; align-items: center; gap: 0; min-width: 30px; padding: 3px 6px 2px; border: 1px solid var(--line-2); border-top: 3px solid var(--tok); border-radius: 6px; background: var(--panel); color: var(--ink); line-height: 1.15; }
+.tok:hover { border-color: var(--ink-2); border-top-color: var(--tok); }
+.tok.is-sel { background: var(--ink); color: var(--panel); border-color: var(--ink); border-top-color: var(--tok); }
+.tok.is-gen { border-style: dashed; border-top-style: solid; }
+.tok-next { opacity: 0.75; border-style: dashed; border-top-style: dashed; cursor: default; }
+.tok-w { font: 600 12px var(--font-mono); white-space: nowrap; }
+.tok-i { font: 500 9px var(--font-mono); color: var(--muted); }
+.tok.is-sel .tok-i { color: inherit; opacity: 0.7; }
+.pred-list, .nn-list { display: flex; flex-direction: column; gap: 3px; }
+.pred { display: grid; grid-template-columns: 74px minmax(0, 1fr) 48px; align-items: center; gap: 8px; font-size: 12px; }
+.pred-w { font: 600 12px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred-bar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.pred-bar > span { display: block; height: 100%; border-radius: 4px; }
+.pred-p { text-align: right; font-size: 11.5px; color: var(--ink-2); }
+.pred.is-actual { background: color-mix(in srgb, var(--good) 10%, transparent); border-radius: 5px; }
+.pred.is-actual .pred-w::after { content: " ← actual"; font-weight: 500; color: var(--muted); }
+.vocab { display: flex; flex-direction: column; gap: 6px; }
+.vocab-group { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.vocab-k { font-size: 11px; color: var(--muted); }
+.vocab-words { display: flex; flex-wrap: wrap; gap: 4px; }
+.vocab-w { padding: 2px 7px; border: 1px solid var(--line-2); border-left: 3px solid var(--tok); border-radius: 5px; background: var(--panel); font: 500 11.5px var(--font-mono); color: var(--ink); }
+.vocab-w:hover { border-color: var(--ink-2); border-left-color: var(--tok); }
+.seg button.is-off { text-decoration: line-through; opacity: 0.6; }
+.seg button[style*="--hc"][aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--hc), 0 0 0 1px var(--line-2); }
+.att-grid { display: flex; flex-direction: column; gap: 10px; }
+.att-row { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.att-l { width: 100%; font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.att-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.att-map { border-radius: 4px; cursor: pointer; box-shadow: 0 0 0 1px var(--line); }
+.att-map.is-sel { box-shadow: 0 0 0 2px var(--focus); }
+.att-map.is-off { opacity: 0.35; }
+.att-cap { font: 700 10.5px var(--font-mono); }
+.head-row.is-off { opacity: 0.6; border-style: dashed; }
+.head-row .diag-head .btn { margin-left: auto; }
+.head-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.head-dot-mlp { background: var(--ink-2); border-radius: 50%; }
+.ko { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 11.5px; }
+.ko-item { display: inline-flex; gap: 6px; align-items: baseline; color: var(--ink-2); }
+.ko-k { color: var(--muted); }
+.ko-item.is-mid .mono { color: var(--ink); font-weight: 600; }
+.ko-item.is-big .mono { color: var(--critical); font-weight: 700; }
+.emb-canvas { border-radius: 8px; cursor: pointer; }
+.lens-table { display: flex; flex-direction: column; gap: 4px; }
+.lens-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.lens-row.is-sel .lens-stage { color: var(--ink); font-weight: 700; }
+.lens-row.is-nocontext .lens-tops { opacity: 0.55; }
+.lens-stage { font-size: 11.5px; color: var(--ink-2); }
+.lens-tops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.lens-tok { position: relative; display: flex; justify-content: space-between; gap: 4px; padding: 2px 5px; border-radius: 4px; background: var(--panel-2); overflow: hidden; font-size: 11px; }
+.lens-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--tok); opacity: 0.22; }
+.lens-w, .lens-p { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lens-w { font: 600 11px var(--font-mono); color: var(--tok); }
+.lens-p { color: var(--muted); font-size: 10.5px; }
+.attr-list { display: flex; flex-direction: column; gap: 3px; }
+.attr-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) 52px; gap: 8px; align-items: center; font-size: 12px; }
+.attr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.attr-track { position: relative; height: 10px; background: var(--panel-2); border-radius: 3px; }
+.attr-track::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line-2); }
+.attr-fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.attr-fill.pos { background: var(--pos); } .attr-fill.neg { background: var(--neg); }
+.attr-v { text-align: right; font-size: 11.5px; }
 /* ---------------------------------------------------------------- responsive */
 @media (max-width: 1260px) {
   .app { height: auto; min-height: 100%; grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); grid-template-rows: auto auto minmax(560px, 72vh) auto auto; grid-template-areas: "top top" "ctrl ctrl" "data net" "insp insp" "time time"; }
   .panel-insp .insp-body { max-height: none; overflow: visible; }
   .panel-insp { overflow: visible; }
+  .lab-right .insp-body { max-height: none; overflow: visible; }
+  .lab-right { overflow: visible; }
+  .lab-center { min-height: 560px; }
   .hyper { margin-left: 0; }
 }
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "top" "ctrl" "net" "data" "insp" "time"; }
   .panel-net { height: 78vh; min-height: 480px; }
   .panel-data .panel-scroll { overflow: visible; }
+  .lab-center { height: 78vh; min-height: 480px; }
+  .lab-left .panel-scroll { overflow: visible; }
   .topbar { flex-wrap: wrap; gap: 10px 14px; }
   .topbar-sub { display: none; }
   .model-picker { order: 3; flex: 1 1 100%; }
@@ -619,6 +717,26 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 .mp-tools { display: flex; align-items: center; gap: 6px; flex: none; }
 .mp-chip { margin-top: 0; }
 .mp-fx { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: 8px; background: var(--panel-2); font: 500 11.5px/1.45 var(--font-mono); color: var(--ink-2); overflow-wrap: anywhere; }
+[data-layout="mobile"] .vocab-group { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+[data-layout="mobile"] .vocab-w { padding: 5px 9px; font-size: 13px; }
+[data-layout="mobile"] .tok { padding: 4px 7px 3px; }
+[data-layout="mobile"] .lens-tops { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+[data-layout="mobile"] .attr-row { grid-template-columns: 104px minmax(0, 1fr) 46px; }
+/* labs on a phone: one panel per screen, settings in the sheet */
+[data-layout="mobile"][data-mode="lab"][data-screen] .panel-data, [data-layout="mobile"][data-mode="lab"][data-screen] .panel-net, [data-layout="mobile"][data-mode="lab"][data-screen] .panel-insp, [data-layout="mobile"][data-mode="lab"][data-screen] .timeline { display: none; }
+[data-layout="mobile"][data-mode="lab"] .lab-panel { display: none; }
+[data-layout="mobile"][data-mode="lab"][data-screen="network"] .lab-center, [data-layout="mobile"][data-mode="lab"][data-screen="data"] .lab-left, [data-layout="mobile"][data-mode="lab"][data-screen="insp"] .lab-right { display: flex; }
+[data-layout="mobile"][data-mode="lab"] .lab-hyper { display: none; }
+[data-layout="mobile"][data-mode="lab"][data-sheet="settings"] .lab-hyper { display: grid; }
+[data-layout="mobile"] .lab-readouts > .lab-ro { display: contents; }
+[data-layout="mobile"] .lab-ro > :not(.ro-keep) { display: none; }
+[data-layout="mobile"] .lab-left .panel-scroll, [data-layout="mobile"] .lab-right .insp-body { overflow: auto; overscroll-behavior: contain; }
+[data-layout="mobile"] .lab-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 8px 10px; }
+[data-layout="mobile"] .lab-toolbar > * { flex: none; }
+[data-layout="mobile"] .lab-foot { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding: 6px 10px; }
+[data-layout="mobile"] .lab-foot > * { flex: none; }
+[data-layout="mobile"] .df-scrub { padding: 6px 10px; gap: 8px; }
+[data-layout="mobile"] .df-t { min-width: 0; font-size: 11px; }
 @media (max-height: 680px) {
   [data-layout="mobile"][data-screen="network"] .timeline { display: none; }
 }
@@ -689,6 +807,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
       <div class="readout ro-keep"><span class="ro-label" id="roAccLabel">Val. accuracy</span><span class="ro-value" id="roAcc">—</span></div>
       <button class="ro-test" id="btnTest" type="button" title="Score the model on the held-out test set (T)"><span class="ro-label">Held-out test</span><span class="ro-value" id="roTestRun">Run</span></button>
     </div>
+    <div class="readouts lab-readouts" aria-live="off"><span class="state-pill" id="labState">Paused</span><span class="lab-ro" id="labReadouts"></span></div>
     <button class="icon-btn" id="btnSettings" type="button" aria-label="Training settings" title="Training settings" aria-haspopup="dialog">
       <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="4.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="6" cy="11.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
     </button>
@@ -708,6 +827,10 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
         <button class="btn" id="btnSheetFF" type="button">Train 500 steps</button>
         <button class="btn" id="btnSheetTest" type="button">Run held-out test</button>
       </div>
+    </div>
+    <div class="hyper lab-hyper" id="labHyper">
+      <div class="sheet-bar"><span class="sheet-bar-title">Settings</span><button class="btn btn-primary" id="btnLabSheetDone" type="button">Done</button></div>
+      <div class="lab-hyper-body" id="labHyperBody"></div>
     </div>
   </section>
 
@@ -773,6 +896,10 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
     <div class="insp-body" id="inspBody" role="tabpanel"></div>
   </aside>
 
+  <section class="panel lab-panel lab-left" id="labLeft" aria-label="Lab inputs"></section>
+  <section class="panel lab-panel lab-center" id="labCenter" aria-label="Lab model"></section>
+  <aside class="panel lab-panel lab-right" id="labRight" aria-label="Lab inspector"></aside>
+
   <footer class="timeline" aria-label="Training history">
     <div class="tl-head"><span class="tl-title">History</span><span class="tl-status" id="tlStatus">0 steps</span></div>
     <div class="tl-wrap"><canvas id="tlCanvas" tabindex="0" role="slider" aria-label="Training history: drag to view the network at an earlier step" aria-valuemin="0" aria-valuenow="0" aria-valuemax="0"></canvas></div>
@@ -785,7 +912,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
   <nav class="mnav" id="mnav" aria-label="Screens">
     <button type="button" data-screen="network" aria-current="page">
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 7l6-3M5 7l6 7M5 15l6-1M5 15l6 4M11 4l6 7M11 14l6-3M11 19l6-8" opacity=".55"/><circle cx="5" cy="7" r="2"/><circle cx="5" cy="15" r="2"/><circle cx="11" cy="4" r="2"/><circle cx="11" cy="14" r="2"/><circle cx="11" cy="19" r="1.6"/><circle cx="17" cy="11" r="2.2"/></g></svg>
-      <span>Network</span>
+      <span class="mnav-net">Network</span>
     </button>
     <button type="button" data-screen="data" aria-current="false">
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="3" y="3" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 17C9 13 9 6 18 5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="14" cy="14" r="1.3" fill="currentColor"/><circle cx="15.5" cy="10" r="1.3" fill="currentColor"/></svg>
@@ -793,7 +920,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
     </button>
     <button type="button" data-screen="insp" aria-current="false">
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="9.5" cy="9.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.6 13.6 18 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M7 10.5l1.6-2 1.6 1.4 1.8-2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Inspect</span>
+      <span class="mnav-insp">Inspect</span>
     </button>
   </nav>
 </div>
@@ -872,6 +999,17 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 <script src="js/insights.js"></script>
 <script src="js/inspector.js"></script>
 <script src="js/walkthrough.js"></script>
+<script src="js/lab.js"></script>
+<script src="js/lm-data.js"></script>
+<script src="js/transformer.js"></script>
+<script src="js/lm-weights.js"></script>
+<script src="js/lab-transformer.js"></script>
+<script src="js/pinn.js"></script>
+<script src="js/pinn-weights.js"></script>
+<script src="js/lab-pinn.js"></script>
+<script src="js/diffusion.js"></script>
+<script src="js/diffusion-weights.js"></script>
+<script src="js/lab-diffusion.js"></script>
 <script src="js/mobile.js"></script>
 <script src="js/chrome.js"></script>
 <script src="pwa.js"></script>

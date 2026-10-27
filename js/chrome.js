@@ -41,10 +41,11 @@
 
   CH.init = function () {
     CH.play = $('#btnPlay'); CH.playLabel = $('#btnPlay .pl-label'); CH.ff = $('#ffProgress');
-    $('#btnPlay').addEventListener('click', () => App.toggle());
-    $('#btnStep').addEventListener('click', () => App.stepOnce());
-    $('#btnReset').addEventListener('click', () => App.reset());
-    $('#btnFF').addEventListener('click', () => App.fastForward(500));
+    $('#btnPlay').addEventListener('click', () => target().toggle());
+    $('#btnStep').addEventListener('click', () => target().stepOnce());
+    $('#btnReset').addEventListener('click', () => target().reset());
+    $('#btnFF').addEventListener('click', () => target().fastForward(500));
+    $('#btnLabSheetDone').addEventListener('click', () => NA.mobile && NA.mobile.sheet(false));
     fillSelect($('#hpLr'), OPTIONS.lr);
     fillSelect($('#hpBatch'), OPTIONS.batch);
     fillSelect($('#hpRegRate'), OPTIONS.regRate);
@@ -112,6 +113,7 @@
     App.on('hyper', syncControls);
     App.on('model', () => { syncControls(); syncHeader(); });
     App.on('preset', syncHeader);
+    App.on('labarch', syncHeader);
     App.on('lens', syncLenses);
     App.on('history', () => { CH.tlDirty = true; });
     App.on('weights', () => { CH.roDirty = true; CH.tlDirty = true; });
@@ -146,7 +148,7 @@
   function syncHeader() {
     const p = App.preset, net = App.net;
     $('#mpName').textContent = p.name;
-    $('#mpArch').textContent = net.sizes.join(' → ');
+    $('#mpArch').textContent = App.mode === 'lab' && NA.labHost.lab ? NA.labHost.lab.archText() : net.sizes.join(' → ');
     try { history.replaceState(null, '', '#' + p.id); } catch (e) { /* not allowed in some frames */ }
     document.title = 'Neural Anatomy';
   }
@@ -154,23 +156,28 @@
     $$('.seg[data-lens]').forEach((seg) => $$('button', seg).forEach((b) => b.setAttribute('aria-pressed', String(App.lenses[seg.dataset.lens] === b.dataset.v))));
     $$('[data-toggle]').forEach((b) => b.setAttribute('aria-pressed', String(!!App.lenses[b.dataset.toggle])));
   }
+  // The transport buttons drive the active lab, or the MLP.
+  const target = () => (App.mode === 'lab' && NA.labHost.lab) || App;
+  CH.target = target;
   function syncTransport() {
-    const t = App.training, ff = App.ffTarget !== null;
+    const T = target(), t = !!T.training, ff = T.ffTarget !== null && T.ffTarget !== undefined;
     CH.play.setAttribute('aria-pressed', String(t));
     CH.play.classList.toggle('is-running', t);
     CH.playLabel.textContent = t ? (ff ? 'Training…' : 'Pause') : 'Train';
     $('#icoPlay').hidden = t; $('#icoPause').hidden = !t;
     CH.ff.hidden = !ff;
-    CH.ffStart = ff ? App.step : null;
+    CH.ffStart = ff ? T.step : null;
     CH.roDirty = true;
   }
 
   // ------------------------------------------------------------------ per-frame updates
   CH.frame = function (now) {
-    if (App.ffTarget !== null) {
-      const total = App.ffTarget - (CH.ffStart ?? 0) || 1;
-      $('#ffBar').style.width = clamp((App.step - (CH.ffStart ?? 0)) / total, 0, 1) * 100 + '%';
+    const T = target();
+    if (T.ffTarget !== null && T.ffTarget !== undefined) {
+      const total = T.ffTarget - (CH.ffStart ?? 0) || 1;
+      $('#ffBar').style.width = clamp((T.step - (CH.ffStart ?? 0)) / total, 0, 1) * 100 + '%';
     }
+    if (App.mode === 'lab') return;
     if (CH.roDirty && now - CH.lastRead > 90) { CH.lastRead = now; CH.roDirty = false; readouts(); }
     if (CH.tlDirty && (!App.training || now - (CH.tlTime || 0) > 250)) { CH.tlTime = now; CH.tlDirty = false; drawTimeline(); }
   };
@@ -248,6 +255,15 @@
       body.appendChild(el('h3', { class: 'zoo-group', text: g }));
       const grid = el('div', { class: 'zoo-grid' });
       for (const p of items) {
+        if (p.lab) {
+          // labs draw their own glyph and describe themselves
+          const card = el('button', { class: 'zoo-card', type: 'button', dataset: { id: p.id }, onclick: () => { CH.closeZoo(); App.loadPreset(p.id); } },
+            el('canvas', { class: 'zoo-glyph', 'aria-hidden': 'true' }),
+            el('span', { class: 'zc-text' }, el('span', { class: 'zc-name', text: p.name }), el('span', { class: 'zc-tag', text: p.tagline }), el('span', { class: 'zc-meta', text: p.meta })));
+          card._lab = p.lab;
+          grid.appendChild(card);
+          continue;
+        }
         const sizes = [p.data.dataset === 'digits' ? 196 : p.data.dataset in NA.data.CURVES ? 1 : (p.data.features || ['x1', 'x2']).length, ...p.arch.hidden, NA.data.DATASETS[p.data.dataset].task === 'multiclass' ? (p.data.dataset === 'digits' ? 10 : 3) : 1];
         const glyph = el('canvas', { class: 'zoo-glyph', 'aria-hidden': 'true' });
         const card = el('button', { class: 'zoo-card', type: 'button', dataset: { id: p.id }, onclick: () => { CH.closeZoo(); App.loadPreset(p.id); } },
@@ -266,6 +282,7 @@
     $$('.zoo-card').forEach((card) => {
       const c = $('.zoo-glyph', card), sizes = card._sizes, W = 64, H = 44, ctx = NA.fitCanvas(c, W, H);
       ctx.clearRect(0, 0, W, H);
+      if (card._lab) { NA.labHost.get(card._lab).glyph(ctx, W, H); return; }
       const xs = sizes.map((_, i) => 6 + (i * (W - 12)) / Math.max(1, sizes.length - 1));
       const ys = sizes.map((n) => { const m = Math.min(n, 6), out = []; for (let k = 0; k < m; k++) out.push(H / 2 + (k - (m - 1) / 2) * 6.5); return out; });
       ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 0.6;
@@ -296,6 +313,16 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (!$('#zoo').hidden) return;
     const k = e.key;
+    if (App.mode === 'lab' && NA.labHost.lab) {
+      const lab = NA.labHost.lab;
+      if (k === ' ' && !(t && t.tagName === 'BUTTON')) { e.preventDefault(); lab.toggle(); }
+      else if (k === 's' || k === 'S') lab.stepOnce();
+      else if (k === 'r' || k === 'R') lab.reset();
+      else if ((k === 't' || k === 'T') && lab.runTest) lab.runTest();
+      else if (k === '?') CH.toggleHelp();
+      else if (lab.key) lab.key(e);
+      return;
+    }
     if (k === ' ' && !(t && t.tagName === 'BUTTON')) { e.preventDefault(); App.toggle(); }
     else if (k === 's' || k === 'S') App.stepOnce();
     else if (k === 'r' || k === 'R') App.reset();
@@ -349,6 +376,7 @@
     NA.netView.init();
     NA.dataView.init();
     NA.inspector.init();
+    NA.labHost.init();
     CH.init();
     if (NA.mobile) NA.mobile.init();
     const refreshTheme = () => { theme.read(); App.emit('weights'); CH.tlDirty = true; CH.roDirty = true; };

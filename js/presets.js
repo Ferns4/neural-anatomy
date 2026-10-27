@@ -181,7 +181,62 @@
     },
   ];
 
-  const GROUPS = ['Foundations', 'Representation', 'Function fitting', 'Perception', 'Failure modes'];
+  // Models that are not plain MLPs open in their own lab (lab.js); `try` entries name lab actions.
+  PRESETS.push(
+    {
+      id: 'transformer', group: 'Language models', lab: 'transformer', name: 'Tiny Transformer', tagline: 'A small language model, from embeddings to attention.',
+      meta: 'GPT-style · 2 layers × 4 heads · 28k parameters · 36 words',
+      about: 'A GPT-style transformer trained to predict the next word of a tiny made-up language. The embedding layer turns each word into a vector of 32 numbers and adds a vector for its position; two blocks of self-attention and MLPs then let every word gather information from the words before it. The stories are built so that some words can only be predicted by looking back: in "alice likes tea . bob likes milk . alice drinks", the last word depends on what Alice likes, which changes from story to story.',
+      look: [
+        'Prompt: the model predicts "tea". Change "alice likes tea" to "alice likes juice" and the prediction follows, so it is reading the context, not remembering pairs.',
+        'Embeddings: names, drinks, singular and plural animals form their own clusters, although nothing told the model which words belong together.',
+        'Training: lookups stay at chance for about 2,000 steps, then jump to 100% within a few hundred steps, when the circuit that combines "who" with "what" forms.',
+        'Attention: knock out one of the heads marked Lookup and lookups fall to guessing, while agreement is untouched.',
+        'Logit lens: early stages only know "a drink comes next"; the right drink appears after layer 2.',
+      ],
+      try: [
+        { text: 'Switch off the head that matters most for lookups and watch the drink prediction fall apart.', label: 'Knock out the lookup head', action: 'ablateLookup' },
+        { text: 'Load a one-layer model trained the same way. With one layer, "drinks" cannot combine who is asking with what they like, so lookups stay near chance.', label: 'One layer', action: 'oneLayer' },
+        { text: 'Agreement across a distractor: "the cat near the dogs" should continue with sleeps, runs or sings.', label: 'Try agreement', action: 'prompt', prompt: 'the cat near the dogs' },
+        { text: 'Start from random weights and train live. Grammar appears within seconds; lookups take about 2,000 steps (a minute or two).', label: 'Train from scratch', action: 'scratch' },
+      ],
+    },
+    {
+      id: 'pinn', group: 'Physics-informed', lab: 'pinn', name: 'Physics-Informed Network', tagline: 'A network that obeys a differential equation.',
+      meta: 'PINN · 1–32–32–32–1 tanh · damped oscillator',
+      about: 'Ten noisy measurements of a damped spring, all from its first third of a second. A plain network fits them and then has no idea what happens next. A physics-informed neural network (PINN) is trained on the same measurements plus one more loss: how far its curve is from obeying the oscillator equation u″ + 2ζω·u′ + ω²·u = 0 at 40 collocation points. Its derivatives u′ and u″ come from differentiating the network itself, exactly, so the equation can be checked anywhere, even where there is no data.',
+      look: [
+        'Main plot: both networks pass through the measurements. After the shaded region only the PINN keeps following the true motion (about 5% error against more than 50% for the plain network).',
+        'Residual plot: the plain network breaks the equation by orders of magnitude wherever it has no data; the PINN keeps it near zero everywhere.',
+        'Phase portrait: plotting u against u′ turns the damped motion into an inward spiral. The PINN traces it; the plain network wanders off.',
+        'Losses tab: data and physics terms pull against each other early on; the curve that satisfies both is the real one.',
+      ],
+      try: [
+        { text: 'Remove the measurements entirely: physics plus the starting conditions u(0) = 1, u′(0) = 0 are enough to solve the equation (about 2% error).', label: 'Physics only', action: 'physicsOnly' },
+        { text: 'Less damping (ζ = 0.03): the spring keeps swinging, so guessing beyond the data is even harder for the plain network.', label: 'Less damping', action: 'lowDamping' },
+        { text: 'Measure across the whole window: with data everywhere the plain network catches up, and physics matters much less.', label: 'More measurements', action: 'moreData' },
+        { text: 'Back to the original problem and the pretrained networks.', label: 'Reset the example', action: 'default' },
+      ],
+    },
+    {
+      id: 'diffusion', group: 'Generative models', lab: 'diffusion', name: 'Diffusion Model', tagline: 'Making new data by learning to remove noise.',
+      meta: 'DDPM · 2-D points · 100 noise steps · 9k parameters',
+      about: 'A denoising diffusion model, the idea behind modern image generators, shrunk to points in a plane. Training takes points of a pinwheel, adds a random amount of Gaussian noise and teaches a small network to predict exactly which noise was added. To generate, start from pure noise and repeatedly remove a little of the predicted noise: over 100 steps the points flow back onto the pinwheel, although no point is copied from the data.',
+      look: [
+        'Generate: 600 points of pure noise organise into the three arms. Trails show each point’s path; at first everything drifts to the middle, the arms only separate late.',
+        'Add noise: drag the slider to watch the training data dissolve into a round Gaussian blob. This is the forward process the network learns to undo.',
+        'Denoiser: arrows point to where the network thinks each noisy point came from. At high noise they all point toward the middle of the data; at low noise they snap to the nearest arm.',
+        'Training tab: the loss is near zero at high noise, where a point is almost all noise, and highest at low-to-middle noise.',
+      ],
+      try: [
+        { text: 'Deterministic sampling (DDIM): no fresh noise on the way back, so trails turn into smooth curves.', label: 'Use DDIM', action: 'ddim' },
+        { text: 'Sample in 10 big steps instead of 100: much faster, visibly blurrier.', label: 'Only 10 steps', action: 'fewSteps' },
+        { text: 'Drop points into the denoising field at a middle noise level and follow them to the data.', label: 'Explore the field', action: 'field' },
+        { text: 'Train a new denoiser on two moons from random weights; samples refresh as it learns.', label: 'Train on two moons', action: 'moons' },
+      ],
+    });
+
+  const GROUPS = ['Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Failure modes'];
 
   NA.presets = { PRESETS, GROUPS, byId: Object.fromEntries(PRESETS.map((p) => [p.id, p])) };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

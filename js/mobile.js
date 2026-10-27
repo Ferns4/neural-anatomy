@@ -23,6 +23,8 @@
     App.on('weights', () => { if (M.mobile && M.peek === 'neuron' && !App.training) renderPeek(); });
     App.on('probe', () => { if (M.mobile && M.peek === 'neuron') renderPeek(); });
     App.on('model', () => { M.peek = null; syncLabels(); renderPeek(); });
+    App.on('mode', () => { M.peek = null; syncLabels(); renderPeek(); });
+    App.on('preset', syncLabels);
     if (mq.addEventListener) mq.addEventListener('change', apply); else mq.addListener(apply);
     apply();
   };
@@ -54,7 +56,7 @@
     if (open && M.mobile) {
       b.dataset.sheet = 'settings';
       M.scrim.hidden = false;
-      document.getElementById('btnSheetDone').focus();
+      document.getElementById(App.mode === 'lab' ? 'btnLabSheetDone' : 'btnSheetDone').focus();
     } else {
       const wasOpen = !!b.dataset.sheet;
       delete b.dataset.sheet;
@@ -63,16 +65,21 @@
     }
   };
 
+  // Tab-bar names follow the model: a lab names its own three screens.
   function syncLabels() {
-    const lab = M.nav && M.nav.querySelector('.mnav-data');
-    if (lab && App.ds) lab.textContent = App.isImage() ? 'Draw' : 'Output';
+    if (!M.nav) return;
+    const lab = App.mode === 'lab' && NA.labHost.lab;
+    const set = (cls, text) => { const n = M.nav.querySelector(cls); if (n && text) n.textContent = text; };
+    set('.mnav-net', lab ? lab.screens.network : 'Network');
+    set('.mnav-data', lab ? lab.screens.data : App.ds && App.isImage() ? 'Draw' : 'Output');
+    set('.mnav-insp', lab ? lab.screens.insp : 'Inspect');
   }
 
   // ------------------------------------------------------------------ peek card
   function renderPeek() {
     const P = M.peekEl;
     if (!P) return;
-    if (!M.mobile || M.screen !== 'network') { P.hidden = true; return; }
+    if (!M.mobile || M.screen !== 'network' || App.mode === 'lab') { P.hidden = true; return; }
     const walking = App.walk && App.walk.active && NA.walk && NA.walk.summary;
     if (walking) renderWalk(P);
     else if (M.peek === 'neuron' && App.validNeuron(App.selected)) renderNeuron(P);

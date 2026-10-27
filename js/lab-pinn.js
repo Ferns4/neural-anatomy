@@ -1,0 +1,399 @@
+/* lab-pinn.js — the physics-informed network lab. A plain network and a PINN train side by side on the same
+   few measurements of a damped oscillator. Plots show the fit, how badly each breaks the differential
+   equation, and the phase portrait; inspector tabs cover the loss terms, the derivatives behind the residual
+   and the network's basis functions. */
+(function (NA) {
+  'use strict';
+  const { el, clear, clamp, fmt, fmtPct, fmtInt, theme } = NA;
+  const rr = (...a) => NA.rr(...a);
+  const App = NA.app, H = NA.labHost, UI = NA.labUI, PN = NA.pinn;
+
+  const DEFAULT = { zeta: 0.1, omega: 18, nData: 10, tMax: 0.36, noise: 0.03, nColloc: 40, seed: 3 };
+  const COL = { exact: () => theme.c('ink-2'), plain: () => theme.c('neg'), pinn: () => theme.c('pos'), data: () => theme.c('ink') };
+
+  const PL = H.transport({
+    id: 'pinn', screens: { network: 'Plots', data: 'Problem', insp: 'Inspect' },
+    budget: 12, lr: 5e-3, width: 32, depth: 3, lambda: 1, terms: { data: true, phys: true, ic: false }, probeT: 0.62, version: 0,
+  });
+
+  // ------------------------------------------------------------------ problem and training
+  PL.setup = function (opts, pretrained) {
+    this.probOpts = Object.assign({}, DEFAULT, this.probOpts, opts || {});
+    this.prob = PN.makeProblem(this.probOpts);
+    const sizes = [1, ...Array(this.depth).fill(this.width), 1];
+    this.plain = new PN.PINN(sizes, 1);
+    this.pinn = new PN.PINN(sizes, 1);
+    this.history = []; this.step = 0;
+    const W = NA.pinnWeights;
+    if (pretrained && W && W.pinn.sizes.join() === sizes.join()) {
+      this.plain.setParams(NA.tf.decodeWeights(W.plain.weights));
+      this.pinn.setParams(NA.tf.decodeWeights(W.pinn.weights));
+      this.step = W.pinn.steps;
+      this.history = W.pinn.curve.map(([step, data, phys, ic, err], i) => ({ step, data, phys, ic, pinnErr: err, plainErr: W.plain.curve[i] ? W.plain.curve[i][4] : null }));
+      this.pretrained = true;
+    } else this.pretrained = false;
+    this.measure();
+    this.bump();
+  };
+  PL.weights = function () { return { data: this.terms.data ? 1 : 0, phys: this.terms.phys ? this.lambda : 0, ic: this.terms.ic ? 1 : 0 }; };
+  PL.lrNow = function () { return this.lr * (this.step > 6000 ? 0.3 : 1); };
+  PL.trainChunk = function (budget, maxSteps) {
+    const t0 = performance.now(), P = this.prob, w = this.weights(), plainW = { data: 1, phys: 0, ic: 0 };
+    let k = 0, last = null;
+    do {
+      const lr = this.lrNow();
+      this.plain.trainStep(P, P.data, P.colloc, plainW, lr);
+      last = this.pinn.trainStep(P, P.data, P.colloc, w, lr);
+      this.step++; k++;
+      if (this.step % 100 === 0) this.record(last);
+    } while (performance.now() - t0 < budget && k < maxSteps);
+    this.last = last;
+    if (!isFinite(last.total)) { this.pause(); NA.ui.toast.show('Training diverged. Lower the learning rate and retrain.'); }
+    this.bump();
+    return k;
+  };
+  PL.record = function (r) {
+    this.measure();
+    this.history.push({ step: this.step, data: r.data, phys: r.phys, ic: r.ic, pinnErr: this.m.pinnErr, plainErr: this.m.plainErr });
+    if (this.history.length > 400) this.history = this.history.filter((q, i) => i % 2 === 0 || i === this.history.length - 1);
+  };
+  PL.onPause = function () { this.measure(); this.bump(); };
+  PL.stepOnce = function () { if (this.training) this.pause(); this.trainChunk(0, 1); this.measure(); };
+  PL.reset = function () { if (this.training) this.pause(); this.setup(); NA.ui.toast.show('Both networks re-initialized. Press Train.'); };
+  PL.retrain = function (msg) { this.pause(); this.setup(); this.play(); if (msg) NA.ui.toast.show(msg); };
+  PL.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; };
+
+  // Errors against the exact solution, overall and beyond the data, and the ODE residual of both networks.
+  PL.measure = function () {
+    const P = this.prob, n = 160, k = P.omega * P.omega, c = 2 * P.zeta * P.omega;
+    const acc = (net) => {
+      let num = 0, den = 0, numX = 0, denX = 0, res = 0;
+      for (let i = 0; i <= n; i++) {
+        const t = i / n, e = PN.exact(t, P.zeta, P.omega), [u, u1, u2] = net.forward(t, 2), d = u - e, r = (u2 + c * u1 + k * u) / k;
+        num += d * d; den += e * e; res += r * r;
+        if (t > P.tMax) { numX += d * d; denX += e * e; }
+      }
+      return { err: Math.sqrt(num / den), extra: denX ? Math.sqrt(numX / denX) : 0, res: Math.sqrt(res / (n + 1)) };
+    };
+    const a = acc(this.plain), b = acc(this.pinn);
+    this.m = { plainErr: a.err, pinnErr: b.err, plainExtra: a.extra, pinnExtra: b.extra, plainRes: a.res, pinnRes: b.res };
+  };
+
+  // ------------------------------------------------------------------ lifecycle
+  PL.activate = function (preset, ui) {
+    this.ui = ui; this.preset = preset;
+    if (!this.prob) this.setup({}, true);
+    this.ro = UI.readouts(ui.readouts, [
+      { key: 'step', label: 'Step', keep: true }, { key: 'pinn', label: 'PINN error', keep: true, title: 'Relative L2 error against the exact solution over the whole window' },
+      { key: 'plain', label: 'Plain error', title: 'Same, for the network trained on the data alone' }, { key: 'res', label: 'PINN residual', title: 'RMS of (u″ + 2ζωu′ + ω²u) / ω² over the window' },
+    ]);
+    this.buildHyper(ui.hyper);
+    this.buildLeft(ui.left);
+    this.buildCenter(ui.center);
+    this.tabs = UI.tabs(ui.right, [{ id: 'overview', label: 'Overview' }, { id: 'loss', label: 'Losses' }, { id: 'deriv', label: 'Derivatives' }, { id: 'net', label: 'Network' }], (id, body) => this.buildTab(id, body));
+    this.offTheme = theme.onChange(() => this.bump());
+    this.bump();
+  };
+  PL.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); };
+  PL.archText = function () { return `t → ${this.depth} × ${this.width} tanh → u(t), with u′ and u″ by exact differentiation`; };
+  PL.frame = function (now) {
+    this.runFrame();
+    if (now - (this.lastRo || 0) > 120) {
+      this.lastRo = now;
+      this.ro.set('step', fmtInt(this.step)); this.ro.set('pinn', fmtPct(this.m.pinnErr, 1)); this.ro.set('plain', fmtPct(this.m.plainErr, 1)); this.ro.set('res', fmt(this.m.pinnRes, 3));
+    }
+    if (this.training && now - (this.lastMeasure || 0) > 300) { this.lastMeasure = now; this.measure(); }
+    if (this.dirty && this.canvas.offsetParent && (!this.training || now - (this.lastDraw || 0) > 60)) { this.lastDraw = now; this.dirty = false; this.draw(); }
+    if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 300)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
+    if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 400)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
+  };
+
+  PL.buildHyper = function (root) {
+    const rebuild = (fn) => (v) => { fn(v); this.retrain('New network shape: both networks retrain from scratch.'); App.emit('labarch'); };
+    root.append(
+      UI.field('Learning rate', UI.select([0.001, 0.002, 0.005, 0.01].map((v) => ({ value: v, label: String(v) })), this.lr, (v) => { this.lr = +v; }), 'Adam step size; it drops to 30% after 6,000 steps'),
+      UI.field('Width', UI.select([16, 32, 64].map((v) => ({ value: v, label: v + ' neurons' })), this.width, rebuild((v) => { this.width = +v; }))),
+      UI.field('Depth', UI.select([1, 2, 3, 4].map((v) => ({ value: v, label: v + ' hidden' })), this.depth, rebuild((v) => { this.depth = +v; }))),
+      el('div', { class: 'sheet-actions' },
+        el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.fastForward(2000); } }, 'Train 2,000 steps'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.retrain('Retraining both networks from scratch.'); } }, 'Retrain both')));
+  };
+
+  // ------------------------------------------------------------------ left: the problem
+  PL.buildLeft = function (root) {
+    const body = UI.panel(root, 'Problem'), o = this.probOpts;
+    this.eqEl = el('div', { class: 'fx pinn-eq' });
+    const change = (key) => (v) => { this.probOpts[key] = v; this.retrain('New problem: both networks retrain from scratch.'); };
+    this.sliders = {
+      zeta: UI.slider({ label: 'Damping ζ', min: 0.02, max: 0.4, step: 0.01, value: o.zeta, format: (v) => v.toFixed(2), onInput: () => { this.leftDirty = true; }, onChange: change('zeta') }),
+      omega: UI.slider({ label: 'Natural frequency ω', min: 6, max: 30, step: 1, value: o.omega, format: (v) => v.toFixed(0), onChange: change('omega') }),
+      nData: UI.slider({ label: 'Measurements', min: 2, max: 30, step: 1, value: o.nData, format: (v) => v.toFixed(0), onChange: change('nData') }),
+      tMax: UI.slider({ label: 'Measured until t =', min: 0.1, max: 1, step: 0.02, value: o.tMax, format: (v) => v.toFixed(2), onChange: change('tMax') }),
+      noise: UI.slider({ label: 'Measurement noise', min: 0, max: 0.1, step: 0.005, value: o.noise, format: (v) => v.toFixed(3), onChange: change('noise') }),
+      nColloc: UI.slider({ label: 'Collocation points', min: 5, max: 100, step: 1, value: o.nColloc, format: (v) => v.toFixed(0), onChange: change('nColloc') }),
+    };
+    const terms = el('div', { class: 'chip-row' },
+      UI.chip('Data loss', this.terms.data, (on) => { this.terms.data = on; this.retrainPinn(); }, 'Squared error at the measurements'),
+      UI.chip('Physics loss', this.terms.phys, (on) => { this.terms.phys = on; this.retrainPinn(); }, 'Squared ODE residual at the collocation points'),
+      UI.chip('Initial conditions', this.terms.ic, (on) => { this.terms.ic = on; this.retrainPinn(); }, 'u(0) = 1 and u′(0) = 0'));
+    this.termChips = terms;
+    const lam = UI.slider({ label: 'Physics weight λ', min: -1, max: 1, step: 0.1, value: Math.log10(this.lambda), format: (v) => fmt(Math.pow(10, v), 2), onChange: (v) => { this.lambda = Math.pow(10, v); this.retrainPinn(); } });
+    this.probeEl = el('div', { class: 'kv-grid' });
+    body.append(
+      UI.section('The equation', this.eqEl, UI.note('A mass on a spring with friction: released from u = 1 at rest, it oscillates and slowly settles. The exact solution is known, so both networks can be scored against it.')),
+      UI.section('Measurements', this.sliders.nData, this.sliders.tMax, this.sliders.noise),
+      UI.section('Physics', this.sliders.zeta, this.sliders.omega, this.sliders.nColloc),
+      UI.section('What the PINN minimises', UI.note('The plain network always uses the data loss alone. Switch the PINN’s terms here; it retrains when you change them.'), terms, lam),
+      UI.section('At the probe', UI.note('Hover or tap the main plot to move the probe.'), this.probeEl));
+  };
+  PL.retrainPinn = function () {
+    this.pause();
+    const sizes = [1, ...Array(this.depth).fill(this.width), 1];
+    this.pinn = new PN.PINN(sizes, 1);
+    this.plain = new PN.PINN(sizes, 1);
+    this.history = []; this.step = 0; this.pretrained = false;
+    this.measure(); this.bump(); this.play();
+    const w = this.weights(), parts = [w.data && 'data', w.phys && 'physics', w.ic && 'initial conditions'].filter(Boolean);
+    NA.ui.toast.show(parts.length ? `PINN loss: ${parts.join(' + ')}. Retraining.` : 'With no loss terms the PINN has nothing to learn from.');
+  };
+  PL.renderLeft = function () {
+    const P = this.prob, z = this.sliders.zeta.input ? +this.sliders.zeta.input.value : P.zeta;
+    clear(this.eqEl).append(
+      el('div', { class: 'fx-line fx-strong', text: `u″ + ${fmt(2 * P.zeta * P.omega, 2)}·u′ + ${fmt(P.omega * P.omega, 0)}·u = 0` }),
+      el('div', { class: 'fx-line', text: `= u″ + 2ζω·u′ + ω²·u  with ζ = ${fmt(P.zeta, 2)}, ω = ${fmt(P.omega, 0)}` }),
+      el('div', { class: 'fx-line fx-muted', text: 'u(0) = 1,  u′(0) = 0,  t from 0 to 1' }),
+      el('div', { class: 'fx-line fx-muted', text: `exact: u = e^(−ζωt)·(cos ω_d t + (ζω/ω_d) sin ω_d t),  ω_d = ${fmt(P.omega * Math.sqrt(1 - P.zeta * P.zeta), 2)}` }));
+    void z;
+    const t = this.probeT, e = PN.exact(t, P.zeta, P.omega), a = this.plain.forward(t, 2), b = this.pinn.forward(t, 2), k = P.omega ** 2, c = 2 * P.zeta * P.omega;
+    clear(this.probeEl).append(
+      kv('t', fmt(t, 3)), kv('exact u', fmt(e, 3)),
+      kv('plain network', fmt(a[0], 3), `residual ${fmt((a[2] + c * a[1] + k * a[0]) / k, 3)}`),
+      kv('PINN', fmt(b[0], 3), `residual ${fmt((b[2] + c * b[1] + k * b[0]) / k, 3)}`));
+  };
+  const kv = (k, v, note) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }), note ? el('span', { class: 'kv-note', text: note }) : null);
+
+  // ------------------------------------------------------------------ centre: plots
+  PL.buildCenter = function (root) {
+    const show = this.show || (this.show = { plain: true, pinn: true, exact: true });
+    root.append(el('div', { class: 'lab-toolbar' }, el('span', { class: 'lens-label', text: 'Show' }),
+      UI.chip('Exact solution', show.exact, (on) => { show.exact = on; this.dirty = true; }),
+      UI.chip('Plain network', show.plain, (on) => { show.plain = on; this.dirty = true; }),
+      UI.chip('PINN', show.pinn, (on) => { show.pinn = on; this.dirty = true; })));
+    this.stage = el('div', { class: 'lab-stage' });
+    this.canvas = el('canvas', { 'aria-label': 'Plots: the fitted curves against the exact solution, the equation residual, and the phase portrait' });
+    this.stage.append(this.canvas);
+    root.append(this.stage, el('div', { class: 'lab-foot' },
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact solution (dashed)'),
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--neg)' } }), 'plain network: data loss only'),
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN: data + physics'),
+      el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled' }), 'measurement'),
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-tri' }), 'collocation point')));
+    const move = (e) => { const p = this.plotAt(e); if (p !== null) { this.probeT = p; this.dirty = true; this.leftDirty = true; this.inspDirty = true; } };
+    this.canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) move(e); });
+    this.canvas.addEventListener('pointerdown', move);
+    this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
+    this.resizeObs.observe(this.stage);
+  };
+  PL.plotAt = function (e) {
+    const L = this.lay;
+    if (!L) return null;
+    const r = this.canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, m = L.main;
+    if (x < m.x || x > m.x + m.w || y < m.y - 10 || y > m.y + m.h + 10) return null;
+    return clamp((x - m.x) / m.w, 0, 1);
+  };
+  PL.curves = function () {
+    if (this.cv && this.cv.version === this.version) return this.cv;
+    const P = this.prob, n = 220, k = P.omega ** 2, c = 2 * P.zeta * P.omega, mk = () => ({ u: new Float32Array(n + 1), u1: new Float32Array(n + 1), r: new Float32Array(n + 1) });
+    const out = { version: this.version, n, exact: mk(), plain: mk(), pinn: mk() };
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      out.exact.u[i] = PN.exact(t, P.zeta, P.omega); out.exact.u1[i] = PN.exactD(t, P.zeta, P.omega);
+      for (const key of ['plain', 'pinn']) {
+        const [u, u1, u2] = this[key].forward(t, 2);
+        out[key].u[i] = u; out[key].u1[i] = u1; out[key].r[i] = (u2 + c * u1 + k * u) / k;
+      }
+    }
+    this.cv = out;
+    return out;
+  };
+  PL.draw = function () {
+    const W = Math.max(240, this.stage.clientWidth), Hh = Math.max(300, this.stage.clientHeight), ctx = NA.fitCanvas(this.canvas, W, Hh);
+    const P = this.prob, cv = this.curves(), show = this.show, wide = W >= 560 && Hh >= 420, pad = 12;
+    ctx.clearRect(0, 0, W, Hh);
+    // layout: main plot on top; residual and phase portrait below (side by side when there is room)
+    const main = { x: 46, y: 24, w: W - 46 - pad, h: wide ? Hh * 0.52 : Hh * 0.42 };
+    const below = main.y + main.h + 40;
+    let res, ph;
+    if (wide) { const pw = Math.min(Hh - below - 30, W * 0.38); res = { x: 46, y: below, w: W - 46 - pad - pw - 40, h: Hh - below - 30 }; ph = { x: W - pad - pw, y: below, w: pw, h: pw }; }
+    else { const rh = (Hh - below - 50) * 0.42; res = { x: 46, y: below, w: W - 46 - pad, h: rh }; const s = Math.min(W - 2 * pad - 40, Hh - (below + rh + 34) - 22); ph = { x: (W - s) / 2 + 10, y: below + rh + 34, w: s, h: s }; }
+    this.lay = { main, res, ph };
+    const font = (wgt, px) => `${wgt} ${px}px ${getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'}`;
+    const title = (r, text) => { ctx.font = font(600, 10.5); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(text.toUpperCase(), r.x, r.y - 8); };
+    const frame = (r) => { ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); };
+    // --- main plot
+    const yMax = 1.25, X = (t) => main.x + t * main.w, Y = (u) => main.y + main.h / 2 - (u / yMax) * (main.h / 2);
+    title(main, 'u(t): position over time');
+    ctx.fillStyle = theme.c('ink', theme.dark ? 0.06 : 0.04);
+    ctx.fillRect(X(0), main.y, X(P.tMax) - X(0), main.h);
+    ctx.font = font(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center';
+    ctx.fillText('measured', X(P.tMax / 2), main.y + 12);
+    ctx.fillText('no data: prediction only', X((P.tMax + 1) / 2), main.y + 12);
+    frame(main);
+    ctx.strokeStyle = theme.c('line-2'); ctx.beginPath(); ctx.moveTo(main.x, Y(0)); ctx.lineTo(main.x + main.w, Y(0)); ctx.stroke();
+    ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (const v of [-1, 0, 1]) ctx.fillText(String(v), main.x - 6, Y(v));
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) ctx.fillText(String(t), X(t), main.y + main.h + 4);
+    const line = (arr, color, width, dash, Xf, Yf, n) => {
+      ctx.save(); ctx.beginPath(); ctx.rect(main.x - 2, 0, W, Hh); ctx.clip();
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) { const x = Xf(i), y = Yf(arr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+      ctx.stroke(); ctx.restore();
+    };
+    const tx = (i) => X(i / cv.n), clampY = (u) => Y(clamp(u, -yMax * 1.4, yMax * 1.4));
+    ctx.save(); ctx.beginPath(); ctx.rect(main.x, main.y, main.w, main.h); ctx.clip();
+    if (show.exact) line(cv.exact.u, COL.exact(), 1.6, [5, 4], tx, clampY, cv.n);
+    if (show.plain) line(cv.plain.u, COL.plain(), 2.2, null, tx, clampY, cv.n);
+    if (show.pinn) line(cv.pinn.u, COL.pinn(), 2.4, null, tx, clampY, cv.n);
+    ctx.restore();
+    // measurements and collocation points
+    for (const d of P.data) { ctx.beginPath(); ctx.arc(X(d.t), Y(d.u), 4, 0, Math.PI * 2); ctx.fillStyle = COL.data(); ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = theme.c('panel'); ctx.stroke(); }
+    if (this.terms.phys) { ctx.fillStyle = theme.c('muted'); for (const t of P.colloc) { const x = X(t), y = main.y + main.h; ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x - 3, y - 1); ctx.lineTo(x + 3, y - 1); ctx.fill(); } }
+    // probe
+    const pt = this.probeT, pi = Math.round(pt * cv.n);
+    ctx.strokeStyle = theme.c('ink', 0.35); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(pt), main.y); ctx.lineTo(X(pt), main.y + main.h); ctx.stroke(); ctx.setLineDash([]);
+    for (const [key, col] of [['plain', COL.plain()], ['pinn', COL.pinn()]]) if (show[key]) { ctx.beginPath(); ctx.arc(X(pt), clampY(cv[key].u[pi]), 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill(); }
+    // --- residual (log of |r|)
+    title(res, '|ODE residual| / ω²  (log scale)');
+    frame(res);
+    const lo = -4, hi = 1.5, RY = (r) => res.y + res.h - ((clamp(Math.log10(Math.abs(r) + 1e-6), lo, hi) - lo) / (hi - lo)) * res.h, RX = (i) => res.x + (i / cv.n) * res.w;
+    ctx.fillStyle = theme.c('muted'); ctx.font = font(500, 10); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (const e of [-4, -2, 0]) { ctx.fillText('1e' + e, res.x - 6, RY(Math.pow(10, e))); ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(res.x, RY(Math.pow(10, e))); ctx.lineTo(res.x + res.w, RY(Math.pow(10, e))); ctx.stroke(); }
+    ctx.fillStyle = theme.c('ink', theme.dark ? 0.06 : 0.04); ctx.fillRect(res.x, res.y, P.tMax * res.w, res.h);
+    ctx.save(); ctx.beginPath(); ctx.rect(res.x, res.y, res.w, res.h); ctx.clip();
+    const rline = (arr, col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.beginPath(); for (let i = 0; i <= cv.n; i++) { const x = RX(i), y = RY(arr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); };
+    if (show.plain) rline(cv.plain.r, COL.plain());
+    if (show.pinn) rline(cv.pinn.r, COL.pinn());
+    ctx.restore();
+    // --- phase portrait: u against u′/ω
+    title(ph, ph.w < 250 ? 'Phase: u vs u′/ω' : 'Phase portrait: u against u′/ω');
+    frame(ph);
+    const s = 1.25, PX = (u) => ph.x + ph.w / 2 + (u / s) * (ph.w / 2), PY = (v) => ph.y + ph.h / 2 - (v / s) * (ph.h / 2);
+    ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(ph.x, PY(0)); ctx.lineTo(ph.x + ph.w, PY(0)); ctx.moveTo(PX(0), ph.y); ctx.lineTo(PX(0), ph.y + ph.h); ctx.stroke();
+    ctx.save(); ctx.beginPath(); ctx.rect(ph.x, ph.y, ph.w, ph.h); ctx.clip();
+    const pline = (c, col, width, dash) => { ctx.strokeStyle = col; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.beginPath(); for (let i = 0; i <= cv.n; i++) { const x = PX(c.u[i]), y = PY(c.u1[i] / P.omega); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); ctx.setLineDash([]); };
+    if (show.exact) pline(cv.exact, COL.exact(), 1.4, [4, 3]);
+    if (show.plain) pline(cv.plain, COL.plain(), 1.8);
+    if (show.pinn) pline(cv.pinn, COL.pinn(), 2);
+    ctx.restore();
+    ctx.fillStyle = COL.data(); ctx.beginPath(); ctx.arc(PX(1), PY(0), 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.font = font(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText('start', PX(1) - 22, PY(0) - 5);
+  };
+
+  // ------------------------------------------------------------------ right: inspector
+  PL.buildTab = function (id, body) {
+    this.tabId = id; const P = (this.parts = {});
+    if (id === 'overview') {
+      body.append(UI.modelCard(this.preset, (t) => this.runTry(t)));
+      P.findings = el('div', { class: 'diag-list' });
+      body.append(UI.section('How the two networks compare', UI.note('Scored against the exact solution, which neither network ever sees.'), P.findings));
+    } else if (id === 'loss') {
+      const mk = (title, opts, legend, note) => { const c = el('canvas'), chart = new NA.charts.LineChart(c, opts); body.append(UI.section(title, el('div', { class: 'chart-box' }, c), legend, note ? UI.note(note) : null)); return chart; };
+      const lg = (items) => el('div', { class: 'mini-legend' }, ...items.map(([n, col]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: col } }), n)));
+      P.tiles = el('div', { class: 'tiles' });
+      body.append(P.tiles);
+      P.terms = mk('PINN loss terms', { height: 150, logY: true, format: (v) => fmt(v, 5) }, lg([['data', 'var(--ink-2)'], ['physics', 'var(--pos)'], ['initial conditions', 'var(--s4)']]), 'The data term wants the curve through the measurements; the physics term wants u″ + 2ζωu′ + ω²u = 0 at every collocation point. Early on they disagree; the solution that satisfies both is the true motion.');
+      P.err = mk('Error against the exact solution', { height: 140, logY: true, format: (v) => fmtPct(v, 1) }, lg([['plain network', 'var(--neg)'], ['PINN', 'var(--pos)']]), 'Relative L2 error over the whole window, including where there is no data.');
+    } else if (id === 'deriv') {
+      P.table = el('div', { class: 'kv-grid' });
+      P.chain = el('div', { class: 'fx' });
+      P.canvas = el('canvas');
+      body.append(UI.section('The residual at the probe', P.table),
+        UI.section('How the network differentiates itself', UI.note('Every layer carries three numbers per neuron: its value and its first and second derivative with respect to t. They are exact (no finite differences), and backpropagation runs through all three streams.'), P.chain),
+        UI.section('u′ and u″ across the window', el('div', { class: 'chart-box' }, P.canvas), el('div', { class: 'mini-legend' },
+          el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN u′/ω'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s7)' } }), 'PINN u″/ω²'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact (dashed)'))));
+    } else if (id === 'net') {
+      P.arch = el('div', { class: 'kv-grid' });
+      P.canvas = el('canvas');
+      body.append(UI.section('Architecture', P.arch), UI.section('Basis functions', UI.note('Each thin line is one neuron of the last hidden layer as t goes from 0 to 1, coloured by the sign of its output weight. The answer u(t) is their weighted sum plus a bias: tanh curves bent and shifted until they add up to a damped wave.'), el('div', { class: 'chart-box' }, P.canvas)));
+    }
+    this.updateTab();
+  };
+  PL.updateTab = function () {
+    const id = this.tabId, P = this.parts, m = this.m;
+    if (!P) return;
+    if (id === 'overview') {
+      const items = [];
+      const f = (level, title, text) => items.push(el('div', { class: 'diag diag-' + level }, el('div', { class: 'diag-head' }, UI.pill(level, { good: 'Good', info: 'Note', warn: 'Watch', critical: 'Problem' }[level]), el('h4', { class: 'diag-title', text: title })), el('p', { class: 'diag-body', text })));
+      const trained = this.step >= 1500;
+      if (!trained) f('info', 'Still training', `Step ${fmtInt(this.step)}. Both networks usually settle within a few thousand steps.`);
+      f(m.pinnErr < 0.1 ? 'good' : 'warn', `PINN: ${fmtPct(m.pinnErr, 1)} error`, `${fmtPct(m.pinnExtra, 1)} beyond the last measurement. ${m.pinnErr < 0.1 ? 'Following the equation lets it carry on correctly where there is no data.' : 'Not there yet: the physics term may still be pulling against the data.'}`);
+      f(m.plainErr > 0.3 ? 'critical' : 'info', `Plain network: ${fmtPct(m.plainErr, 1)} error`, `${fmtPct(m.plainExtra, 1)} beyond the last measurement. ${m.plainErr > 0.3 ? 'It fits the measurements and then guesses: nothing tells it what happens after them.' : 'With measurements covering most of the window, data alone is enough.'}`);
+      f('info', `Residual: PINN ${fmt(m.pinnRes, 3)}, plain ${fmt(m.plainRes, 2)}`, 'RMS of the equation’s left-hand side divided by ω². Zero means the curve obeys the physics exactly. The plain network was never asked to, and it shows.');
+      clear(P.findings).append(...items);
+    } else if (id === 'loss') {
+      const last = this.last || this.history[this.history.length - 1] || {};
+      clear(P.tiles).append(UI.tile('Step', fmtInt(this.step), this.pretrained ? 'trained offline, same code' : null), UI.tile('Data loss', fmt(last.data, 5)), UI.tile('Physics loss', fmt(last.phys, 5), `weight λ = ${fmt(this.lambda, 2)}`), UI.tile('IC loss', this.terms.ic ? fmt(last.ic, 5) : 'off'));
+      const s = (key, name, color) => ({ name, color, points: this.history.filter((q) => q[key] > 0).map((q) => [q.step, q[key]]) });
+      P.terms.frame(); P.terms.set({ series: [s('data', 'data', theme.c('ink-2')), s('phys', 'physics', theme.c('pos')), s('ic', 'initial conditions', theme.c('s4'))].filter((x) => x.points.length) });
+      P.err.frame(); P.err.set({ series: [s('plainErr', 'plain network', theme.c('neg')), s('pinnErr', 'PINN', theme.c('pos'))] });
+    } else if (id === 'deriv') this.renderDeriv(P);
+    else if (id === 'net') this.renderNet(P);
+  };
+  PL.renderDeriv = function (P) {
+    const Pr = this.prob, t = this.probeT, k = Pr.omega ** 2, c = 2 * Pr.zeta * Pr.omega, [u, u1, u2] = this.pinn.forward(t, 2), e = PN.exact(t, Pr.zeta, Pr.omega), e1 = PN.exactD(t, Pr.zeta, Pr.omega);
+    clear(P.table).append(
+      kv('t (probe)', fmt(t, 3)), kv('u', fmt(u, 4), `exact ${fmt(e, 4)}`), kv('u′', fmt(u1, 3), `exact ${fmt(e1, 3)}`), kv('u″', fmt(u2, 2)),
+      kv('u″ + 2ζω·u′ + ω²·u', fmt(u2 + c * u1 + k * u, 3), `${fmt(u2, 2)} + ${fmt(c, 2)}×${fmt(u1, 3)} + ${fmt(k, 0)}×${fmt(u, 4)}; the physics loss squares this ÷ ω²`));
+    clear(P.chain).append(...['input  x = 2t − 1,  x′ = 2,  x″ = 0', 'each layer  z = W·a + b,  z′ = W·a′,  z″ = W·a″', 'tanh  a = tanh z,  a′ = (1 − a²)·z′,  a″ = −2a(1 − a²)·z′² + (1 − a²)·z″', 'output  u, u′, u″ are the last layer’s z, z′, z″'].map((s, i) => el('div', { class: 'fx-line' + (i === 2 ? ' fx-strong' : '') , text: s })));
+    const W = Math.max(220, P.canvas.parentElement.clientWidth), Hh = 150, ctx = NA.fitCanvas(P.canvas, W, Hh), cv = this.curves(), n = 160;
+    ctx.clearRect(0, 0, W, Hh);
+    ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(0, Hh / 2); ctx.lineTo(W, Hh / 2); ctx.stroke();
+    const Y = (v) => Hh / 2 - clamp(v, -1.4, 1.4) / 1.4 * (Hh / 2 - 6);
+    const plot = (fn, col, dash) => { ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.setLineDash(dash || []); ctx.beginPath(); for (let i = 0; i <= n; i++) { const x = (i / n) * W, y = Y(fn(i / n)); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); ctx.setLineDash([]); };
+    plot((s) => PN.exactD(s, Pr.zeta, Pr.omega) / Pr.omega, theme.c('ink-2'), [4, 3]);
+    plot((s) => this.pinn.forward(s, 2)[1] / Pr.omega, theme.c('pos'));
+    plot((s) => this.pinn.forward(s, 2)[2] / k, theme.c('s7'));
+    ctx.strokeStyle = theme.c('ink', 0.4); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(t * W, 0); ctx.lineTo(t * W, Hh); ctx.stroke(); ctx.setLineDash([]);
+    void cv;
+  };
+  PL.renderNet = function (P) {
+    const net = this.pinn, sizes = net.sizes;
+    clear(P.arch).append(kv('Layers', sizes.join(' → ')), kv('Activation', 'tanh (smooth, so u″ exists everywhere)'), kv('Parameters', fmtInt(net.paramCount), 'per network; the plain network has the same shape and starting weights'), kv('Optimizer', `Adam, learning rate ${this.lr}`));
+    const W = Math.max(220, P.canvas.parentElement.clientWidth), Hh = 190, ctx = NA.fitCanvas(P.canvas, W, Hh), n = 120, Lh = net.L - 1, wOut = net.W[net.L - 1];
+    ctx.clearRect(0, 0, W, Hh);
+    ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(0, Hh / 2); ctx.lineTo(W, Hh / 2); ctx.stroke();
+    const vals = Array.from({ length: sizes[Lh] }, () => new Float32Array(n + 1)), out = new Float32Array(n + 1);
+    for (let i = 0; i <= n; i++) { out[i] = net.forward(i / n, 0)[0]; const a = net.a[Lh][0]; for (let j = 0; j < sizes[Lh]; j++) vals[j][i] = a[j]; }
+    let mw = 1e-6; for (const w of wOut) mw = Math.max(mw, Math.abs(w));
+    vals.forEach((v, j) => {
+      const w = wOut[j];
+      ctx.strokeStyle = theme.divColor((w / mw) * 0.85 + Math.sign(w) * 0.15, 0.25 + 0.6 * Math.abs(w) / mw); ctx.lineWidth = 1;
+      ctx.beginPath(); for (let i = 0; i <= n; i++) { const x = (i / n) * W, y = Hh / 2 - v[i] * (Hh / 2 - 8); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    });
+    ctx.strokeStyle = theme.c('ink'); ctx.lineWidth = 2.2;
+    ctx.beginPath(); for (let i = 0; i <= n; i++) { const x = (i / n) * W, y = Hh / 2 - clamp(out[i], -1.2, 1.2) / 1.2 * (Hh / 2 - 8); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+  };
+
+  PL.runTry = function (t) {
+    if (t.action === 'physicsOnly') { this.terms = { data: false, phys: true, ic: true }; NA.$$('.chip', this.termChips).forEach((b, i) => b.setAttribute('aria-pressed', String([false, true, true][i]))); this.retrainPinn(); NA.ui.toast.show('PINN loss: physics + initial conditions only. It solves the equation without seeing a single measurement.'); }
+    else if (t.action === 'lowDamping') { this.sliders.zeta.set(0.03); this.probOpts.zeta = 0.03; this.retrain('Less damping: the oscillation lasts longer, so extrapolating is harder.'); }
+    else if (t.action === 'moreData') { this.sliders.tMax.set(1); this.sliders.nData.set(20); Object.assign(this.probOpts, { tMax: 1, nData: 20 }); this.retrain('Measurements across the whole window: now the plain network has data everywhere too.'); }
+    else if (t.action === 'default') { this.terms = { data: true, phys: true, ic: false }; this.lambda = 1; this.probOpts = Object.assign({}, DEFAULT); this.pause(); this.ui.left.replaceChildren(); this.buildLeft(this.ui.left); this.setup({}, true); }
+    this.tabs.select(this.tabId);
+  };
+
+  // Zoo glyph: a damped wave through a few dots.
+  PL.glyph = function (ctx, W, Hh) {
+    ctx.strokeStyle = theme.c('ink-2'); ctx.lineWidth = 1.4; ctx.beginPath();
+    for (let i = 0; i <= 60; i++) { const t = i / 60, x = 4 + t * (W - 8), y = Hh / 2 - Math.exp(-2.2 * t) * Math.cos(15 * t) * (Hh / 2 - 6); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    ctx.fillStyle = theme.c('ink');
+    for (const t of [0, 0.1, 0.2]) { const x = 4 + t * (W - 8), y = Hh / 2 - Math.exp(-2.2 * t) * Math.cos(15 * t) * (Hh / 2 - 6); ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fill(); }
+  };
+
+  H.register(PL);
+  NA.pinnLab = PL;
+})(window.NA);
