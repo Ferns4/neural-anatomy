@@ -46,7 +46,7 @@
     this.leftDirty = true;
     App.emit('labarch');
   };
-  TL.bumpVersion = function () { this.version++; this.trCache = null; this.dirty = true; this.inspDirty = true; };
+  TL.bumpVersion = function () { this.version++; this.trCache = null; this.dirty = true; this.inspDirty = true; this.archStale = true; };
 
   TL.recordPoint = function () {
     const e = TF.evaluate(this.model, this.val.slice(0, 80), D.W);
@@ -190,7 +190,7 @@
   };
   TL.promptChanged = function (generated) {
     if (!generated) this.genStart = null;
-    this.dirty = true; this.inspDirty = true; this.leftDirty = true;
+    this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true;
     if (this.inputEl && document.activeElement !== this.inputEl) this.inputEl.value = this.text;
   };
 
@@ -213,6 +213,7 @@
     if (this.genTimer) { clearTimeout(this.genTimer); this.genTimer = null; }
     if (this.offTheme) this.offTheme();
     if (this.resizeObs) this.resizeObs.disconnect();
+    if (this.arch) this.arch.destroy();
   };
   TL.archText = function () { const c = this.model.cfg; return `${c.V} tokens → ${c.L} × (attention ${c.H} heads + MLP) → next token`; };
 
@@ -220,6 +221,12 @@
     this.runFrame();
     if (now - (this.lastRo || 0) > 120) { this.lastRo = now; this.readouts(); }
     if (this.dirty && this.canvas && this.canvas.offsetParent && (!this.training || now - (this.lastDraw || 0) > 90)) { this.lastDraw = now; this.dirty = false; this.draw(); }
+    if (this.centerView === 'arch') {
+      // the diagram shows live numbers: redraw it, and its explanation, when they change
+      if (this.archStale && (!this.training || now - (this.lastArch || 0) > 400)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; this.archInfoStale = true; }
+      this.arch.frame(now);
+      if (this.archInfoStale && !this.arch.anim && !this.training) { this.archInfoStale = false; this.arch.refreshFocus(); }
+    }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 250)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 400)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
   };
@@ -288,7 +295,7 @@
     clear(this.chipsEl);
     tr.ids.forEach((id, i) => {
       const gen = this.genStart !== null && this.genStart !== undefined && i >= this.genStart;
-      const b = el('button', { class: 'tok' + (i === pos ? ' is-sel' : '') + (gen ? ' is-gen' : ''), type: 'button', role: 'option', 'aria-selected': String(i === pos), style: { '--tok': tokColor(id) }, title: `Position ${i}: "${word(id)}" (token ${id}, ${D.CATEGORIES[D.CAT_OF[id]].label.toLowerCase()})`, onclick: () => { this.sel = i; this.dirty = true; this.inspDirty = true; this.leftDirty = true; } },
+      const b = el('button', { class: 'tok' + (i === pos ? ' is-sel' : '') + (gen ? ' is-gen' : ''), type: 'button', role: 'option', 'aria-selected': String(i === pos), style: { '--tok': tokColor(id) }, title: `Position ${i}: "${word(id)}" (token ${id}, ${D.CATEGORIES[D.CAT_OF[id]].label.toLowerCase()})`, onclick: () => { this.sel = i; this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; } },
         el('span', { class: 'tok-w', text: word(id) }), el('span', { class: 'tok-i', text: String(i) }));
       this.chipsEl.append(b);
     });
@@ -317,21 +324,75 @@
     this.headSeg = el('div', { class: 'seg seg-sm', role: 'group', 'aria-label': 'Attention heads shown' });
     this.renderHeadSeg();
     const lensChip = UI.chip('Logit lens', this.lens, (on) => { this.lens = on; this.dirty = true; }, 'Print what the model would predict if it stopped at each stage');
-    root.append(el('div', { class: 'lab-toolbar' }, el('span', { class: 'lens-label', text: 'Heads' }), this.headSeg, lensChip));
+    this.centerView = this.centerView || 'tokens';
+    this.viewSeg = UI.seg([{ value: 'tokens', label: 'Tokens', title: 'Every token through every stage' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.tokTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Heads' }), this.headSeg, lensChip);
+    root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.tokTools));
     this.stage = el('div', { class: 'lab-stage' });
     this.canvas = el('canvas', { 'aria-label': 'Transformer anatomy: one row per token, one column per stage. Attention arcs show where the selected token looks.' });
     this.stage.append(this.canvas);
-    root.append(this.stage, el('div', { class: 'lab-foot' },
+    this.archStage = el('div', { class: 'lab-stage arch-stage' });
+    this.arch = new NA.ArchView(this.archStage, { label: 'Transformer architecture: click a part or zoom in to open it', build: (size) => NA.archTransformer.build(this, size), onFocus: (node, path) => this.showArchInfo(node, path) });
+    this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('span', { class: 'ramp ramp-div' }), 'cell = the token’s residual stream vector (32 numbers)'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'arc = attention from the selected token to an earlier one; width = weight'),
-      el('span', { class: 'lg-item', text: `${L} blocks · each row is one token; attention moves information between rows, MLPs work within a row` })));
+      el('span', { class: 'lg-item', text: `${L} blocks · each row is one token; attention moves information between rows, MLPs work within a row` }));
+    root.append(this.stage, this.archStage);
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
+    root.append(this.foot);
     this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, onChange: () => { this.dirty = true; NA.tooltip.hide(); } });
     this.canvas.addEventListener('pointermove', (e) => this.hover(e));
     this.canvas.addEventListener('pointerleave', () => NA.tooltip.hide());
     this.canvas.addEventListener('click', (e) => this.click(e));
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
     this.resizeObs.observe(this.stage);
+    this.setCenterView(this.centerView);
   };
+  TL.setCenterView = function (v) {
+    this.centerView = v;
+    const arch = v === 'arch';
+    this.stage.hidden = arch; this.foot.hidden = arch; this.tokTools.hidden = arch; this.archStage.hidden = !arch;
+    this.viewSeg.set(v);
+    this.dirty = true; this.arch.dirty = true;
+    if (arch) this.arch.refreshFocus();
+    else this.info.set(TOKENS_INFO(this));
+  };
+  // The info panel follows the part being looked at in the architecture.
+  TL.showArchInfo = function (node, path) { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); };
+  const TOKENS_INFO = (T) => ({
+    kicker: 'Tokens view', title: 'Every token through every stage',
+    about: [
+      'Each row is one token of your prompt and each column a stage of the model, from the embedding on the left to the prediction on the right. A cell is that token’s residual-stream vector after the stage: its 32 numbers drawn as thin bars, blue for positive and orange for negative. Reading a row from left to right shows one token’s representation being rewritten as it passes through the model.',
+      'The arcs in the two attention columns start at the selected token and end at the earlier tokens it attends to, one colour per head; the thicker the arc, the more attention weight. Attention is the only place where information moves between rows: the embedding, LayerNorms and MLPs all work on one row at a time. A token can never attend to a later one (the causal mask), so arcs only ever point up.',
+      'With the logit lens on, every cell is decoded with the model’s own output layer as if the model stopped there, and the top word is printed in it. Try "carol likes juice . dave likes coffee . emma likes water . dave drinks": on the "drinks" row the lens says "water", a drink from the story but the wrong one, right through block 1 and block 2’s attention; only block 2’s MLP switches it to "coffee". The embedding column has seen no context at all, so it makes the same guess for every prompt.',
+      'The Next column is the model’s prediction at every position, not only the last: a ✓ means it matches the word that really comes next in your prompt. Misses are expected wherever the story is random (after "likes", any unused drink is fair). Click a row to select a token, or switch to Architecture to open the model up.',
+    ],
+    code: `import torch
+
+# Record the residual stream after every stage, as this view draws it. model, tokenize and
+# VOCAB are defined in the whole-model code (Architecture, top level, Python tab).
+ids = torch.tensor([tokenize(${JSON.stringify(T.text.trim())})])
+stream = []
+x = model.tok(ids) + model.pos(torch.arange(ids.shape[1]))
+stream.append(x)                                        # embedding
+for block in model.blocks:
+    x = x + block.attn(block.ln1(x)); stream.append(x)  # after attention
+    x = x + block.mlp(block.ln2(x)); stream.append(x)   # after the MLP
+
+# The logit lens: decode every stage with the final LayerNorm and unembedding
+names = ['embedding'] + [f'{part} {b + 1}' for b in range(len(model.blocks)) for part in ('attention', 'MLP')]
+for name, s in zip(names, stream):
+    probs = model.unembed(model.ln_f(s)).softmax(-1)[0]   # (n, V)
+    print(name.ljust(12), [VOCAB[i] for i in probs.argmax(-1)])
+
+# The arcs: block 1's attention weights for every head
+att, n, d = model.blocks[0].attn, ids.shape[1], model.tok.embedding_dim
+q, k, v = att.qkv(model.blocks[0].ln1(stream[0])).split(d, dim=-1)
+q, k = (t.view(1, n, att.h, att.dh).transpose(1, 2) for t in (q, k))
+scores = (q @ k.transpose(-2, -1) / att.dh ** 0.5).masked_fill(~att.causal[:n, :n], float('-inf'))
+weights = scores.softmax(-1)          # (1, heads, n, n): row i = where token i looks`,
+  });
+
   TL.renderHeadSeg = function () {
     const { L, H: NH } = this.model.cfg, opts = [{ value: 'all', label: 'All' }];
     for (let l = 0; l < L; l++) for (let h = 0; h < NH; h++) opts.push({ value: `${l}.${h}`, label: `L${l + 1}H${h + 1}` });
@@ -466,7 +527,7 @@
     if (this.zoom.suppressClick) return;
     const h = this.hit(e);
     if (!h) return;
-    this.sel = h.row; this.stageSel = h.stage;
+    this.sel = h.row; this.stageSel = h.stage; this.archStale = true;
     this.dirty = true; this.inspDirty = true; this.leftDirty = true;
     if (h.stage !== null && this.tabId !== 'lens' && this.tabId !== 'attention') this.tabs.select('lens');
   };

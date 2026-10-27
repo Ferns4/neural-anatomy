@@ -61,7 +61,7 @@
   PL.stepOnce = function () { if (this.training) this.pause(); this.trainChunk(0, 1); this.measure(); };
   PL.reset = function () { if (this.training) this.pause(); this.setup(); NA.ui.toast.show('Both networks re-initialized. Press Train.'); };
   PL.retrain = function (msg) { this.pause(); this.setup(); this.play(); if (msg) NA.ui.toast.show(msg); };
-  PL.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; };
+  PL.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true; };
 
   // Errors against the exact solution, overall and beyond the data, and the ODE residual of both networks.
   PL.measure = function () {
@@ -94,7 +94,7 @@
     this.offTheme = theme.onChange(() => this.bump());
     this.bump();
   };
-  PL.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); };
+  PL.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); };
   PL.archText = function () { return `t → ${this.depth} × ${this.width} tanh → u(t), with u′ and u″ by exact differentiation`; };
   PL.frame = function (now) {
     this.runFrame();
@@ -104,6 +104,13 @@
     }
     if (this.training && now - (this.lastMeasure || 0) > 300) { this.lastMeasure = now; this.measure(); }
     if (this.dirty && this.canvas.offsetParent && (!this.training || now - (this.lastDraw || 0) > 60)) { this.lastDraw = now; this.dirty = false; this.draw(); }
+    if (this.centerView === 'arch') {
+      // the diagram shows live numbers: redraw it when they change
+      if (this.archStale && (!this.training || now - (this.lastArch || 0) > 400)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; }
+      this.arch.frame(now);
+    }
+    // so does the explanation under the picture; refresh it when training pauses
+    if (this.infoStale && !this.training && !this.arch.anim) { this.infoStale = false; if (this.centerView === 'arch') this.arch.refreshFocus(); else this.info.set(PLOTS_INFO(this)); }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 300)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 400)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
   };
@@ -175,24 +182,126 @@
   // ------------------------------------------------------------------ centre: plots
   PL.buildCenter = function (root) {
     const show = this.show || (this.show = { plain: true, pinn: true, exact: true });
-    root.append(el('div', { class: 'lab-toolbar' }, el('span', { class: 'lens-label', text: 'Show' }),
+    this.centerView = this.centerView || 'plots';
+    this.viewSeg = UI.seg([{ value: 'plots', label: 'Plots', title: 'The fits, the residual and the phase portrait' }, { value: 'arch', label: 'Architecture', title: 'The network and its loss: click or zoom in to open the parts' }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.plotTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Show' }),
       UI.chip('Exact solution', show.exact, (on) => { show.exact = on; this.dirty = true; }),
       UI.chip('Plain network', show.plain, (on) => { show.plain = on; this.dirty = true; }),
-      UI.chip('PINN', show.pinn, (on) => { show.pinn = on; this.dirty = true; })));
+      UI.chip('PINN', show.pinn, (on) => { show.pinn = on; this.dirty = true; }));
+    root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.plotTools));
     this.stage = el('div', { class: 'lab-stage' });
     this.canvas = el('canvas', { 'aria-label': 'Plots: the fitted curves against the exact solution, the equation residual, and the phase portrait' });
     this.stage.append(this.canvas);
-    root.append(this.stage, el('div', { class: 'lab-foot' },
+    this.archStage = el('div', { class: 'lab-stage arch-stage' });
+    this.arch = new NA.ArchView(this.archStage, { label: 'PINN architecture: click a part or zoom in to open it', build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    root.append(this.stage, this.archStage);
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
+    root.append(this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact solution (dashed)'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--neg)' } }), 'plain network: data loss only'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN: data + physics'),
       el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled' }), 'measurement'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-tri' }), 'collocation point')));
-    const move = (e) => { const p = this.plotAt(e); if (p !== null) { this.probeT = p; this.dirty = true; this.leftDirty = true; this.inspDirty = true; } };
+    const move = (e) => { const p = this.plotAt(e); if (p !== null) { this.probeT = p; this.dirty = true; this.leftDirty = true; this.inspDirty = true; this.archStale = true; } };
     this.canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) move(e); });
     this.canvas.addEventListener('pointerdown', move);
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
     this.resizeObs.observe(this.stage);
+    this.setCenterView(this.centerView);
+  };
+  PL.setCenterView = function (v) {
+    this.centerView = v;
+    const arch = v === 'arch';
+    this.stage.hidden = arch; this.foot.hidden = arch; this.plotTools.hidden = arch; this.archStage.hidden = !arch;
+    this.viewSeg.set(v);
+    this.dirty = true; this.arch.dirty = true;
+    if (arch) this.arch.refreshFocus();
+    else this.info.set(PLOTS_INFO(this));
+  };
+  const pct = (v) => fmtPct(v, v < 0.1 ? 1 : 0);
+  const PLOTS_INFO = (L) => {
+    const P = L.prob, m = L.m, num = (v, d) => fmt(v, d).replace('−', '-');
+    return {
+      kicker: 'Plots view', title: 'The fit, the physics and the phase portrait',
+      about: [
+        `Top plot: the position u(t) of a damped spring over one second. Dashed is the exact solution, which neither network ever sees. The dots are the ${P.data.length} noisy measurements, all inside the shaded region (t ≤ ${fmt(P.tMax, 2)}); the small triangles along the bottom are the ${P.nColloc} collocation points where the PINN is checked against the equation. Orange is a plain network trained on the measurements alone, blue the PINN, trained on the measurements plus the equation.`,
+        `Inside the shaded region both curves pass through the dots. Beyond it the plain network has nothing to go on: it carries on however its tanh units happen to bend, and is off by ${pct(m.plainExtra)} after the last measurement. The PINN keeps swinging at the right frequency and decaying at the right rate, because a curve that breaks the equation is penalised everywhere, not only where there is data (${pct(m.pinnExtra)} off there).`,
+        `Residual plot: |u″ + 2ζω·u′ + ω²·u| / ω² along t on a log scale, where each grid line is a factor of 100. Zero means the curve obeys the physics exactly. The PINN keeps it small everywhere (root mean square ${fmt(m.pinnRes, 3)}); the plain network was never asked to and breaks it by orders of magnitude (${fmt(m.plainRes, 2)}). Its u″ comes from differentiating the network twice, so any wiggle it makes between measurements shows up here, magnified.`,
+        'Phase portrait: u against u′/ω. A spring without friction would go round one circle forever; damping turns the circle into an inward spiral, one turn per oscillation, starting from the dot at (1, 0): released from 1, at rest. The PINN traces the spiral. The plain network’s portrait shows the velocity its curve implies, which nothing taught it.',
+        'Hover or tap the top plot to move the probe (the dashed vertical line). The Problem panel lists the exact value and both networks’ values and residuals there, and the Architecture view follows the same t through every layer of the PINN.',
+      ],
+      code: `import math
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+
+zeta, omega, t_max = ${num(P.zeta, 2)}, ${num(P.omega, 0)}.0, ${num(P.tMax, 2)}
+
+def exact(t):
+    wd = omega * math.sqrt(1 - zeta ** 2)
+    return torch.exp(-zeta * omega * t) * (torch.cos(wd * t) + zeta * omega / wd * torch.sin(wd * t))
+
+class PINN(nn.Module):
+    def __init__(self, width=${L.width}, depth=${L.depth}):
+        super().__init__()
+        layers, d_in = [], 1
+        for _ in range(depth):
+            layers += [nn.Linear(d_in, width), nn.Tanh()]
+            d_in = width
+        self.net = nn.Sequential(*layers, nn.Linear(d_in, 1))
+
+    def forward(self, t):
+        return self.net(2 * t - 1)
+
+def derivatives(model, t):
+    """u, u' and u'' at the times t, by differentiating the network itself."""
+    t = t.clone().requires_grad_(True)
+    u = model(t)
+    du = torch.autograd.grad(u, t, torch.ones_like(u), create_graph=True)[0]
+    d2u = torch.autograd.grad(du, t, torch.ones_like(du), create_graph=True)[0]
+    return u, du, d2u
+
+def residual(model, t):
+    u, du, d2u = derivatives(model, t)
+    return (d2u + 2 * zeta * omega * du + omega ** 2 * u) / omega ** 2
+
+# ${P.data.length} noisy measurements up to t_max, and ${P.nColloc} collocation points over the whole window
+t_data = torch.linspace(0, t_max, ${P.data.length}).view(-1, 1)
+u_data = exact(t_data) + ${num(P.noise, 3)} * torch.randn_like(t_data)
+t_col = ((torch.arange(${P.nColloc}) + 0.5) / ${P.nColloc}).view(-1, 1)
+
+def train(model, lam, steps=10_000):
+    opt = torch.optim.Adam(model.parameters(), lr=${L.lr})
+    for step in range(steps):
+        if step == 6000:
+            opt.param_groups[0]['lr'] *= 0.3
+        loss = ((model(t_data) - u_data) ** 2).mean()
+        if lam:
+            loss = loss + lam * (residual(model, t_col) ** 2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    return model
+
+plain = train(PINN(), lam=0)                       # the measurements only
+pinn = train(PINN(), lam=${num(L.lambda, 2)})                    # the measurements and the equation
+
+t = torch.linspace(0, 1, 221).view(-1, 1)
+fig, (top, mid, low) = plt.subplots(3, 1, figsize=(7, 11))
+top.axvspan(0, t_max, alpha=0.08)
+top.plot(t, exact(t), 'k--', label='exact')
+for name, model in [('plain', plain), ('PINN', pinn)]:
+    u, du, _ = derivatives(model, t)
+    top.plot(t, u.detach(), label=name)
+    mid.semilogy(t, residual(model, t).abs().detach(), label=name)
+    low.plot(u.detach(), du.detach() / omega, label=name)
+top.scatter(t_data, u_data, c='k', zorder=3)
+mid.set_ylabel('|residual|')
+low.set_xlabel('u'); low.set_ylabel("u' / omega"); low.set_aspect('equal')
+top.legend(); mid.legend(); low.legend()
+plt.show()`,
+      codeLabel: 'Python · PyTorch and matplotlib · train both networks and draw these plots',
+    };
   };
   PL.plotAt = function (e) {
     const L = this.lay;
@@ -217,7 +326,7 @@
     return out;
   };
   PL.draw = function () {
-    const W = Math.max(240, this.stage.clientWidth), Hh = Math.max(300, this.stage.clientHeight), ctx = NA.fitCanvas(this.canvas, W, Hh);
+    const W = Math.max(240, this.stage.clientWidth), Hh = Math.max(220, this.stage.clientHeight), ctx = NA.fitCanvas(this.canvas, W, Hh);
     const P = this.prob, cv = this.curves(), show = this.show, wide = W >= 560 && Hh >= 420, pad = 12;
     ctx.clearRect(0, 0, W, Hh);
     // layout: main plot on top; residual and phase portrait below (side by side when there is room)

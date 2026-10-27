@@ -121,14 +121,16 @@
     constructor(canvas, opts = {}) {
       this.c = canvas; this.k = 1; this.tx = 0; this.ty = 0; this.max = opts.max || 4;
       this.onChange = opts.onChange || (() => {});
+      this.onUnderflow = opts.onUnderflow || null;
       this.panOne = !!opts.panOne;
+      this.noDouble = !!opts.noDouble; // the architecture view uses clicks to fly instead
       this.ptrs = new Map(); this.g = null; this.start = null; this.lastTap = null; this.suppressClick = false;
       canvas.addEventListener('pointerdown', (e) => this.down(e));
       canvas.addEventListener('pointermove', (e) => this.move(e));
       canvas.addEventListener('pointerup', (e) => this.up(e, false));
       canvas.addEventListener('pointercancel', (e) => this.up(e, true));
       canvas.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
-      canvas.addEventListener('dblclick', (e) => { const p = this.local(e); this.toggleAt(p[0], p[1]); });
+      if (!this.noDouble) canvas.addEventListener('dblclick', (e) => { const p = this.local(e); this.toggleAt(p[0], p[1]); });
       if (opts.host) this.buildChip(opts.host);
     }
     get pinching() { return !!(this.g && this.g.type === 'pinch') || this.ptrs.size > 1; }
@@ -144,7 +146,12 @@
       this.ty = this.k === 1 ? 0 : clamp(ty, h - h * this.k, 0);
       this.sync(); this.onChange(this);
     }
-    zoomAt(px, py, factor) { const k = clamp(this.k * factor, 1, this.max), f = k / this.k; this.set(k, px - (px - this.tx) * f, py - (py - this.ty) * f); }
+    zoomAt(px, py, factor) {
+      // zooming out while already at 1× is reported, so a view can step back out a level
+      if (factor < 1 && this.k <= 1.0001 && this.onUnderflow) { this.onUnderflow(px, py); return; }
+      const k = clamp(this.k * factor, 1, this.max), f = k / this.k;
+      this.set(k, px - (px - this.tx) * f, py - (py - this.ty) * f);
+    }
     toggleAt(px, py) { if (this.k > 1.2) this.set(1, 0, 0); else this.zoomAt(px, py, 2.5); }
     reset() { if (this.k !== 1) this.set(1, 0, 0); }
     down(e) {
@@ -163,6 +170,7 @@
       if (this.g && this.g.type === 'pinch' && this.ptrs.size >= 2) {
         const [a, b] = [...this.ptrs.values()], g = this.g;
         const d = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        if (this.onUnderflow && g.k0 <= 1.0001 && (g.k0 * d) / g.d0 < 0.72 && !g.under) { g.under = true; this.onUnderflow(m[0], m[1]); return; }
         const k = clamp((g.k0 * d) / g.d0, 1, this.max), wx = (g.m0[0] - g.tx0) / g.k0, wy = (g.m0[1] - g.ty0) / g.k0;
         this.set(k, m[0] - wx * k, m[1] - wy * k);
       } else if (this.ptrs.size === 1 && this.start && this.k > 1 && (this.panOne || (this.g && this.g.type === 'pan'))) {
@@ -173,7 +181,7 @@
     up(e, cancel) {
       const had = this.ptrs.delete(e.pointerId);
       if (this.ptrs.size === 0) {
-        if (!cancel && had && !this.g && e.pointerType === 'touch') {
+        if (!cancel && had && !this.g && e.pointerType === 'touch' && !this.noDouble) {
           const p = this.local(e), now = performance.now(), lt = this.lastTap;
           if (lt && now - lt.t < 320 && Math.hypot(p[0] - lt.p[0], p[1] - lt.p[1]) < 28) { this.toggleAt(p[0], p[1]); this.lastTap = null; this.suppressClick = true; }
           else this.lastTap = { p, t: now };

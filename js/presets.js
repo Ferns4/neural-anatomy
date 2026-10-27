@@ -192,7 +192,8 @@
         'Embeddings: names, drinks, singular and plural animals form their own clusters, although nothing told the model which words belong together.',
         'Training: lookups stay at chance for about 2,000 steps, then jump to 100% within a few hundred steps, when the circuit that combines "who" with "what" forms.',
         'Attention: knock out one of the heads marked Lookup and lookups fall to guessing, while agreement is untouched.',
-        'Logit lens: early stages only know "a drink comes next"; the right drink appears after layer 2.',
+        'Logit lens: the early stages already know a drink comes next, but often name the wrong drink from the story; only block 2’s MLP settles on the right one.',
+        'Architecture: click or zoom into the model, then a block, then its attention and a single head, to see the maths with live numbers; the Python tab shows each part, and the whole model, in PyTorch.',
       ],
       try: [
         { text: 'Switch off the head that matters most for lookups and watch the drink prediction fall apart.', label: 'Knock out the lookup head', action: 'ablateLookup' },
@@ -209,6 +210,7 @@
         'Main plot: both networks pass through the measurements. After the shaded region only the PINN keeps following the true motion (about 5% error against more than 50% for the plain network).',
         'Residual plot: the plain network breaks the equation by orders of magnitude wherever it has no data; the PINN keeps it near zero everywhere.',
         'Phase portrait: plotting u against u′ turns the damped motion into an inward spiral. The PINN traces it; the plain network wanders off.',
+        'Architecture: zoom into a hidden layer to see the value and its first and second derivatives flowing through it, and into a neuron for the chain rule with numbers. Every part has its PyTorch code.',
         'Losses tab: data and physics terms pull against each other early on; the curve that satisfies both is the real one.',
       ],
       try: [
@@ -223,10 +225,11 @@
       meta: 'DDPM · 2-D points · 100 noise steps · 9k parameters',
       about: 'A denoising diffusion model, the idea behind modern image generators, shrunk to points in a plane. Training takes points of a pinwheel, adds a random amount of Gaussian noise and teaches a small network to predict exactly which noise was added. To generate, start from pure noise and repeatedly remove a little of the predicted noise: over 100 steps the points flow back onto the pinwheel, although no point is copied from the data.',
       look: [
-        'Generate: 600 points of pure noise organise into the three arms. Trails show each point’s path; at first everything drifts to the middle, the arms only separate late.',
+        'Generate: 600 points of pure noise organise into the three arms. Trails follow 40 of them: with DDPM, a point’s position says nothing about which arm it will join until about t = 60, and most have chosen by t = 20. The cloud keeps the same overall spread the whole way; it is rearranged, not shrunk.',
         'Add noise: drag the slider to watch the training data dissolve into a round Gaussian blob. This is the forward process the network learns to undo.',
         'Denoiser: arrows point to where the network thinks each noisy point came from. At high noise they all point toward the middle of the data; at low noise they snap to the nearest arm.',
         'Training tab: the loss is near zero at high noise, where a point is almost all noise, and highest at low-to-middle noise.',
+        'Architecture: the training and generating loops as one diagram. Open any part (the forward process, the time features, the network and its layers, the loss, the sampler) for its maths with one training point’s live numbers and its PyTorch code.',
       ],
       try: [
         { text: 'Deterministic sampling (DDIM): no fresh noise on the way back, so trails turn into smooth curves.', label: 'Use DDIM', action: 'ddim' },

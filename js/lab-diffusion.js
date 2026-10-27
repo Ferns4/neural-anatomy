@@ -50,7 +50,7 @@
     this.bump();
     this.generate(false); // open on the reverse process playing: noise turning into data
   };
-  DF.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; };
+  DF.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true; };
 
   DF.trainChunk = function (budget, maxSteps) {
     const t0 = performance.now();
@@ -64,7 +64,7 @@
       if (this.step % 600 === 0) this.generate(true, 25);
     } while (performance.now() - t0 < budget && k < maxSteps);
     this.quality = null; this.lossByT = null;
-    this.inspDirty = true; this.leftDirty = true;
+    this.inspDirty = true; this.leftDirty = true; this.archStale = true;
     return k;
   };
   DF.onPause = function () { this.generate(true); this.bump(); };
@@ -84,7 +84,7 @@
     this.k = 0;
     this.animating = !instant;
     this.quality = null;
-    this.dirty = true; this.inspDirty = true; this.leftDirty = true;
+    this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true;
   };
   DF.advanceGen = function (budget) {
     const g = this.gen;
@@ -131,7 +131,7 @@
     this.offTheme = theme.onChange(() => this.bump());
     this.bump();
   };
-  DF.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); };
+  DF.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); };
   DF.archText = function () { return `(x, y, t) → 3 × 64 SiLU → predicted noise ε̂ · ${this.model.T} noise steps`; };
 
   DF.frame = function (now) {
@@ -151,6 +151,12 @@
       this.ro.set('t', `${this.currentT()} / ${this.model.T}`);
     }
     if (this.dirty && this.canvas.offsetParent) { this.dirty = false; this.draw(); }
+    if (this.view === 'arch') {
+      // the diagram shows live numbers: redraw it when they change
+      if (this.archStale && (!this.training || now - (this.lastArch || 0) > 400)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; }
+      this.arch.frame(now);
+    }
+    if (this.infoStale && !this.training && !this.arch.anim) { this.infoStale = false; this.showInfo(); }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 500)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
     if (this.inspDirty && this.tabs.body.offsetParent && !this.animating && (!this.training || now - (this.lastInsp || 0) > 600)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
   };
@@ -162,7 +168,7 @@
       UI.field('Batch', UI.select([64, 128, 256].map((v) => ({ value: v, label: v + ' points' })), this.batch, (v) => { this.batch = +v; })),
       el('div', { class: 'sheet-actions' },
         el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.fastForward(1000); } }, 'Train 1,000 steps'),
-        el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.view = 'generate'; this.viewSeg.set('generate'); this.generate(false); } }, 'Generate')));
+        el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.setView('generate'); this.generate(false); } }, 'Generate')));
   };
 
   // ------------------------------------------------------------------ left: the process
@@ -176,12 +182,12 @@
       this.dsTiles.append(b);
     }
     this.samplerSeg = UI.seg([{ value: 'ddpm', label: 'DDPM (random)', title: 'Adds fresh noise at every step' }, { value: 'ddim', label: 'DDIM (deterministic)', title: 'No added noise: the same start always lands in the same place' }], this.sampler, (v) => { this.sampler = v; this.generate(false); }, 'Sampler');
-    const steps = UI.select([100, 50, 25, 10].map((v) => ({ value: v, label: `${v} steps` })), this.steps, (v) => { this.steps = +v; this.view = 'generate'; this.viewSeg.set('generate'); this.generate(false); }, { 'aria-label': 'Sampling steps' });
+    const steps = UI.select([100, 50, 25, 10].map((v) => ({ value: v, label: `${v} steps` })), this.steps, (v) => { this.steps = +v; this.setView('generate'); this.generate(false); }, { 'aria-label': 'Sampling steps' });
     const count = UI.select([300, 600, 1000].map((v) => ({ value: v, label: `${v} points` })), this.nSamples, (v) => { this.nSamples = +v; this.generate(false); }, { 'aria-label': 'Number of samples' });
     this.schedCanvas = el('canvas');
     body.append(
       UI.section('Training data', UI.note('The model learns this distribution of 2-D points, then has to produce new points that look like it.'), this.dsTiles),
-      UI.section('Generate', el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { this.view = 'generate'; this.viewSeg.set('generate'); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.generate(false); } }, 'Generate new points'), steps, count), this.samplerSeg),
+      UI.section('Generate', el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { this.setView('generate'); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.generate(false); } }, 'Generate new points'), steps, count), this.samplerSeg),
       UI.section('How it works',
         el('div', { class: 'fx' },
           el('div', { class: 'fx-line fx-strong', text: 'Forward:  x_t = √ᾱ_t · x₀ + √(1 − ᾱ_t) · ε' }),
@@ -212,12 +218,12 @@
 
   // ------------------------------------------------------------------ centre: samples
   DF.buildCenter = function (root) {
-    this.viewSeg = UI.seg([{ value: 'generate', label: 'Generate', title: 'Noise turning into data' }, { value: 'forward', label: 'Add noise', title: 'The forward process on the training data' }, { value: 'field', label: 'Denoiser', title: 'Where the network thinks each point’s clean version is' }], this.view, (v) => { this.view = v; this.syncSlider(); this.dirty = true; this.leftDirty = true; }, 'View');
-    const chips = el('div', { class: 'chip-row' },
+    this.viewSeg = UI.seg([{ value: 'generate', label: 'Generate', title: 'Noise turning into data' }, { value: 'forward', label: 'Add noise', title: 'The forward process on the training data' }, { value: 'field', label: 'Denoiser', title: 'Where the network thinks each point’s clean version is' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }], this.view, (v) => this.setView(v), 'View');
+    this.chips = el('div', { class: 'chip-row' },
       UI.chip('Data', this.show.data, (on) => { this.show.data = on; this.dirty = true; }, 'Show the training data faintly'),
       UI.chip('Trails', this.show.trails, (on) => { this.show.trails = on; this.dirty = true; }, 'Paths of 40 points: the last 10 steps with DDPM, the whole path with DDIM'),
       UI.chip('Predicted x̂₀', this.show.x0, (on) => { this.show.x0 = on; this.dirty = true; }, 'At each step, where the network thinks each point will end up'));
-    root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, chips));
+    root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.chips));
     this.stage = el('div', { class: 'lab-stage' });
     this.canvas = el('canvas', { 'aria-label': 'Points in the plane: generated samples, the noising process or the denoising field' });
     this.stage.append(this.canvas);
@@ -225,14 +231,18 @@
     this.slider = el('input', { type: 'range', min: 0, max: 100, step: 1, value: 100, 'aria-label': 'Noise step' });
     this.slider.addEventListener('input', () => this.onSlider());
     this.sliderLab = el('span', { class: 'mono df-t' });
-    root.append(this.stage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab), el('div', { class: 'lab-foot' },
+    this.archStage = el('div', { class: 'lab-stage arch-stage' });
+    this.arch = new NA.ArchView(this.archStage, { label: 'Diffusion model architecture: click a part or zoom in to open it', build: (size) => NA.archDiffusion.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    root.append(this.stage, this.archStage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab));
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
+    root.append(this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--pos)' } }), 'sample'),
       el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--muted)' } }), 'training data'),
       el('span', { class: 'lg-item', text: 'Denoiser view: click to drop a point and follow it to the data' })));
     this.canvas.addEventListener('click', (e) => this.click(e));
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
     this.resizeObs.observe(this.stage);
-    this.syncSlider();
+    this.setView(this.view);
   };
   DF.syncSlider = function () {
     const T = this.model.T;
@@ -244,10 +254,10 @@
     const v = +this.slider.value;
     this.animating = false;
     if (this.view === 'generate') this.k = Math.min(v, this.gen.xs.length - 1); else { this.tView = this.model.T - v; this.probes = this.probes.map((p) => this.followProbe(p.x, p.y)); }
-    this.syncSlider(); this.dirty = true; this.leftDirty = true;
+    this.syncSlider(); this.dirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true;
   };
   DF.playScrub = function () {
-    if (this.view !== 'generate') { this.view = 'generate'; this.viewSeg.set('generate'); }
+    if (this.view !== 'generate') { this.setView('generate'); }
     if (this.animating) { this.animating = false; this.syncSlider(); return; }
     if (this.k >= this.gen.ts.length - 1) this.k = 0;
     this.animating = true; this.syncSlider();
@@ -267,6 +277,128 @@
     this.probes.push(this.followProbe(x, y));
     if (this.probes.length > 8) this.probes.shift();
     this.dirty = true;
+  };
+
+  DF.setView = function (v) {
+    this.view = v;
+    this.viewSeg.set(v);
+    const arch = v === 'arch';
+    this.stage.hidden = arch; this.chips.hidden = arch; this.foot.hidden = arch; this.playBtn.hidden = arch; this.archStage.hidden = !arch;
+    this.syncSlider(); this.dirty = true; this.leftDirty = true; this.archStale = true;
+    this.showInfo();
+  };
+  // The explanation under the picture follows the view (and, in the architecture, the part being looked at).
+  DF.showInfo = function () {
+    if (this.view === 'arch') this.arch.refreshFocus();
+    else this.info.set((this.view === 'generate' ? GEN_INFO : this.view === 'forward' ? FWD_INFO : FIELD_INFO)(this));
+  };
+  const PRE = '# model, T, abar_at and reverse_step as in the whole-model code (Architecture view, top level, Python tab)\n';
+  const GEN_INFO = (L) => {
+    const ddim = L.sampler === 'ddim', g = L.gen, steps = g.ts.length - 1, T = L.model.T, Py = ddim ? 'True' : 'False';
+    return {
+      kicker: 'Generate view', title: ddim ? 'Noise turning into data, deterministically (DDIM)' : 'Noise turning into data (DDPM)',
+      about: [
+        `${g.n} points start as pure Gaussian noise at t = ${T} and are denoised in ${steps} steps down to t = 0. At every step the network looks at each point and the noise level, predicts the noise ε̂ in it, and the sampler moves the point part of the way toward its estimate of the clean point, x̂₀. No point is copied from the training data: the shape appears because every point follows the learned field. The slider scrubs through every saved step and ▶ replays them.`,
+        ddim
+          ? 'Trails follow 40 of the points, one colour each. With DDIM nothing random is added after the start, so each path is a smooth curve, only about 1.6 times as long as the straight line from its start to its end (the median, measured on the pinwheel with 100 steps), and the whole trail is drawn. The destination is fixed from the first step: on the pinwheel, 86% of the points end on the arm nearest to where they started.'
+          : 'Trails follow 40 of the points, one colour each, and show only their last 10 steps, like a comet’s tail. With DDPM fresh random noise is added at every step, so a point jitters, and its whole path is typically more than ten times as long as the straight line from its start to its end (16 times for the median point on the pinwheel with 100 steps); drawn whole, it would be a scribble. The jitter shrinks as t falls, because each step adds less noise: the last 10 steps make up only about 2% of a path’s length, so the tails shorten and settle at the end.',
+        ddim
+          ? 'Switch the sampler to DDPM to compare: there the added noise keeps reshuffling the points, and which arm a point joins stays open until about t = 60 and is settled only in the last third of the process.'
+          : 'When does a point pick its arm? Until about t = 60 its position says nothing about it: it is on the arm it will end on only about a third of the time, no better than chance with three arms. That rises to 43% at t = 50, 61% at t = 30, 81% at t = 20 and 94% at t = 10 (measured on the pinwheel with 100 steps). The decision is made late, in the last third of the process.',
+        'The cloud never collapses into the middle: its spread (the root-mean-square distance from the centre) stays about 1.4 at every step, the same as the data and as pure noise, because at every t the points are distributed like the training data noised to that t. What does start in the middle is the network’s guess x̂₀ (switch on Predicted x̂₀): at t = 90 the guesses huddle around the centre with a spread of only 0.35, since the best guess for a point that is almost all noise is the middle of the data. They fan out onto the arms as the noise falls, to a spread of about 1.0 at t = 50 and nearly the data’s 1.41 by t = 20.',
+      ],
+      code: `import matplotlib.pyplot as plt
+${PRE}
+@torch.no_grad()
+def sample_with_trails(model, n=${g.n}, steps=${steps}, ddim=${Py}):
+    ts = [round(k * T / steps) for k in range(steps, -1, -1)]
+    x = torch.randn(n, 2)
+    xs, x0s = [x], []
+    for t, t_prev in zip(ts[:-1], ts[1:]):
+        x, x0 = reverse_step(model, x, t, t_prev, ddim)
+        xs.append(x)
+        x0s.append(x0)
+    return torch.stack(xs), torch.stack(x0s)        # (steps + 1, n, 2) and (steps, n, 2)
+
+xs, x0s = sample_with_trails(model)
+trails = xs[:, :40]                                 # 40 points, every step
+tail = trails if ${Py} else trails[-11:]            # DDPM: only the last 10 steps
+plt.scatter(*xs[-1].T, s=3)
+for i in range(40):
+    plt.plot(*tail[:, i].T, lw=1, alpha=0.6)
+plt.gca().set_aspect('equal')
+plt.show()
+
+# how long each path is, compared with the straight line from its start to its end
+length = (xs[1:] - xs[:-1]).norm(dim=-1).sum(0)
+straight = (xs[-1] - xs[0]).norm(dim=-1)
+print('median path / straight line:', (length / straight).median().item())
+# the spread of the cloud and of the guesses x̂₀, every 10 steps
+print('spread of x_t:', xs.pow(2).sum(-1).mean(-1).sqrt()[::10])
+print('spread of x0_hat:', x0s.pow(2).sum(-1).mean(-1).sqrt()[::10])`,
+      codeLabel: 'Python · PyTorch and matplotlib · sample, draw the trails and measure them',
+    };
+  };
+  const FWD_INFO = (L) => {
+    const S = L.model.sched, t = L.tView, a = Math.sqrt(S.abar[t]), s = Math.sqrt(1 - S.abar[t]);
+    return {
+      kicker: 'Add noise view', title: `The forward process at t = ${t}`,
+      about: [
+        `The training data with noise added at the step set by the slider: x_t = √ᾱ_t·x₀ + √(1 − ᾱ_t)·ε. At t = ${t} every point is scaled by ${fmt(a, 3)} and gets ${fmt(s, 3)} times its own noise draw. Each point keeps one fixed draw ε while you drag, so it slides along a smooth curve (a quarter of an ellipse) from its place in the data to its own noise point.`,
+        'The cosine schedule keeps the shape recognisable for a long time and then dissolves it: at t = 25 the data is still scaled by 0.92 and the noise by 0.39; at t = 50 they are about equal (0.70 and 0.71); at t = 75 the noise dominates (0.38 against 0.93); at t = 100 only 1.7% of the signal is left and the cloud cannot be told apart from a round Gaussian.',
+        'Nothing here is learned; it is one line of arithmetic. Because the data’s share of the variance (ᾱ_t) and the noise’s share (1 − ᾱ_t) add up to 1, the cloud’s overall spread is the same at every t. Training picks a random t and a fresh ε for each point, makes x_t in this one jump, and asks the network which part is ε. Generating has to run the film backwards, and that is the part the network learns.',
+      ],
+      code: `import matplotlib.pyplot as plt
+# data, T and abar_at as in the whole-model code (Architecture view, top level, Python tab)
+eps = torch.randn_like(data)                        # one fixed noise draw per point
+fig, axes = plt.subplots(1, 5, figsize=(15, 3))
+for ax, t in zip(axes, [0, 25, 50, 75, 100]):
+    a = abar_at(t)
+    xt = a.sqrt() * data + (1 - a).sqrt() * eps     # x_t = √ᾱ_t·x₀ + √(1 − ᾱ_t)·ε
+    ax.scatter(*xt.T, s=1)
+    ax.set_title(f't = {t}: signal {a.sqrt():.2f}, spread {xt.pow(2).sum(1).mean().sqrt():.2f}')
+    ax.set_xlim(-3, 3)
+    ax.set_ylim(-3, 3)
+    ax.set_aspect('equal')
+plt.show()`,
+      codeLabel: 'Python · PyTorch and matplotlib · the forward process at five noise levels',
+    };
+  };
+  const FIELD_INFO = (L) => {
+    const t = Math.max(1, L.tView);
+    return {
+      kicker: 'Denoiser view', title: `The learned denoising field at t = ${t}`,
+      about: [
+        `Each arrow starts at a grid point, treated as a noisy point x_t at the slider’s noise step (t = ${t}), and points toward the network’s guess of where it came from: x̂₀ = (x_t − √(1 − ᾱ_t)·ε̂) / √ᾱ_t. Arrows are shortened to fit the grid, and the shorter the move, the fainter the arrow.`,
+        'At high noise the arrows all point at the centre: at t = 90 their average alignment with the direction to the centre is 0.99, where 1 would be exact. When a point is almost all noise, the best guess of where it came from is the middle of the data. As t falls they turn toward the arms: at t = 30, 92% of the arrows end on the arm nearest their start, and 97% at t = 10. They also shrink near the data: at t = 10 an arrow that starts on an arm is about 0.09 long, against 0.8 for one that starts far away (in units of the data’s spread).',
+        'Click anywhere to drop a point. It follows deterministic (DDIM) steps from the slider’s t down to 0, drawn as a line from the dark dot to the coloured dot where it lands. That is what generating does to every point at once: look up the arrow, take a step, lower t, repeat. Drag the slider to change t; dropped points are recomputed from where they started.',
+      ],
+      code: `import matplotlib.pyplot as plt
+${PRE}
+t = ${t}
+g = torch.linspace(-3, 3, 21)
+grid = torch.stack(torch.meshgrid(g, g, indexing='xy'), dim=-1).view(-1, 2)
+with torch.no_grad():
+    eps = model(grid, torch.full((len(grid),), t))
+a = abar_at(t)
+x0 = (grid - (1 - a).sqrt() * eps) / a.sqrt()       # where each grid point came from, says the network
+plt.quiver(*grid.T, *(x0 - grid).T, angles='xy', scale_units='xy', scale=1, width=0.003)
+
+# drop a point and follow it with deterministic steps down to t = 0
+stride = max(1, round(t / 40))
+ts = list(range(t, -1, -stride))
+if ts[-1] != 0:
+    ts.append(0)
+x = torch.tensor([[2.4, 2.4]])
+path = [x]
+for s, s_prev in zip(ts[:-1], ts[1:]):
+    x, _ = reverse_step(model, x, s, s_prev, ddim=True)
+    path.append(x)
+plt.plot(*torch.cat(path).T, 'k-', lw=2)
+plt.gca().set_aspect('equal')
+plt.show()`,
+      codeLabel: 'Python · PyTorch and matplotlib · the denoising field and one followed point',
+    };
   };
 
   DF.draw = function () {
@@ -440,9 +572,9 @@
   };
 
   DF.runTry = function (t) {
-    if (t.action === 'ddim') { this.sampler = 'ddim'; this.samplerSeg.set('ddim'); this.view = 'generate'; this.viewSeg.set('generate'); this.generate(false); NA.ui.toast.show('DDIM: no fresh noise on the way back. Trails become smooth curves.'); }
-    else if (t.action === 'fewSteps') { this.steps = 10; this.view = 'generate'; this.viewSeg.set('generate'); this.generate(false); NA.ui.toast.show('10 big steps instead of 100: faster, but blurrier.'); }
-    else if (t.action === 'field') { this.view = 'field'; this.tView = 60; this.viewSeg.set('field'); this.probes = [this.followProbe(2.4, 2.4), this.followProbe(-2.5, 0.3), this.followProbe(0.4, -2.6)]; this.syncSlider(); NA.ui.toast.show('Three points dropped at t = 60. Drag the slider to change the noise level; click to drop more.'); }
+    if (t.action === 'ddim') { this.sampler = 'ddim'; this.samplerSeg.set('ddim'); this.setView('generate'); this.generate(false); NA.ui.toast.show('DDIM: no fresh noise on the way back. Trails become smooth curves.'); }
+    else if (t.action === 'fewSteps') { this.steps = 10; this.setView('generate'); this.generate(false); NA.ui.toast.show('10 big steps instead of 100: faster, but blurrier.'); }
+    else if (t.action === 'field') { this.tView = 60; this.probes = [this.followProbe(2.4, 2.4), this.followProbe(-2.5, 0.3), this.followProbe(0.4, -2.6)]; this.setView('field'); NA.ui.toast.show('Three points dropped at t = 60. Drag the slider to change the noise level; click to drop more.'); }
     else if (t.action === 'moons') { this.pause(); this.load('moons', true); NA.$$('.ds-tile', this.dsTiles).forEach((x) => x.setAttribute('aria-checked', String(x._id === 'moons'))); this.tabs.select('train'); this.play(); NA.ui.toast.show('Training a fresh denoiser on two moons. Samples refresh every 600 steps.'); return; }
     if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network');
     this.dirty = true; this.inspDirty = true;

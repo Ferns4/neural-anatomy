@@ -174,6 +174,66 @@
 
   UI.fmtSteps = (n) => fmtInt(n);
 
+  // ------------------------------------------------------------------ explanation and code panel
+  const PY_KW = new Set('def class return for in if elif else import from as with lambda None True False and or not while break continue pass yield raise try except finally assert is del global'.split(' '));
+  const PY_BUILTIN = new Set('self super range len print float int min max sum zip enumerate list dict tuple abs round isinstance'.split(' '));
+  // Python source → highlighted DOM nodes (no innerHTML: every token is a text node)
+  UI.pyHighlight = function (src) {
+    const out = [], re = /(#[^\n]*)|('''[\s\S]*?'''|"""[\s\S]*?"""|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")|(@[A-Za-z_][\w.]*)|(\b\d+(?:\.\d+)?(?:e-?\d+)?\b)|([A-Za-z_]\w*)|(\s+)|([\s\S])/g;
+    let m, lastWord = '';
+    while ((m = re.exec(src))) {
+      const [tok, com, str, deco, num, word] = m;
+      let cls = null;
+      if (com) cls = 'py-com'; else if (str) cls = 'py-str'; else if (deco) cls = 'py-deco'; else if (num) cls = 'py-num';
+      else if (word) {
+        if (lastWord === 'def' || lastWord === 'class') cls = 'py-def';
+        else if (PY_KW.has(tok)) cls = 'py-kw';
+        else if (PY_BUILTIN.has(tok)) cls = 'py-bi';
+        else if (/^\s*\(/.test(src.slice(re.lastIndex, re.lastIndex + 4))) cls = 'py-fn';
+        lastWord = tok;
+      }
+      out.push(cls ? el('span', { class: cls, text: tok }) : document.createTextNode(tok));
+    }
+    return out;
+  };
+  UI.codeBox = function (src, label) {
+    const copy = el('button', { class: 'btn btn-quiet code-copy', type: 'button' }, 'Copy');
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(src); copy.textContent = 'Copied'; } catch (e) { copy.textContent = 'Select the text to copy'; }
+      setTimeout(() => { copy.textContent = 'Copy'; }, 1800);
+    });
+    return el('div', { class: 'code-box' }, el('div', { class: 'code-head' }, el('span', { text: label || 'Python · PyTorch' }), copy), el('pre', { class: 'code', tabindex: '0' }, el('code', null, ...UI.pyHighlight(src))));
+  };
+  /* A panel under a lab's picture: what the current view or block is, in depth, and the same thing written as
+     Python. set({ kicker, title, about: [paragraphs or nodes], code }) */
+  UI.infoPanel = function (root, opts = {}) {
+    const P = { tab: 'about', open: opts.open !== false, content: { title: '', about: [] } };
+    const kicker = el('span', { class: 'ip-kicker' }), title = el('span', { class: 'ip-title' });
+    const toggleBtn = el('button', { class: 'icon-btn ip-toggle', type: 'button', 'aria-label': 'Show or hide the explanation' }, '▾');
+    const tabs = UI.seg([{ value: 'about', label: 'What it does' }, { value: 'code', label: 'Python' }], P.tab, (v) => { P.tab = v; toggle(true); render(); }, 'Explanation or code');
+    const body = el('div', { class: 'ip-body' });
+    const wrap = el('section', { class: 'info-panel', 'aria-label': 'Explanation of what you are looking at' }, el('div', { class: 'ip-head' }, el('div', { class: 'ip-titles' }, kicker, title), tabs, toggleBtn), body);
+    toggleBtn.addEventListener('click', () => toggle(!P.open));
+    root.append(wrap);
+    function toggle(on) { P.open = on; wrap.classList.toggle('is-open', on); toggleBtn.setAttribute('aria-expanded', String(on)); toggleBtn.textContent = on ? '▾' : '▴'; }
+    function render() {
+      const scroll = body.scrollTop;
+      clear(body);
+      if (P.tab === 'about') body.append(...(P.content.about || []).map((t) => (typeof t === 'string' ? el('p', { text: t }) : t)));
+      else body.append(P.content.code ? UI.codeBox(P.content.code, P.content.codeLabel) : el('p', { text: 'No code for this view.' }));
+      body.scrollTop = P.sameAsBefore ? scroll : 0;
+    }
+    P.set = (content) => {
+      P.sameAsBefore = content.title === P.content.title && content.kicker === P.content.kicker;
+      P.content = content;
+      kicker.textContent = content.kicker || ''; title.textContent = content.title || '';
+      render();
+    };
+    P.toggle = toggle;
+    toggle(P.open);
+    return P;
+  };
+
   NA.labHost = H;
   NA.labUI = UI;
 })(window.NA);

@@ -325,10 +325,13 @@
       const n = this.forward(ids), { d, H, L, F, V } = this.cfg, ws = this.ws, dh = d / H;
       const cp = (a, len) => Float32Array.from(a.subarray(0, len));
       const tr = { n, ids: ids.slice(0, n), resid: [cp(ws.x[0], n * d)], stages: ['embed'], attn: [], heads: [], mlp: [], mlpAct: [], attnBias: [],
-        probs: cp(ws.probs, n * V), logits: cp(ws.logits, n * V), lnfScale: cp(ws.lnfr, n) };
+        qkv: [], ln1: [], ln2: [], pre: [],
+        probs: cp(ws.probs, n * V), logits: cp(ws.logits, n * V), lnfScale: cp(ws.lnfr, n), lnf: cp(ws.lnf, n * d) };
       for (let l = 0; l < L; l++) {
         const P = this.layers[l], cat = ws.cat[l], Wo = P.Wo.w;
         tr.attn.push(ws.att[l].map((A) => cp(A, n * n)));
+        // internals for the architecture view: q, k, v, both LayerNorm outputs and the MLP before GELU
+        tr.qkv.push(cp(ws.qkv[l], n * 3 * d)); tr.ln1.push(cp(ws.ln1[l], n * d)); tr.ln2.push(cp(ws.ln2[l], n * d)); tr.pre.push(cp(ws.u[l], n * F));
         // each head's write into the residual stream: its slice of cat times its rows of Wo
         const writes = [];
         for (let h = 0; h < H; h++) {
