@@ -273,7 +273,28 @@
       ],
     });
 
-  const GROUPS = ['Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Signal processing', 'Failure modes'];
+  // The model builder: you choose the problem, the parts, the loss and the settings (lab-builder.js).
+  PRESETS.push({
+    id: 'builder', group: 'Build your own', lab: 'builder', name: 'Model Builder', tagline: 'Build a model from parts, train it and compare runs.',
+    meta: 'Dense · neurons · conv · attention · transformer · your own data',
+    about: 'Pick a problem, or make your own: place points, type a function or write some sentences. Then build a model for it by dragging parts between the input and the output: dense layers or single neurons, activations, dropout and layer norm, convolutions and pooling for pictures, attention and whole transformer blocks for sequences. Choose the loss, the optimizer, the learning rate and the rest, and train it right here. Each time you change something and train again, the new run is listed with what changed, so you can see what each change did.',
+    look: [
+      'The shapes between the blocks show how the data changes size on its way through. A block outlined in red does not fit; its button adds what is missing.',
+      'The dots on a dense block are its neurons. While training they show how often each one fires: a dot that goes hollow is a dead neuron. Click one to give it its own activation.',
+      'Runs lists every run with what changed since the one before and its validation score; the chart overlays their curves.',
+      'Python writes the whole setup (the data, the model, the loss and the training loop) as a PyTorch script.',
+    ],
+    try: [
+      { text: 'No hidden layer on the two spirals: the model can only draw a straight line, so it stays near 50%.', label: 'Linear on spirals', action: 'spiralLinear' },
+      { text: 'Five hidden layers on the same spirals: the boundary winds around both arms.', label: 'Deep on spirals', action: 'spiralDeep' },
+      { text: 'Plain SGD at a learning rate of 1: the loss jumps around or blows up. Compare it with the run before in Runs.', label: 'Learning rate 1', action: 'lrHigh' },
+      { text: 'Reverse a sequence with a tiny transformer: attention learns to look back at the mirrored position.', label: 'Reverse with attention', action: 'reverse' },
+      { text: 'The same task with no attention: each position sees only itself, so the answers are guesses.', label: 'Reverse without attention', action: 'reverseNoAttn' },
+      { text: 'Your own data: start from a disc inside a ring, then add or remove points and train again.', label: 'Draw your own', action: 'draw' },
+    ],
+  });
+
+  const GROUPS = ['Build your own', 'Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Signal processing', 'Failure modes'];
 
   NA.presets = { PRESETS, GROUPS, byId: Object.fromEntries(PRESETS.map((p) => [p.id, p])) };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

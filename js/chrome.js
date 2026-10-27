@@ -78,6 +78,7 @@
 
     // model zoo
     $('#modelPicker').addEventListener('click', () => CH.openZoo());
+    $('#buildBtn').addEventListener('click', () => { if (!App.preset || App.preset.id !== 'builder') App.loadPreset('builder'); });
     $('#zoo').addEventListener('click', (e) => { if (e.target.id === 'zoo' || e.target.closest('[data-close]')) CH.closeZoo(); });
     $('#helpBtn').addEventListener('click', () => CH.toggleHelp());
     $('#help').addEventListener('click', (e) => { if (e.target.id === 'help' || e.target.closest('[data-close]')) CH.toggleHelp(false); });
@@ -148,6 +149,7 @@
   function syncHeader() {
     const p = App.preset, net = App.net;
     $('#mpName').textContent = p.name;
+    $('#buildBtn').setAttribute('aria-current', String(p.id === 'builder'));
     $('#mpArch').textContent = App.mode === 'lab' && NA.labHost.lab ? NA.labHost.lab.archText() : net.sizes.join(' → ');
     try { history.replaceState(null, '', '#' + p.id); } catch (e) { /* not allowed in some frames */ }
     document.title = 'Neural Anatomy';
@@ -169,7 +171,7 @@
     CH.play.title = L.title || 'Train or pause (Space)';
     $('#btnStep').title = L.step || 'Apply one training step (S)'; $('#btnStep').setAttribute('aria-label', (L.step || 'Apply one training step').replace(/ \(.\)$/, ''));
     $('#btnReset').title = L.reset || 'Re-initialize the weights (R)'; $('#btnReset').setAttribute('aria-label', (L.reset || 'Re-initialize the weights').replace(/ \(.\)$/, ''));
-    $('#icoPlay').hidden = t; $('#icoPause').hidden = !t;
+    $('#icoPlay').toggleAttribute('hidden', t); $('#icoPause').toggleAttribute('hidden', !t); // SVG elements have no .hidden property
     CH.ff.hidden = !ff;
     CH.ffStart = ff ? T.step : null;
     CH.roDirty = true;
@@ -315,8 +317,9 @@
     if (e.key === 'Escape') { if (!$('#zoo').hidden) CH.closeZoo(); if (!$('#help').hidden) CH.toggleHelp(false); return; }
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (!$('#zoo').hidden) return;
+    // combinations with Ctrl, Cmd or Alt go only to a lab that asks for them (the model builder's undo and redo)
+    if (e.metaKey || e.ctrlKey || e.altKey) { if (App.mode === 'lab' && NA.labHost.lab && NA.labHost.lab.shortcut) NA.labHost.lab.shortcut(e); return; }
     const k = e.key;
     if (App.mode === 'lab' && NA.labHost.lab) {
       const lab = NA.labHost.lab;

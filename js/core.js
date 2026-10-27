@@ -168,7 +168,7 @@
         if (k === 'class') node.className = v;
         else if (k === 'text') node.textContent = v;
         else if (k === 'html') node.innerHTML = v; // only ever used with trusted, static markup
-        else if (k === 'style' && typeof v === 'object') Object.assign(node.style, v);
+        else if (k === 'style' && typeof v === 'object') { for (const p in v) { if (p.startsWith('--')) node.style.setProperty(p, v[p]); else node.style[p] = v[p]; } } // custom properties need setProperty
         else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
         else if (k === 'dataset') Object.assign(node.dataset, v);
         else node.setAttribute(k, v === true ? '' : v);

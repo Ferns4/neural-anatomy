@@ -6,6 +6,7 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
 
 ## What you can do
 
+- **Build a model from scratch.** The **Build your own** button opens a sandbox: pick a problem or make your own (place points of up to four classes, type any formula in x, or write sentences), then drag parts between the input and the output: dense layers, single neurons, activations, dropout, layer norm, convolutions and max pooling for pictures, self-attention and whole transformer blocks for sequences. Every block shows the shape of the data passing through it and its parameter count; a block that does not fit says why and offers the fix. Choose the loss, optimizer (SGD, momentum, Adam, AdamW), learning rate and schedule, batch size, weight decay, gradient clipping, initialisation and seed, and train it in the browser. Each run is listed with what changed since the one before and its validation score, so you can compare them, and the whole setup can be copied as a PyTorch script.
 - **Model zoo.** Fourteen models that load already trained:
   - Foundations: Single Neuron, XOR, ReLU Polygon
   - Representation: Deep Spiral, Three Classes
@@ -49,7 +50,7 @@ It also installs as an app and then works offline:
 
 ## How it works
 
-Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come from Google Fonts). Every model runs in your browser, and all but two also train there; the YOLO26 detector and the radar classifier were trained in PyTorch on a GPU, and their full training code is in each lab's Architecture view (top level, Python tab).
+Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come from Google Fonts). Every model runs in your browser, and all but two also train there (so does anything you build); the YOLO26 detector and the radar classifier were trained in PyTorch on a GPU, and their full training code is in each lab's Architecture view (top level, Python tab).
 
 | File | Role |
 |---|---|
@@ -67,6 +68,8 @@ Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come fr
 | `js/diffusion.js`, `js/lab-diffusion.js` | The diffusion model (cosine schedule, DDPM and DDIM sampling) and its lab |
 | `js/yolo.js`, `js/lab-yolo.js` | The YOLO26-style detector: scene drawing, a forward pass that runs in a Web Worker, both heads' decoding and NMS, and its lab |
 | `js/radar.js`, `js/lab-radar.js` | Synthetic radar I/Q signals, the 1-D CNN, spectrogram and class activation map, and its lab |
+| `js/builder-engine.js` | The model builder's engine: dense, attention, transformer, convolution, pooling, LayerNorm and dropout blocks with hand-written backpropagation, five losses and four optimizers, checked against finite differences by `tools/builder-gradcheck.js` |
+| `js/builder-tasks.js`, `js/builder-viz.js`, `js/builder-py.js`, `js/lab-builder.js` | The builder's problems and formula parser, its results pictures, the PyTorch script it writes, and the drag-and-drop lab |
 | `js/archview.js`, `js/arch-*.js`, `js/net-deep.js` | The zoomable architecture views; `arch-deep.js` holds the shared levels from a neuron down to the electrons |
 | `js/*-weights.js` | Pretrained weights (float16): trained offline with exactly the engine code above, or for YOLO26 and the radar in PyTorch with BatchNorm folded in |
 | `js/mobile.js` | The phone layout: screens, tab bar, settings sheet and peek card |
