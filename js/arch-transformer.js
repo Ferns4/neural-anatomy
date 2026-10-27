@@ -231,6 +231,20 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
     const wide = size.w / size.h >= 1.05, W2 = (w, t) => (wide ? w : t);
     const m = TL.model, c = Object.assign({ paramCount: m.paramCount }, m.cfg), tr = TL.trace(), pos = TL.selPos(tr), n = tr.n, d = c.d, dh = d / c.H, V = c.V, sel = `"${word(tr.ids[pos])}" (position ${pos})`;
     const A = TL.analysis && TL.analysis.version === TL.version ? TL.analysis : null;
+    // every number on these levels opens into how it was computed: NA.deep supplies the levels below
+    const X = { wide }, Dp = NA.deep, GELU = { id: 'gelu', label: 'GELU', f: (z) => NA.tf.gelu(z) }, tok = (i) => `"${word(tr.ids[i])}"`;
+    const proj = (title, sub, x, W, mc, col, b, o = {}) => Dp.neuron(X, Object.assign({ title, sub,
+      terms: Array.from(x, (v, p) => ({ a: v, w: W[p * mc + col] })), bias: b, inLabel: (p) => `x̂[${p}]`, wLabel: (p) => `W[${p}, ${col}]`,
+      vars: { w: `W[:, ${col}]`, a: 'x_hat', b: `b[${col}]` } }, o));
+    const lnCell = (xRow, j, g, bb, title) => Object.assign(Dp.lib(X, 'layernorm', { x: Array.from(xRow), j, g, b: bb }), { title: title || `LayerNorm, number ${j}` });
+    const qkvOf = (l, i, col) => proj(`${'qkv'[Math.floor(col / d)]}[${col % d}] for ${tok(i)}`, `x̂ · W${'qkv'[Math.floor(col / d)]} column ${col % d}`, row(tr.ln1[l], i, d), m.layers[l].Wqkv.w, 3 * d, col, m.layers[l].bqkv.w[col],
+      { about: [`One number of the ${'query key value'.split(' ')[Math.floor(col / d)]} vector for ${tok(i)}: the dot product of that token's normalised stream vector x̂ (${d} numbers) with column ${col} of the combined Wq|Wk|Wv matrix, plus a bias.`] });
+    const headOut = (l, h, i, t) => {
+      const Aw = tr.attn[l][h], qkv = tr.qkv[l];
+      return Dp.neuron(X, { title: `head ${h + 1} output ${t} for ${tok(i)}`, sub: 'attention-weighted sum of values', terms: Array.from({ length: i + 1 }, (_, j) => ({ a: qkv[j * 3 * d + 2 * d + h * dh + t], w: Aw[i * n + j] })), bias: null, kind: 'dot', rowNames: ['values v of the tokens it can see', 'attention weights, from the softmax', 'weight × value'],
+        inLabel: (j) => `v[${j}] of ${tok(j)}`, wLabel: (j) => `attention weight to ${tok(j)}`, vars: { w: 'weights[i]', a: 'v[:, t]' },
+        about: [`The head's output for ${tok(i)}, number ${t}: the values of the ${i + 1} tokens it can see, each multiplied by its attention weight and added up. The "weights" of this weighted sum are not learned parameters: they were computed a moment ago by the softmax.`] });
+    };
 
     const tokens = {
       id: 'tokens', title: 'Tokens', sub: `${n} of ${c.T}`, rect: [0, 0, 1, 0.08],
@@ -256,30 +270,42 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       code: py.tokenizer(),
     };
 
+    const eRows = [0, 1, 2].map((k) => [0, (k * 1.08 + 0.32) / 3.3, 1, 0.62 / 3.3]);
+    const embE = row(m.E.w, tr.ids[pos], d), embP = row(m.Pos.w, pos, d), embX = row(tr.resid[0], pos, d);
     const embedSel = {
       id: 'embsel', title: `Building ${sel}`, sub: 'one token, all 32 numbers', rect: W2([0.36, 0.68, 0.64, 0.3], [0, 0.72, 1, 0.26]),
       summary: (ctx, r, S) => { S.bars(ctx, row(tr.resid[0], pos, d), r); },
       inner: (ctx, r, S) => {
-        const e = row(m.E.w, tr.ids[pos], d), p = row(m.Pos.w, pos, d), x = row(tr.resid[0], pos, d);
-        let mx = 1e-6; for (let j = 0; j < d; j++) mx = Math.max(mx, Math.abs(e[j]), Math.abs(p[j]), Math.abs(x[j]));
-        const rows = [['E[' + word(tr.ids[pos]) + ']', e, 'its word\'s row of the token table'], ['+ P[' + pos + ']', p, 'its position\'s row of the position table'], ['= x₀', x, 'what enters block 1']], lh = r.h / 3.3, u = S.u(r, 8, 14);
+        let mx = 1e-6; for (let j = 0; j < d; j++) mx = Math.max(mx, Math.abs(embE[j]), Math.abs(embP[j]), Math.abs(embX[j]));
+        const rows = [['E[' + word(tr.ids[pos]) + ']', embE, 'its word\'s row of the token table'], ['+ P[' + pos + ']', embP, 'its position\'s row of the position table'], ['= x₀', embX, 'what enters block 1: zoom into a bar']], lh = r.h / 3.3, u = S.u(r, 8, 14);
         rows.forEach(([lab, v, note], k) => {
           const y = r.y + lh * k * 1.08;
           S.text(ctx, lab, r.x, y + lh * 0.18, { size: u, mono: true, w: k === 2 ? 700 : 600 });
           S.text(ctx, note, r.x + r.w, y + lh * 0.18, { size: u * 0.8, align: 'right', color: theme.c('muted'), maxW: r.w * 0.6 });
-          S.bars(ctx, v, { x: r.x, y: y + lh * 0.32, w: r.w, h: lh * 0.62 }, { max: mx });
+          S.bars(ctx, v, S.place(r, eRows[k]), { max: mx });
         });
       },
+      grids: [
+        { id: 'e', rect: eRows[0], rows: 1, cols: d, make: (i, j) => Dp.stored(X, embE[j], `E[${word(tr.ids[pos])}][${j}]`) },
+        { id: 'p', rect: eRows[1], rows: 1, cols: d, make: (i, j) => Dp.stored(X, embP[j], `P[${pos}][${j}]`) },
+        { id: 'x', rect: eRows[2], rows: 1, cols: d, make: (i, j) => Object.assign(Dp.fadd(X, embE[j], embP[j]), { title: `x₀[${j}] = E + P` }) },
+      ],
       about: [`The vector that enters block 1 for ${sel}: its word's row of the token table plus its position's row of the position table, added number by number. Each bar is one of the ${d} numbers; tall bars dominate the dot products attention computes next.`, 'The same word at another position gets a different vector, which is the only way the model knows where a word sits.'],
       code: `x0 = tok_emb.weight[${tr.ids[pos]}] + pos_emb.weight[${pos}]   # "${word(tr.ids[pos])}" at position ${pos}\nprint(x0.shape)   # torch.Size([${d}])`,
     };
+    const EMB = W2({ e: [0, 0.06, 0.3, 0.88], p: [0.36, 0.06, 0.26, 0.5], x: [0.74, 0.06, 0.26, 0.5] }, { e: [0, 0.05, 0.46, 0.4], p: [0.54, 0.05, 0.46, 0.26], x: [0.22, 0.5, 0.78, 0.18] });
     const embed = {
       id: 'embed', title: 'Embedding', sub: `token + position → ${d} numbers each`, rect: [0, 0.1, 1, 0.12], tone: 's3',
       summary: (ctx, r, S) => { S.heat(ctx, (i, j) => tr.resid[0][i * d + j], n, d, { x: r.x + r.w * 0.15, y: r.y, w: r.w * 0.7, h: Math.max(4, r.h) }); },
+      grids: [
+        { id: 'E', rect: EMB.e, rows: V, cols: d, make: (i, j) => Dp.stored(X, m.E.w[i * d + j], `E[${word(i)}][${j}]`) },
+        { id: 'P', rect: EMB.p, rows: c.T, cols: d, make: (i, j) => Dp.stored(X, m.Pos.w[i * d + j], `P[${i}][${j}]`) },
+        { id: 'x0', rect: EMB.x, rows: n, cols: d, make: (i, j) => Object.assign(Dp.fadd(X, m.E.w[tr.ids[i] * d + j], m.Pos.w[i * d + j]), { title: `x₀[${j}] for ${tok(i)} = E + P` }) },
+      ],
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), ids = new Set(tr.ids);
-        const er = S.place(r, W2([0, 0.06, 0.3, 0.88], [0, 0.05, 0.46, 0.4])), pr = S.place(r, W2([0.36, 0.06, 0.26, 0.5], [0.54, 0.05, 0.46, 0.26]));
-        const xr = S.place(r, W2([0.74, 0.06, 0.26, 0.5], [0.22, 0.5, 0.78, 0.18]));
+        const er = S.place(r, EMB.e), pr = S.place(r, EMB.p);
+        const xr = S.place(r, EMB.x);
         S.caption(ctx, `token table E (${V} × ${d})`, er, { size: u * 0.85 });
         const g = S.heat(ctx, (i, j) => m.E.w[i * d + j], V, d, er);
         ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 1;
@@ -305,8 +331,13 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       const xin = which === 'f' ? row(tr.resid[tr.resid.length - 1], pos, d) : row(tr.resid[which === 1 ? 2 * l : 2 * l + 1], pos, d);
       const out = which === 'f' ? row(tr.lnf, pos, d) : row(which === 1 ? tr.ln1[l] : tr.ln2[l], pos, d);
       const st = lnStats(xin), g = which === 'f' ? m.lnfg.w : which === 1 ? m.layers[l].ln1g.w : m.layers[l].ln2g.w;
+      const beta = which === 'f' ? m.lnfb.w : which === 1 ? m.layers[l].ln1b.w : m.layers[l].ln2b.w;
       return {
         id, title, sub: 'normalise each token', rect: [0, 0, 1, 1],
+        grids: [
+          { id: 'in', rect: [0, 0.08, 1, 0.26], rows: 1, cols: d, make: (i, j) => Dp.stored(X, xin[j], `stream[${j}] for ${tok(pos)}`) },
+          { id: 'out', rect: [0, 0.55, 1, 0.26], rows: 1, cols: d, make: (i, j) => lnCell(xin, j, g[j], beta[j], `${title}, number ${j} for ${tok(pos)}`) },
+        ],
         summary: (ctx, r, S) => { S.text(ctx, '(x − μ) / σ', r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.w / 8, 6, 11), mono: true, align: 'center', color: theme.c('ink-2') }); },
         inner: (ctx, r, S) => {
           const u = S.u(r, 8, 14);
@@ -333,13 +364,21 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       const out = (i, t) => { let s = 0; for (let j = 0; j <= i; j++) s += Aw[i * n + j] * Vv(j, t); return s; };
       const role = A ? A.heads.find((x) => x.l === l && x.h === h) : null;
       const keys = Array.from({ length: pos + 1 }, (_, j) => j).sort((a, b) => Aw[pos * n + b] - Aw[pos * n + a]);
+      const lay = W2({ lab: [0, 0.07, 0.1, 0.38], q: [[0.11, 0.07, 0.11, 0.38], [0.24, 0.07, 0.11, 0.38], [0.37, 0.07, 0.11, 0.38]], math: [0.53, 0.02, 0.47, 0.46], s: [0.11, 0.56, 0.24, 0.42], w: [0.4, 0.56, 0.24, 0.42], o: [0.7, 0.56, 0.1, 0.42] },
+        { lab: [0, 0.05, 0.16, 0.24], q: [[0.17, 0.05, 0.25, 0.24], [0.45, 0.05, 0.25, 0.24], [0.73, 0.05, 0.25, 0.24]], math: [0, 0.32, 1, 0.22], s: [0.0, 0.6, 0.38, 0.38], w: [0.42, 0.6, 0.38, 0.38], o: [0.84, 0.6, 0.16, 0.38] });
+      const scoreCell = (i, j) => Dp.neuron(X, { title: `score: ${tok(i)} looking at ${tok(j)}`, sub: `q · k / √${dh}`, terms: Array.from({ length: dh }, (_, t) => ({ a: K(j, t), w: Q(i, t) })), bias: null, scale: { v: scale, label: `1/√${dh}` }, zName: 's', kind: 'dot', rowNames: [`key k of ${tok(j)}`, `query q of ${tok(i)}`, 'products qᵢ·kᵢ'],
+        inLabel: (t) => `k[${t}] of ${tok(j)}`, wLabel: (t) => `q[${t}] of ${tok(i)}`, vars: { w: 'q[i]', a: 'k[j]' }, about: [`How well the query of ${tok(i)} matches the key of ${tok(j)}: the dot product of the two ${dh}-number vectors, scaled by 1/√${dh}. A higher score means more attention after the softmax.`] });
       return {
         id: 'h' + h, title: `Head ${h + 1}`, sub: off ? 'knocked out' : role ? role.role.label : `${dh} dims`,
         summary: (ctx, r, S) => { const s = Math.min(r.w, r.h); S.heat(ctx, (i, j) => (j <= i ? Aw[i * n + j] : 0), n, n, { x: r.x + (r.w - s) / 2, y: r.y, w: s, h: s }, { seq: true, max: 1, mask: (i, j) => j > i }); },
+        grids: [
+          ...[0, 1, 2].map((k) => ({ id: 'qkv'[k], rect: lay.q[k], rows: n, cols: dh, make: (i, t) => qkvOf(l, i, k * d + h * dh + t) })),
+          { id: 's', rect: lay.s, rows: n, cols: n, square: true, skip: (i, j) => j > i, make: (i, j) => scoreCell(i, j) },
+          { id: 'w', rect: lay.w, rows: n, cols: n, square: true, skip: (i, j) => j > i, make: (i, j) => Object.assign(Dp.lib(X, 'softmax', { scores: Array.from({ length: i + 1 }, (_, q) => score(i, q)), j, label: 'w' }), { title: `weight: ${tok(i)} → ${tok(j)}`, sub: fmtPct(Aw[i * n + j], 1) }) },
+          { id: 'o', rect: lay.o, rows: n, cols: dh, make: (i, t) => headOut(l, h, i, t) },
+        ],
         inner: (ctx, r, S) => {
           const u = S.u(r, 8, 13);
-          const lay = W2({ lab: [0, 0.07, 0.1, 0.38], q: [[0.11, 0.07, 0.11, 0.38], [0.24, 0.07, 0.11, 0.38], [0.37, 0.07, 0.11, 0.38]], math: [0.53, 0.02, 0.47, 0.46], s: [0.11, 0.56, 0.24, 0.42], w: [0.4, 0.56, 0.24, 0.42], o: [0.7, 0.56, 0.1, 0.42] },
-            { lab: [0, 0.05, 0.16, 0.24], q: [[0.17, 0.05, 0.25, 0.24], [0.45, 0.05, 0.25, 0.24], [0.73, 0.05, 0.25, 0.24]], math: [0, 0.32, 1, 0.22], s: [0.0, 0.6, 0.38, 0.38], w: [0.42, 0.6, 0.38, 0.38], o: [0.84, 0.6, 0.16, 0.38] });
           tokenColumn(ctx, S, tr, S.place(r, lay.lab), u * 0.85, pos);
           [['q = x̂·Wq', Q], ['k = x̂·Wk', K], ['v = x̂·Wv', Vv]].forEach(([t, f], k) => { const br = S.place(r, lay.q[k]); S.caption(ctx, t, br, { size: u * 0.85 }); S.heat(ctx, f, n, dh, br, { hiRow: pos }); });
           const sr = S.place(r, lay.s), wr = S.place(r, lay.w), orr = S.place(r, lay.o);
@@ -349,7 +388,7 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
           S.heat(ctx, (i, j) => (j <= i ? Aw[i * n + j] : 0), n, n, wr, { seq: true, max: 1, mask: (i, j) => j > i, hiRow: pos, square: true });
           S.arrow(ctx, sr.x + g.w + 3, sr.y + g.h / 2, wr.x - 4, wr.y + g.h / 2, { lw: 1, head: 5 });
           S.caption(ctx, 'weights · v', orr, { size: u * 0.85, minW: 60 });
-          S.heat(ctx, out, n, dh, { x: orr.x, y: orr.y, w: orr.w, h: g.h }, { hiRow: pos });
+          S.heat(ctx, out, n, dh, orr, { hiRow: pos });
           S.text(ctx, 'grey: masked future tokens (score −∞, weight 0)', sr.x, sr.y + g.h + u * 0.9, { size: u * 0.8, color: theme.c('muted'), maxW: r.w * 0.9 });
           const lines = [`query ${sel}:`, ...keys.slice(0, 6).map((j) => `${word(tr.ids[j]).padEnd(7)} s = ${fmt(score(pos, j), 2).padStart(6)}   w = ${fmtPct(Aw[pos * n + j], 0).padStart(4)}`)];
           if (keys.length > 6) lines.push(`… ${keys.length - 6} more keys share ${fmtPct(keys.slice(6).reduce((s, j) => s + Aw[pos * n + j], 0), 0)}`);
@@ -369,16 +408,23 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       const qkv = tr.qkv[l], d3 = 3 * d;
       const headRects = W2(Array.from({ length: c.H }, (_, h) => [0.31 + (h % 2) * 0.24, 0.04 + (h >> 1) * 0.46, 0.22, 0.4]), Array.from({ length: c.H }, (_, h) => [0.02 + (h % 2) * 0.5, 0.34 + (h >> 1) * 0.22, 0.46, 0.19]));
       const heads = Array.from({ length: c.H }, (_, h) => Object.assign(headNode(l, h), { rect: headRects[h] }));
+      const lay = W2({ x: [0, 0.1, 0.09, 0.6], qkv: [[0.13, 0.04, 0.13, 0.26], [0.13, 0.36, 0.13, 0.26], [0.13, 0.68, 0.13, 0.26]], cat: [0.82, 0.06, 0.17, 0.36], out: [0.82, 0.56, 0.17, 0.36], f: [0, 0.985] },
+        { x: [0, 0.04, 0.2, 0.22], qkv: [[0.27, 0.04, 0.22, 0.22], [0.52, 0.04, 0.22, 0.22], [0.77, 0.04, 0.22, 0.22]], cat: [0.02, 0.82, 0.44, 0.13], out: [0.54, 0.82, 0.44, 0.13], f: [0, 0.995] });
+      const catRow = (i) => Float32Array.from({ length: d }, (_, j) => { const h = Math.floor(j / dh), t = j % dh; if (!m.headMask[l][h]) return 0; let s = 0; for (let q = 0; q <= i; q++) s += tr.attn[l][h][i * n + q] * qkv[q * d3 + 2 * d + h * dh + t]; return s; });
       return {
         id: 'attn', title: 'Attention', sub: `${c.H} heads × ${dh} dims`, tone: 's1',
         summary: (ctx, r, S) => {
           const s = Math.max(4, Math.min(r.h, r.w / c.H - 3));
           for (let h = 0; h < c.H; h++) S.heat(ctx, (i, j) => (j <= i ? tr.attn[l][h][i * n + j] : 0), n, n, { x: r.x + (r.w - c.H * (s + 3)) / 2 + h * (s + 3), y: r.y, w: s, h: s }, { seq: true, max: 1, mask: (i, j) => j > i });
         },
+        grids: [
+          { id: 'xh', rect: lay.x, rows: n, cols: d, make: (i, j) => lnCell(row(tr.resid[2 * l], i, d), j, m.layers[l].ln1g.w[j], m.layers[l].ln1b.w[j], `x̂[${j}] for ${tok(i)}`) },
+          ...[0, 1, 2].map((k) => ({ id: 'QKV'[k], rect: lay.qkv[k], rows: n, cols: d, make: (i, j) => qkvOf(l, i, k * d + j) })),
+          { id: 'cat', rect: lay.cat, rows: n, cols: d, make: (i, j) => headOut(l, Math.floor(j / dh), i, j % dh) },
+          { id: 'out', rect: lay.out, rows: n, cols: d, make: (i, j) => proj(`attention output ${j} for ${tok(i)}`, 'concatenated heads · Wo', catRow(i), m.layers[l].Wo.w, d, j, m.layers[l].bo.w[j], { inLabel: (p) => `head ${Math.floor(p / dh) + 1} output ${p % dh}`, vars: { w: `Wo[:, ${j}]`, a: 'heads', b: `bo[${j}]` }, about: [`What attention adds to the stream for ${tok(i)}, number ${j}: the four heads' outputs placed side by side (${d} numbers) times column ${j} of the output matrix Wo, plus a bias.`] }) },
+        ],
         inner: (ctx, r, S) => {
           const u = S.u(r, 8, 13);
-          const lay = W2({ x: [0, 0.1, 0.09, 0.6], qkv: [[0.13, 0.04, 0.13, 0.26], [0.13, 0.36, 0.13, 0.26], [0.13, 0.68, 0.13, 0.26]], cat: [0.82, 0.06, 0.17, 0.36], out: [0.82, 0.56, 0.17, 0.36], f: [0, 0.985] },
-            { x: [0, 0.04, 0.2, 0.22], qkv: [[0.27, 0.04, 0.22, 0.22], [0.52, 0.04, 0.22, 0.22], [0.77, 0.04, 0.22, 0.22]], cat: [0.02, 0.82, 0.44, 0.13], out: [0.54, 0.82, 0.44, 0.13], f: [0, 0.995] });
           const xr = S.place(r, lay.x);
           S.caption(ctx, 'x̂ (normalised)', xr, { size: u * 0.85, minW: 80 });
           S.heat(ctx, (i, j) => tr.ln1[l][i * d + j], n, d, xr, { hiRow: pos });
@@ -409,13 +455,20 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
     const mlpNode = (l) => {
       const pre = row(tr.pre[l], pos, c.F), g = row(tr.mlpAct[l], pos, c.F), xin = row(tr.ln2[l], pos, d), out = row(tr.mlp[l], pos, d);
       const top = Array.from({ length: c.F }, (_, j) => j).sort((a, b) => g[b] - g[a]).slice(0, 5);
+      const lay = W2({ a: [0, 0.07, 0.22, 0.2], b: [0.3, 0.07, 0.7, 0.2], gc: [0, 0.4, 0.22, 0.24], c2: [0.3, 0.4, 0.7, 0.2], o: [0, 0.78, 0.22, 0.18], top: [0.3, 0.7, 0.7, 0.29] },
+        { a: [0, 0.05, 0.42, 0.12], b: [0, 0.24, 1, 0.12], gc: [0.55, 0.02, 0.45, 0.16], c2: [0, 0.45, 1, 0.12], o: [0, 0.65, 0.42, 0.11], top: [0.48, 0.62, 0.52, 0.36] });
+      const P = m.layers[l], hidden = (j) => proj(`MLP neuron ${j} for ${tok(pos)}`, `u = x̂·W₁ + b₁, then GELU`, xin, P.W1.w, c.F, j, P.b1.w[j], { act: GELU, zName: 'u', outName: 'g', about: [`Hidden neuron ${j} of block ${l + 1}'s MLP, for ${tok(pos)}: it reads one direction of the normalised stream (its column of W₁), adds a bias and passes the result through GELU.`] });
       return {
         id: 'mlp', title: 'MLP', sub: `${d} → ${c.F} → ${d}`, tone: 's4',
         summary: (ctx, r, S) => { S.bars(ctx, g, { x: r.x, y: r.y, w: r.w, h: r.h * 0.85 }); },
+        grids: [
+          { id: 'xh', rect: lay.a, rows: 1, cols: d, make: (i, j) => lnCell(row(tr.resid[2 * l + 1], pos, d), j, P.ln2g.w[j], P.ln2b.w[j], `x̂[${j}] for ${tok(pos)}`) },
+          { id: 'u', rect: lay.b, rows: 1, cols: c.F, make: (i, j) => hidden(j) },
+          { id: 'g', rect: lay.c2, rows: 1, cols: c.F, make: (i, j) => hidden(j) },
+          { id: 'out', rect: lay.o, rows: 1, cols: d, make: (i, j) => proj(`MLP output ${j} for ${tok(pos)}`, `g · W₂ column ${j} + b₂`, g, P.W2.w, d, j, P.b2.w[j], { inLabel: (p) => `hidden neuron ${p}`, vars: { w: `W2[:, ${j}]`, a: 'g', b: `b2[${j}]` }, inputNode: (p) => hidden(p), about: [`What the MLP adds to the stream for ${tok(pos)}, number ${j}: all ${c.F} hidden neurons' outputs, each weighted by its row of W₂, plus a bias. Zoom into an input bar to open the hidden neuron behind it.`] }) },
+        ],
         inner: (ctx, r, S) => {
           const u = S.u(r, 8, 13);
-          const lay = W2({ a: [0, 0.07, 0.22, 0.2], b: [0.3, 0.07, 0.7, 0.2], gc: [0, 0.4, 0.22, 0.24], c2: [0.3, 0.4, 0.7, 0.2], o: [0, 0.78, 0.22, 0.18], top: [0.3, 0.7, 0.7, 0.29] },
-            { a: [0, 0.05, 0.42, 0.12], b: [0, 0.24, 1, 0.12], gc: [0.55, 0.02, 0.45, 0.16], c2: [0, 0.45, 1, 0.12], o: [0, 0.65, 0.42, 0.11], top: [0.48, 0.62, 0.52, 0.36] });
           const a = S.place(r, lay.a), b = S.place(r, lay.b), gc = S.place(r, lay.gc), c2 = S.place(r, lay.c2), o = S.place(r, lay.o);
           S.caption(ctx, `x̂ (${d})`, a, { size: u * 0.85 }); S.bars(ctx, xin, a);
           S.caption(ctx, `u = W₁·x̂ + b₁   (${c.F} neurons)`, b, { size: u * 0.85, minW: 140 }); S.bars(ctx, pre, b);
@@ -434,7 +487,21 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       };
     };
 
-    const addNode = (id) => ({ id, title: '+', sub: 'residual add', shape: 'op', about: ['Residual connection: the sublayer\'s output is added to the stream, x ← x + f(x), instead of replacing it. The gradient of x + f(x) is 1 + f′(x), so there is always a direct path back to the early layers, and deep stacks keep training.'], code: py.residual() });
+    const addNode = (id, l, k) => {
+      const before = row(tr.resid[2 * l + k - 1], pos, d), after = row(tr.resid[2 * l + k], pos, d), delta = Float32Array.from(after, (v, j) => v - before[j]), what = k === 1 ? 'attention' : 'MLP';
+      const G = [[0, 0.1, 1, 0.2], [0, 0.42, 1, 0.2], [0, 0.74, 1, 0.2]];
+      return { id, title: '+', sub: 'residual add', shape: 'op',
+        inner: (ctx, r, S) => {
+          const u = S.u(r, 8, 13);
+          [[`stream before, for ${tok(pos)}`, before], [`+ ${what} output`, delta], ['= stream after: zoom into a bar', after]].forEach(([t, v], q) => { const g = S.place(r, G[q]); S.caption(ctx, t, g, { size: u * 0.85, minW: 200 }); S.bars(ctx, v, g); });
+        },
+        grids: [
+          { id: 'in', rect: G[0], rows: 1, cols: d, make: (i, j) => Dp.stored(X, before[j], `stream[${j}] before`) },
+          { id: 'f', rect: G[1], rows: 1, cols: d, make: (i, j) => Dp.stored(X, delta[j], `${what} output [${j}]`) },
+          { id: 'sum', rect: G[2], rows: 1, cols: d, make: (i, j) => Object.assign(Dp.fadd(X, before[j], delta[j]), { title: `stream[${j}] + ${what} output` }) },
+        ],
+        about: ['Residual connection: the sublayer\'s output is added to the stream, x ← x + f(x), instead of replacing it. The gradient of x + f(x) is 1 + f′(x), so there is always a direct path back to the early layers, and deep stacks keep training.', `Here for ${tok(pos)}: ${d} additions, one per number of the stream. Zoom into a bar of the bottom row to open one.`], code: py.residual() };
+    };
 
     const BLOCK_RECTS = W2(
       { ln1: [0, 0.42, 0.11, 0.42], attn: [0.15, 0.3, 0.3, 0.68], add1: [0.475, 0.0, 0.04, 0.2], ln2: [0.53, 0.42, 0.11, 0.42], mlp: [0.68, 0.3, 0.26, 0.68], add2: [0.955, 0.0, 0.04, 0.2] },
@@ -471,8 +538,8 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
           S.arrow(ctx, mlp.x + 4, mlp.y + mlp.h + 2, x + Math.min(a2.w, a2.h) / 2 + 3, cen(a2)[1], { lw: 1.1, head: 5, bend: [-4, 6] });
         }
       },
-      children: [Object.assign(lnNode('ln1', 'LayerNorm', l, 1), { rect: BLOCK_RECTS.ln1 }), Object.assign(attnNode(l), { rect: BLOCK_RECTS.attn }), Object.assign(addNode('add1'), { rect: BLOCK_RECTS.add1 }),
-        Object.assign(lnNode('ln2', 'LayerNorm', l, 2), { rect: BLOCK_RECTS.ln2 }), Object.assign(mlpNode(l), { rect: BLOCK_RECTS.mlp }), Object.assign(addNode('add2'), { rect: BLOCK_RECTS.add2 })],
+      children: [Object.assign(lnNode('ln1', 'LayerNorm', l, 1), { rect: BLOCK_RECTS.ln1 }), Object.assign(attnNode(l), { rect: BLOCK_RECTS.attn }), Object.assign(addNode('add1', l, 1), { rect: BLOCK_RECTS.add1 }),
+        Object.assign(lnNode('ln2', 'LayerNorm', l, 2), { rect: BLOCK_RECTS.ln2 }), Object.assign(mlpNode(l), { rect: BLOCK_RECTS.mlp }), Object.assign(addNode('add2', l, 2), { rect: BLOCK_RECTS.add2 })],
       about: [
         `Block ${l + 1} is one round of "gather, then think". Two sublayers are wrapped the same way, normalise, transform, add back: x ← x + Attention(LayerNorm(x)), then x ← x + MLP(LayerNorm(x)).`,
         'Attention moves information between positions; it is the only place where tokens interact. The MLP then transforms each position on its own. Because both add to the stream instead of replacing it, every block makes a correction to a shared running representation, and later blocks can still read what earlier ones wrote.',
@@ -484,11 +551,17 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
     const outNode = (() => {
       const o = pos * V, logits = row(tr.logits, pos, V), top = topk(tr.probs, o, V, 8);
       const R = W2({ lnf: [0, 0.2, 0.2, 0.6], un: [0.26, 0, 0.4, 1], sm: [0.72, 0, 0.28, 1] }, { lnf: [0.1, 0, 0.8, 0.16], un: [0, 0.22, 1, 0.4], sm: [0, 0.68, 1, 0.32] });
+      const UN = W2({ m: [0, 0.08, 0.4, 0.86], l: [0.48, 0.08, 0.52, 0.56] }, { m: [0, 0.05, 1, 0.4], l: [0, 0.55, 1, 0.24] }), lnfRow = row(tr.lnf, pos, d);
+      const logitCell = (j) => proj(`score for "${word(j)}" after ${tok(pos)}`, 'x̂ · U column + bias', lnfRow, m.U.w, V, j, m.bu.w[j], { zName: 'logit', vars: { w: `U[:, ${j}]`, a: 'x_hat', b: `bu[${j}]` }, about: [`The model's score (logit) for "${word(j)}" as the next word: the final normalised stream vector of ${tok(pos)} times that word's column of the unembedding matrix U, plus a bias.`] });
       const unemb = {
         id: 'unembed', title: 'Unembedding', sub: `${d} → ${V} scores`, rect: R.un,
         summary: (ctx, r, S) => { S.bars(ctx, logits, { x: r.x, y: r.y, w: r.w, h: r.h * 0.85 }); },
+        grids: [
+          { id: 'U', rect: UN.m, rows: d, cols: V, make: (i, j) => Dp.stored(X, m.U.w[i * V + j], `U[${i}, "${word(j)}"]`) },
+          { id: 'l', rect: UN.l, rows: 1, cols: V, make: (i, j) => logitCell(j) },
+        ],
         inner: (ctx, r, S) => {
-          const u = S.u(r, 8, 13), mr = S.place(r, W2([0, 0.08, 0.4, 0.86], [0, 0.05, 1, 0.4])), lr = S.place(r, W2([0.48, 0.08, 0.52, 0.56], [0, 0.55, 1, 0.24]));
+          const u = S.u(r, 8, 13), mr = S.place(r, UN.m), lr = S.place(r, UN.l);
           S.caption(ctx, `U (${d} × ${V}): one column per word`, mr, { size: u * 0.85, minW: 140 });
           S.heat(ctx, (i, j) => m.U.w[i * V + j], d, V, mr);
           S.caption(ctx, `logits for ${sel}`, lr, { size: u * 0.85, minW: 140 });
@@ -512,8 +585,9 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
             S.text(ctx, fmtPct(t.p, t.p < 0.1 ? 1 : 0), r.x + r.w, y + lh / 2, { size: Math.min(u * 0.9, lh * 0.8), mono: true, align: 'right' });
           });
         },
-        about: ['Softmax turns scores into probabilities: exponentiate each, divide by the total, p = e^z / Σ e^z. Larger scores win more than proportionally, and the results are positive and add up to 1.', 'When generating, the prompt panel\'s temperature divides the scores first: below 1 sharpens the choice toward the top word, above 1 spreads it out, and at 0 the top word is always taken.'],
+        about: ['Softmax turns scores into probabilities: exponentiate each, divide by the total, p = e^z / Σ e^z. Larger scores win more than proportionally, and the results are positive and add up to 1.', 'When generating, the prompt panel\'s temperature divides the scores first: below 1 sharpens the choice toward the top word, above 1 spreads it out, and at 0 the top word is always taken. Zoom into a row to see one probability computed.'],
         code: py.softmax(),
+        children: top.map((t, i) => Object.assign(Dp.lib(X, 'softmax', { scores: Array.from(logits), j: t.id, label: `p("${word(t.id)}")` }), { id: 'p' + t.id, shape: 'zone', rect: [0, 0.17 + i * (0.78 / top.length), 1, 0.78 / top.length], title: `p("${word(t.id)}") = ${fmtPct(t.p, 1)}` })),
       };
       return {
         id: 'out', title: 'Output', sub: 'LayerNorm → unembedding → softmax', rect: [0, 0.83, 1, 0.17], tone: 's7',

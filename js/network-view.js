@@ -20,7 +20,8 @@
     V.overlay = document.getElementById('netOverlay');
     V.legend = document.getElementById('netLegend');
     new ResizeObserver(() => V.resize()).observe(V.stage);
-    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); } });
+    // zooming far into a neuron opens it (net-deep.js)
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
@@ -901,7 +902,7 @@
       if (tr.delta) kids.push(row('δ for this sample', fmt(tr.delta[l][j], 4)));
       if (l < net.L && !net.mask[l][j]) kids.push(el('div', { class: 'tt-note', text: 'Ablated: forced to output 0' }));
     }
-    kids.push(el('div', { class: 'tt-hint', text: l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect' }));
+    kids.push(el('div', { class: 'tt-hint', text: (l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect') + '; zoom in on it to open it' }));
     return kids;
   }
   function edgeTip(e) {

@@ -119,13 +119,22 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     const zd = net.zd.map((s) => s.map((arr) => Float32Array.from(arr)));
     const [u, u1, u2] = [streams[net.L][0][0], streams[net.L][1][0], streams[net.L][2][0]], r = (u2 + c * u1 + k * u) / k;
     const ex = PN.exact(t, P.zeta, P.omega), ex1 = PN.exactD(t, P.zeta, P.omega);
+    // below every number: NA.deep's levels, down to the transistors and electrons
+    const X = { wide }, Dp = NA.deep, TANH = { id: 'tanh', label: 'tanh', f: Math.tanh }, side = [0.68, 0.03, 0.32, 0.36];
+    const sumOf = (l, j, q, o = {}) => Dp.neuron(X, Object.assign({
+      terms: Array.from({ length: sizes[l] }, (_, i) => ({ a: streams[l][q][i], w: net.W[l][j * sizes[l] + i] })),
+      inLabel: (i) => (l === 0 ? ['x', 'dx/dt', 'd²x/dt²'][q] : `${['a', 'a′', 'a″'][q]} of neuron ${i + 1}, layer ${l}`), wLabel: (i) => `W${l + 1}[${j}, ${i}]`,
+      inputNode: (i) => (l === 0 ? Dp.stored(X, streams[0][q][0], ['x = 2t − 1', 'dx/dt', 'd²x/dt²'][q]) : neuronNode(l - 1, i)),
+      vars: { w: `W${l + 1}[${j}]`, a: l === 0 ? 'x' : `${['a', 'da', 'd2a'][q]}${l}`, b: `b${l + 1}[${j}]` },
+    }, o));
 
     const inputNode = {
       id: 'input', title: 'Input t', sub: 'scaled to [−1, 1]', rect: W2([0, 0.38, 0.11, 0.24], [0.25, 0, 0.5, 0.09]),
       summary: (ctx, rr, S) => S.text(ctx, fmt(t, 3), rr.x + rr.w / 2, rr.y + rr.h * 0.4, { size: clamp(rr.w / 5, 7, 12), mono: true, align: 'center', maxW: rr.w }),
+      children: [Object.assign(Dp.fmul(X, 2, t), { id: 'scale', rect: side, title: '2 × t', sub: 'the first multiplication' })],
       inner: (ctx, rr, S) => {
         const uu = S.u(rr, 9, 15);
-        S.lines(ctx, [`t = ${fmt(t, 3)}   (the probe; move it on the Plots view)`, `x = 2t − 1 = ${fmt(2 * t - 1, 3)}`, 'dx/dt = 2', 'd²x/dt² = 0'], S.place(rr, [0, 0.05, 1, 0.4]), { mono: true, size: uu, strong: (i) => i === 1 });
+        S.lines(ctx, [`t = ${fmt(t, 3)}   (the probe; move it on the Plots view)`, `x = 2t − 1 = ${fmt(2 * t - 1, 3)}`, 'dx/dt = 2', 'd²x/dt² = 0'], S.place(rr, [0, 0.05, 0.64, 0.4]), { mono: true, size: uu, strong: (i) => i === 1 });
         const pr = S.place(rr, [0, 0.55, 1, 0.4]);
         S.frame(ctx, pr);
         S.curve(ctx, (v) => 2 * v - 1, pr, 0, 1, -1.1, 1.1, { color: theme.c('pos'), lw: 2 });
@@ -139,7 +148,8 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
       const prev = streams[l], Wl = net.W[l], nIn = sizes[l], b = net.b[l][j];
       let z = b; for (let i = 0; i < nIn; i++) z += Wl[j * nIn + i] * prev[0][i];
       const n = { z, z1: zd[l + 1][0][j], z2: zd[l + 1][1][j], y: streams[l + 1][0][j], y1: streams[l + 1][1][j], y2: streams[l + 1][2][j] };
-      return {
+      const NB = W2({ value: [0.65, 0.02, 0.35, 0.3], slope: [0.65, 0.36, 0.35, 0.28], chain: [0.65, 0.68, 0.35, 0.3] }, { value: [0, 0.72, 0.32, 0.27], slope: [0.34, 0.72, 0.32, 0.27], chain: [0.68, 0.72, 0.32, 0.27] });
+      return Dp.lazy({
         id: 'neuron', title: `Neuron ${j + 1}`, sub: 'the chain rule in numbers', rect: W2([0.7, 0.62, 0.3, 0.36], [0, 0.76, 1, 0.22]),
         summary: (ctx, rr, S) => S.text(ctx, `y = ${fmt(n.y, 3)}`, rr.x + rr.w / 2, rr.y + rr.h * 0.35, { size: clamp(rr.w / 9, 7, 12), mono: true, align: 'center', maxW: rr.w }),
         inner: (ctx, rr, S) => {
@@ -151,9 +161,9 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
             `y   = tanh z                     = ${fmt(n.y, 4)}`,
             `y′  = (1 − y²)·z′                = ${fmt(n.y1, 4)}`,
             `y″  = −2y(1 − y²)·z′² + (1 − y²)·z″ = ${fmt(n.y2, 4)}`,
-          ], S.place(rr, W2([0, 0.04, 1, 0.5], [0, 0.03, 1, 0.42])), { mono: true, size: uu, strong: (i) => i === 3 });
+          ], S.place(rr, W2([0, 0.02, 0.6, 0.5], [0, 0.02, 1, 0.36])), { mono: true, size: uu, strong: (i) => i === 3 });
           // the neuron's output as a function of t
-          const pr = S.place(rr, W2([0, 0.62, 1, 0.34], [0, 0.52, 1, 0.44]));
+          const pr = S.place(rr, W2([0, 0.6, 0.6, 0.36], [0, 0.42, 1, 0.24]));
           S.frame(ctx, pr);
           const vals = []; for (let i = 0; i <= 80; i++) { net.forward(i / 80, 0); vals.push(net.a[l + 1][0][j]); }
           net.forward(t, 2);
@@ -161,9 +171,13 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
           ctx.strokeStyle = theme.c('ink', 0.5); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(pr.x + t * pr.w, pr.y); ctx.lineTo(pr.x + t * pr.w, pr.y + pr.h); ctx.stroke(); ctx.setLineDash([]);
           S.text(ctx, `neuron ${j + 1} over t from 0 to 1; its slope at the probe is y′, its curvature y″`, pr.x + 6, pr.y + 10, { size: uu * 0.8, color: theme.c('muted'), maxW: pr.w - 12 });
         },
-        about: [`One tanh neuron of hidden layer ${l + 1} at t = ${fmt(t, 3)}, with all three streams. The pre-activation z and its derivatives are weighted sums of the layer below; the activation y = tanh z gets its derivatives from the chain rule: y′ = tanh′(z)·z′, and the product rule adds a second term to y″ because z′ itself changes with t.`, 'These are exact derivatives, not finite differences: the same numbers PyTorch would get by differentiating twice with autograd.'],
+        about: [`One tanh neuron of hidden layer ${l + 1} at t = ${fmt(t, 3)}, with all three streams. The pre-activation z and its derivatives are weighted sums of the layer below; the activation y = tanh z gets its derivatives from the chain rule: y′ = tanh′(z)·z′, and the product rule adds a second term to y″ because z′ itself changes with t.`, 'These are exact derivatives, not finite differences: the same numbers PyTorch would get by differentiating twice with autograd. The boxes open the value\'s weighted sum, the slope\'s weighted sum and one chain-rule multiplication, each down to the hardware.'],
         code: py.neuron(L, l, j, n),
-      };
+      }, () => [
+        Object.assign(sumOf(l, j, 0, { title: `Neuron ${j + 1}: value`, sub: 'z = W·a + b, then tanh', bias: net.b[l][j], act: TANH, outName: 'y', about: [`The value stream of neuron ${j + 1} in hidden layer ${l + 1}: the weighted sum of the layer below, plus a bias, through tanh.`] }), { id: 'value', rect: NB.value }),
+        Object.assign(sumOf(l, j, 1, { title: `Neuron ${j + 1}: slope`, sub: 'z′ = W·a′ (no bias)', bias: null, act: null, zName: 'dz', outName: 'dz', about: [`The first-derivative stream: the same weights applied to the slopes a′ of the layer below. The bias is a constant, so it has no slope and drops out.`] }), { id: 'slope', rect: NB.slope }),
+        Object.assign(Dp.fmul(X, 1 - n.y * n.y, n.z1), { id: 'chain', rect: NB.chain, title: 'Chain rule: y′ = (1 − y²) × z′', sub: `${fmt(1 - n.y * n.y, 3)} × ${fmt(n.z1, 3)}` }),
+      ]);
     };
 
     const layerNode = (l) => {
@@ -171,12 +185,17 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
       // the neuron that changes most at the probe opens one level deeper
       let jm = 0; for (let j = 1; j < width; j++) if (Math.abs(s[1][j]) > Math.abs(s[1][jm])) jm = j;
       const rect = W2([0.15 + l * (0.4 / depth), 0.1, 0.4 / depth - 0.03, 0.8], [0.03, 0.12 + l * (0.42 / depth), 0.94, 0.42 / depth - 0.025]);
+      const rows = W2([[0, 0.08, 0.66, 0.14], [0, 0.32, 0.66, 0.14], [0, 0.56, 0.66, 0.14]], [[0, 0.06, 1, 0.11], [0, 0.25, 1, 0.11], [0, 0.44, 1, 0.11]]);
       return {
         id: 'l' + l, title: `Hidden ${l + 1}`, sub: `${width} tanh`, rect, tone: 's1',
         summary: (ctx, rr, S) => { if (wide) { const n = width, h = rr.h / n; for (let j = 0; j < n; j++) { ctx.fillStyle = theme.divColor(s[0][j]); ctx.fillRect(rr.x + rr.w * 0.3, rr.y + j * h, rr.w * 0.4, h * 0.8); } } else S.bars(ctx, s[0], rr, { max: 1 }); },
+        // any bar opens its neuron; any weight opens the number stored in memory
+        grids: [
+          ...rows.map((f, q) => ({ id: 'abc'[q], rect: f, rows: 1, cols: width, make: (i, j) => neuronNode(l, j) })),
+          ...(wide ? [{ id: 'W', rect: [0.72, 0.08, 0.28, 0.44], rows: width, cols: sizes[l], make: (i, jj) => Dp.stored(X, net.W[l][i * sizes[l] + jj], `weight W${l + 1}[${i}, ${jj}]`) }] : []),
+        ],
         inner: (ctx, rr, S) => {
           const uu = S.u(rr, 8, 14), names = ['value a = tanh z', 'first derivative a′ = da/dt', 'second derivative a″ = d²a/dt²'];
-          const rows = W2([[0, 0.08, 0.66, 0.14], [0, 0.32, 0.66, 0.14], [0, 0.56, 0.66, 0.14]], [[0, 0.06, 1, 0.11], [0, 0.25, 1, 0.11], [0, 0.44, 1, 0.11]]);
           rows.forEach((f, q) => { const br = S.place(rr, f); S.caption(ctx, names[q], br, { size: uu * 0.85, minW: 200 }); S.bars(ctx, s[q], br); });
           S.lines(ctx, ['z = W·a + b,   z′ = W·a′,   z″ = W·a″', 'a = tanh z,   a′ = (1 − a²)·z′', 'a″ = −2a(1 − a²)·z′² + (1 − a²)·z″'], S.place(rr, W2([0, 0.76, 0.66, 0.2], [0, 0.6, 1, 0.14])), { mono: true, size: uu * 0.9 });
           if (wide) {
@@ -198,9 +217,10 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     const outputNode = {
       id: 'out', title: 'Output u', sub: 'with u′ and u″', rect: W2([0.555, 0.38, 0.11, 0.24], [0.25, 0.56, 0.5, 0.09]),
       summary: (ctx, rr, S) => S.text(ctx, fmt(u, 3), rr.x + rr.w / 2, rr.y + rr.h * 0.4, { size: clamp(rr.w / 5, 7, 12), mono: true, align: 'center', maxW: rr.w }),
+      children: [Object.assign(sumOf(depth, 0, 0, { title: 'Output u: weighted sum', sub: 'u = W·a + b (linear)', bias: net.b[depth][0], act: null, zName: 'u', outName: 'u', about: ['The output neuron: the last hidden layer’s values times the output weights, plus a bias, with no activation.'] }), { id: 'sum', rect: side })],
       inner: (ctx, rr, S) => {
         const uu = S.u(rr, 9, 15);
-        S.lines(ctx, [`at t = ${fmt(t, 3)}:`, `u   = ${fmt(u, 4)}    exact ${fmt(ex, 4)}`, `u′  = ${fmt(u1, 3)}    exact ${fmt(ex1, 3)}`, `u″  = ${fmt(u2, 2)}`], S.place(rr, [0, 0.04, 1, 0.34]), { mono: true, size: uu, strong: (i) => i === 1 });
+        S.lines(ctx, [`at t = ${fmt(t, 3)}:`, `u   = ${fmt(u, 4)}    exact ${fmt(ex, 4)}`, `u′  = ${fmt(u1, 3)}    exact ${fmt(ex1, 3)}`, `u″  = ${fmt(u2, 2)}`], S.place(rr, [0, 0.04, 0.64, 0.34]), { mono: true, size: uu, strong: (i) => i === 1 });
         const pr = S.place(rr, [0, 0.45, 1, 0.5]);
         S.frame(ctx, pr);
         const vals = []; for (let i = 0; i <= 120; i++) vals.push(net.forward(i / 120, 0)[0]);
@@ -217,7 +237,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
       summary: (ctx, rr, S) => S.text(ctx, 'u″ + 2ζω·u′ + ω²·u', rr.x + rr.w / 2, rr.y + rr.h * 0.35, { size: clamp(rr.w / 14, 6, 12), mono: true, align: 'center', maxW: rr.w }),
       inner: (ctx, rr, S) => {
         const uu = S.u(rr, 9, 15);
-        S.lines(ctx, ['r = (u″ + 2ζω·u′ + ω²·u) / ω²', `  = (${fmt(u2, 2)} + ${fmt(c, 2)}×${fmt(u1, 3)} + ${fmt(k, 0)}×${fmt(u, 4)}) / ${fmt(k, 0)}`, `  = ${fmt(r, 4)}   at t = ${fmt(t, 3)}`], S.place(rr, [0, 0.04, 1, 0.3]), { mono: true, size: uu, strong: (i) => i === 0 });
+        S.lines(ctx, ['r = (u″ + 2ζω·u′ + ω²·u) / ω²', `  = (${fmt(u2, 2)} + ${fmt(c, 2)}×${fmt(u1, 3)} + ${fmt(k, 0)}×${fmt(u, 4)}) / ${fmt(k, 0)}`, `  = ${fmt(r, 4)}   at t = ${fmt(t, 3)}`], S.place(rr, [0, 0.04, 0.64, 0.3]), { mono: true, size: uu, strong: (i) => i === 0 });
         const pr = S.place(rr, [0, 0.45, 1, 0.5]);
         S.frame(ctx, pr);
         const lo = -4, hi = 1.5, rv = [];
@@ -230,6 +250,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
       },
       about: [`The physics: a damped spring obeys u″ + 2ζω·u′ + ω²·u = 0 (here ζ = ${fmt(P.zeta, 2)}, ω = ${fmt(P.omega, 0)}). Plug in the network's own u, u′ and u″ and whatever is left over is the residual r: zero for a curve that obeys the physics, large for one that does not. Dividing by ω² keeps it of order 1.`, `It is checked at ${P.nColloc} collocation points spread over the whole window, including where there are no measurements. That is the point of a PINN: the equation supervises the network where data cannot.`],
       code: py.residual(L),
+      children: [Object.assign(Dp.fmul(X, c, u1), { id: 'mul', rect: side, title: '2ζω × u′', sub: `${fmt(c, 2)} × ${fmt(u1, 3)}` })],
     };
 
     const lossNode = {
@@ -246,13 +267,14 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
           '',
           `plain network: data only, error ${fmt(L.m.plainErr * 100, 1)}% vs PINN ${fmt(L.m.pinnErr * 100, 1)}%`,
         ];
-        S.lines(ctx, lines, S.place(rr, [0, 0.04, 1, 0.92]), { mono: true, size: uu * 0.95, strong: (i) => i === 0 || i === 4 });
+        S.lines(ctx, lines, S.place(rr, [0, 0.04, 0.64, 0.92]), { mono: true, size: uu * 0.95, strong: (i) => i === 0 || i === 4 });
       },
       about: [
         `Training minimises a weighted sum: the data term pulls the curve through the ${P.data.length} measurements, the physics term pushes the residual toward zero at the ${P.nColloc} collocation points, and an optional initial-condition term pins u(0) = 1 and u′(0) = 0. The weights (here λ = ${fmt(L.lambda, 2)} for physics) set how hard each one pulls.`,
         'Backpropagation runs through all three streams: a weight affects u, u′ and u″, and the gradient of the physics term includes how changing it would change the derivatives. Early in training the terms disagree; the curve that satisfies both is the true motion. The plain network on the Plots view is trained on the data term alone.',
       ],
       code: py.loss(L),
+      children: [Object.assign(Dp.fmul(X, r, r), { id: 'sq', rect: [0.68, 0.3, 0.32, 0.36], title: 'r² at the probe', sub: `${fmt(r, 4)} × ${fmt(r, 4)}` })],
     };
 
     const layers = Array.from({ length: depth }, (_, l) => layerNode(l));

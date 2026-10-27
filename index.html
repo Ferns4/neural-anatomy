@@ -534,6 +534,15 @@ body[data-mode="lab"] .lab-hyper { display: flex; }
 .arch-bar > * { pointer-events: auto; }
 .arch-stage .arch-bar { right: 156px; }
 .arch-stage .zoom-chip { top: 8px; bottom: auto; }
+/* a neuron of the network diagram, opened in place */
+.deep-stage { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; background: var(--panel); border-radius: inherit; transition: transform 0.42s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.32s ease; }
+.deep-stage.is-closing { transform: scale(0.04); opacity: 0; }
+.deep-stage { overflow: hidden; }
+.deep-stage > * { min-width: 0; }
+.deep-host { position: relative; flex: 1 1 0; min-height: 220px; }
+.deep-host .arch-bar { right: 156px; }
+.deep-host .zoom-chip { top: 8px; bottom: auto; }
+@media (prefers-reduced-motion: reduce) { .deep-stage { transition: none; } }
 .arch-back { width: 28px; height: 28px; flex: none; }
 .arch-crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
 .arch-crumbs::-webkit-scrollbar { display: none; }
@@ -771,7 +780,8 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .ip-title { font-size: 13px; }
 [data-layout="mobile"] .code { font-size: 11px; }
 [data-layout="mobile"] .arch-crumb { padding: 5px 10px; }
-[data-layout="mobile"] .arch-stage .zoom-chip { display: none; }
+[data-layout="mobile"] .arch-stage .zoom-chip, [data-layout="mobile"] .deep-host .zoom-chip { display: none; }
+[data-layout="mobile"] .deep-host .arch-bar { right: 10px; }
 [data-layout="mobile"] .arch-stage .arch-bar { right: 10px; }
 /* labs on a phone: one panel per screen, settings in the sheet */
 [data-layout="mobile"][data-mode="lab"][data-screen] .panel-data, [data-layout="mobile"][data-mode="lab"][data-screen] .panel-net, [data-layout="mobile"][data-mode="lab"][data-screen] .panel-insp, [data-layout="mobile"][data-mode="lab"][data-screen] .timeline { display: none; }
@@ -1015,6 +1025,8 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
         <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run test, once you have finished tuning.</p>
         <h3>Zoom</h3>
         <p>Zoom into any part of the network with the mouse wheel, a pinch or a double-tap, and drag to pan. On the output map and the hidden space, and in a window narrow enough for the page to scroll, hold Ctrl while you scroll. Labels stay readable and show full formulas once there is room. In a lab’s Architecture view, the mouse wheel or a pinch opens the part under it, and zooming back out returns a level.</p>
+        <h3>All the way down</h3>
+        <p>Zoom far into a neuron and it opens: its weighted sum, its PyTorch code, what each library call does inside, single float multiplications and additions bit by bit, the adders and logic gates doing them, a gate’s transistors, and finally the electrons moving through a transistor’s channel. In the Architecture views every heatmap cell and bar opens the same way. Stored weights lead down through their bits to the memory cell and the electrons holding the charge.</p>
         <div id="helpInstall" hidden>
           <h3>Install as an app</h3>
           <p>On an iPhone or iPad, open this site in Safari, tap Share, then Add to Home Screen. On Android, open the browser menu and tap Install app. On a computer, use the install button in the address bar. The app opens full-screen and keeps working offline.</p>
@@ -1052,6 +1064,8 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 <script src="js/walkthrough.js"></script>
 <script src="js/lab.js"></script>
 <script src="js/archview.js"></script>
+<script src="js/arch-deep.js"></script>
+<script src="js/net-deep.js"></script>
 <script src="js/lm-data.js"></script>
 <script src="js/transformer.js"></script>
 <script src="js/lm-weights.js"></script>

@@ -162,6 +162,26 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
     const mean = [c0 * x0h[0] + ct * xt[0], c0 * x0h[1] + ct * xt[1]];
     const ddimNext = [Math.sqrt(abPrev) * x0h[0] + Math.sqrt(1 - abPrev) * epsC[0], Math.sqrt(abPrev) * x0h[1] + Math.sqrt(1 - abPrev) * epsC[1]];
     const feats = Array.from(acts[0].subarray(2));
+    // below every number: NA.deep's levels, down to the transistors and electrons
+    const X = { wide }, Dp = NA.deep, SILU = { id: 'swish', label: 'SiLU', f: (z) => z / (1 + Math.exp(-z)) };
+    const FEAT = ['x', 'y', '2t/T − 1', ...[0, 1, 2, 3].flatMap((k) => [`sin(π·${2 ** k}·t/T)`, `cos(π·${2 ** k}·t/T)`])];
+    const featNode = (i) => {
+      if (i < 2) return Dp.stored(X, acts[0][i], `${FEAT[i]} of the noisy point`);
+      if (i === 2) return Object.assign(Dp.fmul(X, 2, t / T), { title: '2t/T − 1', sub: `2 × ${fmt(t / T, 3)}, then − 1` });
+      const k = (i - 3) >> 1, arg = Math.PI * 2 ** k * (t / T), cos = (i - 3) % 2 === 1;
+      return Object.assign(Dp.lib(X, 'sine', { z: cos ? arg + Math.PI / 2 : arg }), { title: FEAT[i], sub: cos ? 'cos z = sin(z + π/2)' : `z = ${fmt(arg, 3)}` });
+    };
+    // neuron j of weight layer l, for the followed point
+    const neuronOf = (l, j) => {
+      const nIn = net.sizes[l], nOut = net.sizes[l + 1], last = l === net.L - 1;
+      return Dp.neuron(X, { title: last ? `Output ε̂[${j}]` : `Neuron ${j + 1} of layer ${l + 1}`, sub: last ? 'linear' : `${nIn} inputs, SiLU`,
+        terms: Array.from({ length: nIn }, (_, i) => ({ a: acts[l][i], w: net.W[l][i * nOut + j] })), bias: net.b[l][j], act: last ? null : SILU,
+        inLabel: (i) => (l === 0 ? FEAT[i] : `neuron ${i + 1} of layer ${l}`), wLabel: (i) => `W${l + 1}[${i}, ${j}]`,
+        inputNode: (i) => (l === 0 ? featNode(i) : neuronOf(l - 1, i)),
+        vars: { w: `W${l + 1}[:, ${j}]`, a: l === 0 ? 'features' : `a${l}`, b: `b${l + 1}[${j}]` },
+        about: [`${last ? `Output ${j} of the denoiser, its guess of the noise in the ${j ? 'y' : 'x'} coordinate` : `Neuron ${j + 1} of hidden layer ${l + 1} of the denoiser`}, for the followed point at t = ${t}. Zoom into an input bar to open the neuron or feature that produced it.`] });
+    };
+    const side = [0.74, 0.0, 0.26, 0.24];
 
     // plotting helpers: a ±3 square of the plane
     const plane = (r) => { const s = Math.min(r.w, r.h) / 6; return { s, X: (x) => r.x + r.w / 2 + x * s, Y: (y) => r.y + r.h / 2 - y * s }; };
@@ -179,7 +199,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
       id: 'data', title: 'Data x₀', sub: `${fmtInt(D.n)} points`, rect: W2([0, 0.02, 0.15, 0.3], [0, 0, 0.3, 0.16]),
       summary: (ctx, r) => { const P = scatter(ctx, D.pts, D.n, r, theme.c('ink-2'), 4, 1); dot(ctx, P, x0, theme.c('s7'), 2.5); },
       inner: (ctx, r, S) => {
-        const q = S.place(r, [0, 0.02, 1, 0.86]), uu = S.u(r, 8, 13);
+        const q = S.place(r, [0, 0.02, 0.72, 0.86]), uu = S.u(r, 8, 13);
         S.frame(ctx, q);
         const P = scatter(ctx, D.pts, D.n, q, theme.c('pos', 0.75), 1, 1.8);
         ring(ctx, P, x0, theme.c('s7'), 6);
@@ -190,6 +210,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
         `The ringed point, x₀ = ${pair(x0, 2)}, is followed through the rest of the diagram: the Add noise box makes it noisy, the network guesses its noise, the loss box scores the guess and the sampler box takes one step back with it.`,
       ],
       code: py.data(L),
+      children: [Object.assign(Dp.stored(X, x0[0], 'x₀, x coordinate'), { id: 'x0', rect: [0.76, 0.3, 0.24, 0.3] })],
     };
 
     const fwdNode = {
@@ -205,7 +226,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
           'x_t = √ᾱ_t · x₀ + √(1 − ᾱ_t) · ε,     ε ~ N(0, I)',
           `t = ${t}:  √ᾱ = ${fmt(sa, 3)},  √(1 − ᾱ) = ${fmt(sn, 3)}`,
           `x_t = ${fmt(sa, 3)}·${pair(x0, 2)} + ${fmt(sn, 3)}·${pair(e, 2)} = ${pair(xt, 2)}`,
-        ], S.place(r, [0, 0.02, 1, 0.22]), { mono: true, size: uu, strong: (i) => i === 0 });
+        ], S.place(r, [0, 0.02, 0.7, 0.22]), { mono: true, size: uu, strong: (i) => i === 0 });
         const pr = S.place(r, W2([0, 0.34, 0.46, 0.56], [0, 0.3, 1, 0.24])), qr = S.place(r, W2([0.52, 0.3, 0.48, 0.66], [0.1, 0.6, 0.8, 0.4]));
         S.caption(ctx, `signal kept √ᾱ_t (blue) and noise √(1 − ᾱ_t) (orange), t = 0 … ${T}`, pr, { size: uu * 0.8, minW: 200 });
         S.frame(ctx, pr);
@@ -234,11 +255,13 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
 ${py.forward()}
 
 xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset at t = ${t}`,
+      children: [Object.assign(Dp.fmul(X, sa, x0[0]), { id: 'mul', rect: side, title: '√ᾱ × x₀', sub: `${fmt(sa, 3)} × ${fmt(x0[0], 3)}` })],
     };
 
     const timeNode = {
       id: 'time', title: 'Time features', sub: '9 numbers from t', rect: W2([0.19, 0.36, 0.2, 0.28], [0.7, 0, 0.3, 0.16]), tone: 's3',
       summary: (ctx, r, S) => S.bars(ctx, feats, r, { max: 1 }),
+      grids: [{ id: 'f', rect: [0, 0.8, 1, 0.18], rows: 1, cols: 9, make: (i, j) => featNode(j + 2) }],
       inner: (ctx, r, S) => {
         const uu = S.u(r, 9, 14);
         S.lines(ctx, ['f(t) = [ 2t/T − 1,  sin(π·2ᵏ·t/T),  cos(π·2ᵏ·t/T)  for k = 0…3 ]', `t = ${t}:  [ ${feats.map((v) => fmt(v, 2)).join(', ')} ]`], S.place(r, [0, 0.02, 1, 0.14]), { mono: true, size: uu * 0.95, strong: (i) => i === 0 });
@@ -263,12 +286,18 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
     const layerRect = (l) => { const n = net.L, w = 0.88 / n; return W2([0.12 + l * w, 0.12, w - 0.04, 0.78], [0.04, 0.11 + l * (0.84 / n), 0.92, 0.84 / n - 0.04]); };
     const layerNode = (l) => {
       const nIn = net.sizes[l], nOut = net.sizes[l + 1], last = l === net.L - 1, a = acts[l + 1], z = zs[l + 1];
+      const LR = { a: W2([0, 0.08, 0.62, 0.3], [0, 0.06, 1, 0.22]), z: W2([0, 0.52, 0.62, 0.3], [0, 0.36, 1, 0.22]), w: last ? W2([0, 0.52, 0.62, 0.2], [0, 0.4, 1, 0.2]) : W2([0.7, 0.56, 0.3, 0.4], [0.52, 0.66, 0.48, 0.3]) };
       return {
         id: 'l' + l, title: last ? 'Output ε̂' : `Layer ${l + 1}`, sub: `${nIn} → ${nOut}${last ? '' : ' SiLU'}`, tone: last ? 's7' : null, rect: layerRect(l),
         summary: (ctx, r, S) => S.bars(ctx, a, r),
+        grids: [
+          { id: 'a', rect: LR.a, rows: 1, cols: nOut, make: (i, j) => neuronOf(l, j) },
+          ...(last ? [] : [{ id: 'z', rect: LR.z, rows: 1, cols: nOut, make: (i, j) => neuronOf(l, j) }]),
+          { id: 'W', rect: LR.w, rows: nOut, cols: nIn, make: (i, j) => Dp.stored(X, net.W[l][j * nOut + i], `W${l + 1}[${j}, ${i}]`) },
+        ],
         inner: (ctx, r, S) => {
           const uu = S.u(r, 9, 14);
-          const ar = S.place(r, W2([0, 0.08, 0.62, 0.3], [0, 0.06, 1, 0.22])), zr = S.place(r, W2([0, 0.52, 0.62, 0.3], [0, 0.36, 1, 0.22]));
+          const ar = S.place(r, LR.a), zr = S.place(r, LR.z);
           S.caption(ctx, last ? `ε̂ = W·a + b: the predicted noise ${pair(a)}; the true ε was ${pair(e)}` : `a = SiLU(z) = z·σ(z): the ${nOut} outputs`, ar, { size: uu * 0.85, minW: 220 });
           S.bars(ctx, a, ar);
           if (!last) {
@@ -279,7 +308,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
             S.frame(ctx, cr);
             S.curve(ctx, (v) => v / (1 + Math.exp(-v)), cr, -5, 5, -0.6, 5, { color: theme.c('s1'), lw: 2 });
           }
-          const wr = S.place(r, last ? W2([0, 0.52, 0.62, 0.2], [0, 0.4, 1, 0.2]) : W2([0.7, 0.56, 0.3, 0.4], [0.52, 0.66, 0.48, 0.3]));
+          const wr = S.place(r, LR.w);
           S.caption(ctx, `weights W (${nOut} × ${nIn})`, wr, { size: uu * 0.85 });
           S.heat(ctx, (i, j) => net.W[l][j * nOut + i], nOut, nIn, wr);
         },
@@ -299,6 +328,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
         const cols = net.sizes.length, w = r.w / cols;
         net.sizes.forEach((n, i) => { const hh = Math.min(r.h, 6 + n * 1.1); ctx.fillStyle = theme.c(i === 0 || i === cols - 1 ? 'ink-2' : 's1', 0.7); ctx.fillRect(r.x + w * i + w * 0.3, r.y + (r.h - hh) / 2, w * 0.4, hh); });
       },
+      grids: [{ id: 'in', rect: W2([0, 0.2, 0.08, 0.5], [0.25, 0.01, 0.5, 0.06]), rows: 1, cols: acts[0].length, make: (i, j) => featNode(j) }],
       inner: (ctx, r, S) => {
         const uu = S.u(r, 9, 14);
         const inR = S.place(r, W2([0, 0.2, 0.08, 0.5], [0.25, 0.01, 0.5, 0.06]));
@@ -334,7 +364,7 @@ ${py.net(m.o.hidden)}`,
           'loss = mean of (ε − ε̂)² over x and y, and over a batch',
           `followed point, t = ${t}:  ε = ${pair(e)}   ε̂ = ${pair(eh)}`,
           `its loss = ((${fmt(eh[0] - e[0], 3)})² + (${fmt(eh[1] - e[1], 3)})²) / 2 = ${fmt(lossPt, 4)}`,
-        ], S.place(r, [0, 0.02, 1, 0.22]), { mono: true, size: uu * 0.92, strong: (i) => i === 0 });
+        ], S.place(r, [0, 0.02, 0.7, 0.22]), { mono: true, size: uu * 0.92, strong: (i) => i === 0 });
         const br = S.place(r, [0.04, 0.36, 0.92, 0.5]), bw = br.w / 10;
         S.caption(ctx, `average loss in ten bands of t (fresh points and noise); violet: the band of t = ${t}`, br, { size: uu * 0.8, minW: 220 });
         b.forEach((v, i) => { const h = (v / mx) * br.h; ctx.fillStyle = theme.c(i === band ? 's7' : 'pos', 0.75); ctx.fillRect(br.x + i * bw + 2, br.y + br.h - h, bw - 4, h); S.text(ctx, fmt(v, 2), br.x + (i + 0.5) * bw, br.y + br.h - h - uu * 0.6, { size: uu * 0.7, align: 'center', color: theme.c('muted') }); });
@@ -348,6 +378,7 @@ ${py.net(m.o.hidden)}`,
 
 
 ${py.loss(L.batch)}`,
+      children: [Object.assign(Dp.fmul(X, eh[0] - e[0], eh[0] - e[0]), { id: 'sq', rect: side, title: '(ε̂ − ε)² for x', sub: `${fmt(eh[0] - e[0], 3)} squared` })],
     };
 
     const sampNode = {
@@ -365,7 +396,7 @@ ${py.loss(L.batch)}`,
           `       mean ${pair(mean)}, then add σ·z`,
           `DDIM:  x_${tPrev} = √ᾱ_${tPrev}·x̂₀ + √(1 − ᾱ_${tPrev})·ε̂   (no new noise)`,
           `       = ${fmt(Math.sqrt(abPrev), 3)}·x̂₀ + ${fmt(Math.sqrt(1 - abPrev), 3)}·ε̂ = ${pair(ddimNext)}`,
-        ], S.place(r, [0, 0.02, 1, 0.96]), { mono: true, size: uu * 0.92, strong: (i) => i === 2 || i === 4 || i === 7 });
+        ], S.place(r, [0, 0.02, 0.7, 0.96]), { mono: true, size: uu * 0.92, strong: (i) => i === 2 || i === 4 || i === 7 });
       },
       about: [
         `Generating runs the process backwards. Start from pure noise; at each step ask the network for ε̂, turn it into an estimate x̂₀ of the clean point, and move to an earlier step. With ${L.steps} steps each one goes from t to t − ${stride}.`,
@@ -376,13 +407,20 @@ ${py.loss(L.batch)}`,
 
 
 ${py.sampler()}`,
+      children: [
+        Object.assign(Dp.fmul(X, sn, eh[0]), { id: 'x0', rect: [0.74, 0.02, 0.26, 0.29], title: '√(1 − ᾱ) × ε̂', sub: 'for x̂₀' }),
+        Object.assign(Dp.fmul(X, c0, x0h[0]), { id: 'ddpm', rect: [0.74, 0.36, 0.26, 0.29], title: 'c₀ × x̂₀', sub: 'DDPM mean' }),
+        Object.assign(Dp.fmul(X, Math.sqrt(abPrev), x0h[0]), { id: 'ddim', rect: [0.74, 0.7, 0.26, 0.28], title: '√ᾱ × x̂₀', sub: 'DDIM step' }),
+      ],
     };
 
     const noiseNode = {
       id: 'noise', title: 'Noise x_T', sub: 'N(0, I)', rect: [0, 0.68, 0.15, 0.3],
       summary: (ctx, r) => { const rng = new NA.RNG(4), pts = new Float32Array(400); for (let i = 0; i < 400; i++) pts[i] = rng.gauss(); scatter(ctx, pts, 200, r, theme.c('ink-2'), 1, 1); },
-      about: [`Generating starts here: points drawn from a standard Gaussian, the same round cloud the forward process ends in at t = ${T}. Each one is a seed; the sampler turns it into a new data point.`],
-      code: 'x = torch.randn(n, 2)      # x_T: where every generated point starts',
+      inner: (ctx, r) => { const rng = new NA.RNG(4), pts = new Float32Array(1200); for (let i = 0; i < 1200; i++) pts[i] = rng.gauss(); scatter(ctx, pts, 600, { x: r.x, y: r.y, w: r.w * 0.7, h: r.h }, theme.c('ink-2'), 1, 2); },
+      children: [Object.assign(Dp.stored(X, e[0], 'one noise number, ε for x'), { id: 'e', rect: [0.74, 0.3, 0.26, 0.3] })],
+      about: [`Generating starts here: points drawn from a standard Gaussian, the same round cloud the forward process ends in at t = ${T}. Each one is a seed; the sampler turns it into a new data point. A random-number generator makes them: uniform random bits from a counter-based generator, turned into Gaussian numbers by a formula such as Box–Muller.`],
+      code: 'import torch\n\nn = 600\nx = torch.randn(n, 2)      # x_T: where every generated point starts\nprint(x.mean(0), x.std(0))  # about 0 and 1',
     };
 
     const kids = wide ? [dataNode, fwdNode, timeNode, noiseNode, netNode, lossNode, sampNode] : [dataNode, fwdNode, timeNode, netNode, lossNode, sampNode];

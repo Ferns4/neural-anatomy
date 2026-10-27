@@ -4,9 +4,13 @@
    own screen with its inner workings and maths; zoom out (or the breadcrumbs) to come back. Each level is
    rebuilt from live data on every draw, so the numbers inside always belong to the current model and input.
 
-   Node: { id, title, sub, tone, rect: [fx, fy, fw, fh] in the parent's content box, shape: 'box' | 'op',
+   Node: { id, title, sub, tone, rect: [fx, fy, fw, fh] in the parent's content box, shape: 'box' | 'op' | 'zone',
            summary(ctx, r, S) when drawn small inside its parent, inner(ctx, c, S) when it is the open level,
-           children: [nodes], about: [paragraphs], code: 'python', codeLabel } */
+           children: [nodes], grids: [{ id, rect, rows, cols, square, make(i, j) → node }], animate,
+           about: [paragraphs], code: 'python', codeLabel }
+   A 'zone' child is part of its parent's own drawing (a call in a line of code, a row of maths): it is only
+   outlined. A grid turns a heatmap or a row of bars into cells that open on demand, so any number under the
+   cursor can be zoomed into. Levels marked animate are redrawn every frame (S.now is the time). */
 (function (NA) {
   'use strict';
   const { el, clear, clamp, theme } = NA;
@@ -120,7 +124,8 @@
 
   // ------------------------------------------------------------------ the view
   class ArchView {
-    /* stage: positioned container; opts: { build(size) → root node, onFocus(node, path, isLevel), label } */
+    /* stage: positioned container; opts: { build(size) → root node, onFocus(node, path, isLevel), label,
+       outer: { title, exit() } when the root itself was opened from another view (backing out of it returns) } */
     constructor(stage, opts) {
       this.stage = stage; this.opts = opts; this.dirty = true;
       this.path = []; this.anim = null; this.selected = null;
@@ -147,15 +152,33 @@
     size() { return [Math.max(160, this.stage.clientWidth), Math.max(160, this.stage.clientHeight)]; }
     levelRect() { const [W, H] = this.size(); return { x: 10, y: 46, w: W - 20, h: H - 56 }; }
     content(node, r) { const hy = node.header ?? (this.hy || 0.07); return { x: r.x + r.w * 0.02, y: r.y + r.h * hy, w: r.w * 0.96, h: r.h * (1 - hy - 0.02) }; }
-    node() { let n = this.root; for (const id of this.path.slice(1)) n = (n.children || []).find((c) => c.id === id) || n; return n; }
+    node() { let n = this.root; for (const id of this.path.slice(1)) n = this.childOf(n, id) || n; return n; }
+    // a part of a level by id: a listed child, or a cell of one of its grids ("grid:i:j"), made on demand
+    childOf(parent, id) {
+      if (!parent) return null;
+      const ch = (parent.children || []).find((c) => c.id === id);
+      if (ch || !parent.grids) return ch || null;
+      const m = /^(.+):(\d+):(\d+)$/.exec(id), g = m && parent.grids.find((q) => q.id === m[1]);
+      return g && +m[2] < g.rows && +m[3] < g.cols ? this.cellNode(parent, g, +m[2], +m[3]) : null;
+    }
+    cellNode(parent, g, i, j) {
+      const node = g.make(i, j);
+      if (!node) return null;
+      const c = this.content(parent, this.levelRect()), gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
+      return Object.assign(node, { id: `${g.id}:${i}:${j}`, rect: [(gr.x + j * cw - c.x) / c.w, (gr.y + i * ch - c.y) / c.h, cw / c.w, ch / c.h] });
+    }
+    cellSize(g, gr) { let cw = gr.w / g.cols, ch = gr.h / g.rows; if (g.square) cw = ch = Math.min(cw, ch); return { cw, ch }; }
+    // the open level (or the part it shows small) moves: keep redrawing
+    levelAnimates() { const n = this.root && this.node(); return !!(n && (n.animate || (n.children || []).some((c) => c.animate))); }
     camRect(r, cam) { return { x: r.x * cam.k + cam.tx, y: r.y * cam.k + cam.ty, w: r.w * cam.k, h: r.h * cam.k }; }
     camNow() { return { k: this.zoom.k, tx: this.zoom.tx, ty: this.zoom.ty }; }
     // one long pinch or trackpad gesture should open one level, not tunnel through several
     locked() { return !!this.anim || performance.now() < (this.lockUntil || 0) || (this.zoom.ptrs.size > 0 && this.gestureLock); }
-    canEnter(node) { return node && node.shape !== 'op' && !!(node.inner || node.children); }
+    canEnter(node) { return !!node && (node.shape !== 'op' || !!node.inner) && !!(node.inner || node.children); }
 
     frame(now) {
       if (this.anim) { this.dirty = true; this.stepAnim(now); }
+      else if (now - (this.lastMotion || 0) > 32 && this.levelAnimates()) { this.lastMotion = now; this.dirty = true; }
       if (!this.dirty || !this.canvas.offsetParent) return;
       this.dirty = false;
       this.draw();
@@ -163,6 +186,7 @@
     draw() {
       const [W, H] = this.size(), ctx = NA.fitCanvas(this.canvas, W, H), R = this.levelRect();
       ctx.clearRect(0, 0, W, H);
+      S.now = performance.now();
       this.hy = Math.max(0.07, 30 / R.h); // room for the level title, whatever the stage height
       const chip = this.zoom.chip;
       this.chipW = chip && chip.offsetParent ? chip.offsetWidth + 14 : 0;
@@ -170,11 +194,11 @@
       if (!this.path.length) this.path = [this.root.id];
       // parts can disappear when the model changes shape: stay at the deepest level that still exists
       let n = this.root, keep = 1;
-      for (const id of this.path.slice(1)) { const c = (n.children || []).find((q) => q.id === id); if (!c) break; n = c; keep++; }
+      for (const id of this.path.slice(1)) { const c = this.childOf(n, id); if (!c) break; n = c; keep++; }
       if (keep < this.path.length) { this.path = this.path.slice(0, keep); this.selected = null; this.focusKey = null; }
       this.W = W; this.H = H;
       const a = this.anim;
-      if (!a) this.drawLevel(ctx, this.node(), R, this.camNow(), 1);
+      if (!a) { const node = this.node(); this.drawLevel(ctx, node, R, this.camNow(), 1); this.drawHoverCell(ctx, node, R); }
       else {
         // the parent zooms toward the part while the part's own screen fades in (reversed when backing out)
         const s = a.s, parent = a.parent, child = a.child;
@@ -199,10 +223,26 @@
       if (node.inner) { ctx.save(); ctx.globalAlpha = alpha; node.inner(ctx, c, S); ctx.restore(); }
       for (const ch of node.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), alpha);
     }
+    // the grid cell under the cursor gets an outline, so it is clear which number zooming in will open
+    drawHoverCell(ctx, node, R) {
+      const m = this.hoverId && node.grids && /^(.+):(\d+):(\d+)$/.exec(this.hoverId), g = m && node.grids.find((q) => q.id === m[1]);
+      if (!g) return;
+      const c = this.content(node, this.camRect(R, this.camNow())), gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
+      ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2;
+      ctx.strokeRect(gr.x + +m[3] * cw - 1, gr.y + +m[2] * ch - 1, cw + 2, ch + 2);
+    }
     drawClosed(ctx, node, r, alpha) {
       if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2) return;
       const hov = this.hoverId === node.id || this.selected === node.id;
       ctx.globalAlpha = alpha;
+      if (node.shape === 'zone') {
+        // part of the parent's own drawing: a dotted outline says it opens, a solid one that it is under the cursor
+        ctx.setLineDash(hov ? [] : [2, 3]); ctx.strokeStyle = hov ? theme.c('focus') : theme.c('muted', 0.55); ctx.lineWidth = hov ? 1.6 : 1;
+        ctx.beginPath(); NA.rr(ctx, r.x - 2, r.y - 1, r.w + 4, r.h + 2, 4);
+        if (hov) { ctx.fillStyle = theme.c('focus', 0.1); ctx.fill(); }
+        ctx.stroke(); ctx.setLineDash([]);
+        return;
+      }
       if (node.shape === 'op') {
         const s = Math.min(r.w, r.h), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
         ctx.beginPath(); ctx.arc(cx, cy, s / 2, 0, Math.PI * 2); ctx.fillStyle = theme.c('panel'); ctx.fill();
@@ -229,6 +269,12 @@
         const r = S.place(c, ch.rect);
         const pad = ch.shape === 'op' ? 6 : 0;
         if (px >= r.x - pad && py >= r.y - pad && px <= r.x + r.w + pad && py <= r.y + r.h + pad) return { node: ch, r };
+      }
+      for (const g of node.grids || []) {
+        const gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr), i = Math.floor((py - gr.y) / ch), j = Math.floor((px - gr.x) / cw);
+        if (py < gr.y || px < gr.x || i >= g.rows || j >= g.cols || (g.skip && g.skip(i, j))) continue;
+        const cell = this.cellNode(node, g, i, j);
+        if (cell) return { node: cell, r: { x: gr.x + j * cw, y: gr.y + i * ch, w: cw, h: ch } };
       }
       return null;
     }
@@ -278,13 +324,15 @@
     }
     // back out to the parent (or to an ancestor at depth i)
     exit(depth) {
-      if (this.anim || this.path.length < 2) return;
+      if (this.anim) return;
+      if (this.path.length < 2) { if (this.opts.outer && depth === undefined) this.opts.outer.exit(); return; }
       const target = depth === undefined ? this.path.length - 2 : depth;
       if (target === this.path.length - 1) return;
       const R = this.levelRect();
       const parentPath = this.path.slice(0, target + 1), childId = this.path[target + 1];
-      let parent = this.root; for (const id of parentPath.slice(1)) parent = (parent.children || []).find((c) => c.id === id) || parent;
-      const child = (parent.children || []).find((c) => c.id === childId), cur = this.node();
+      let parent = this.root; for (const id of parentPath.slice(1)) parent = this.childOf(parent, id) || parent;
+      const child = this.childOf(parent, childId), cur = this.node();
+      if (!child) { this.path = parentPath; this.dirty = true; return; }
       const cr = S.place(this.content(parent, R), child.rect), k1 = Math.min(R.w / cr.w, R.h / cr.h);
       this.path = parentPath;
       this.zoomSet(1, 0, 0);
@@ -329,19 +377,22 @@
     infoFor(node, path) {
       const names = [];
       let n = this.root;
-      for (const id of path.slice(1)) { n = (n.children || []).find((c) => c.id === id) || n; names.push(n.title); }
-      const trail = node === n ? names.slice(0, -1) : names;
-      return { kicker: ['Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about: node.about, code: node.code, codeLabel: node.codeLabel };
+      for (const id of path.slice(1)) { n = this.childOf(n, id) || n; names.push(n.title); }
+      const trail = node.id === path[path.length - 1] ? names.slice(0, -1) : names;
+      return { kicker: [this.opts.kicker || 'Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about: node.about, code: node.code, codeLabel: node.codeLabel };
     }
     syncBar() {
       const key = this.path.join('/');
-      this.back.hidden = this.path.length < 2;
+      const outer = this.opts.outer;
+      this.back.hidden = this.path.length < 2 && !outer;
       if (key === this.crumbKey) return;
       this.crumbKey = key;
       clear(this.crumbs);
+      // opened from another view: its name comes first and leads back to it
+      if (outer) this.crumbs.append(el('button', { type: 'button', class: 'arch-crumb', onclick: () => outer.exit() }, outer.title), el('span', { class: 'arch-sep', 'aria-hidden': 'true', text: '›' }));
       let n = this.root;
       this.path.forEach((id, i) => {
-        if (i) { n = (n.children || []).find((c) => c.id === id) || n; this.crumbs.append(el('span', { class: 'arch-sep', 'aria-hidden': 'true', text: '›' })); }
+        if (i) { n = this.childOf(n, id) || n; this.crumbs.append(el('span', { class: 'arch-sep', 'aria-hidden': 'true', text: '›' })); }
         const here = i === this.path.length - 1;
         this.crumbs.append(el('button', { type: 'button', class: 'arch-crumb' + (here ? ' is-here' : ''), 'aria-current': here ? 'location' : null, onclick: () => { if (!here) this.exit(i); } }, n.title));
       });
