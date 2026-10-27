@@ -338,7 +338,7 @@
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'arc = attention from the selected token to an earlier one; width = weight'),
       el('span', { class: 'lg-item', text: `${L} blocks · each row is one token; attention moves information between rows, MLPs work within a row` }));
     root.append(this.stage, this.archStage);
-    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot);
     this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, wheel: 'fixed', onChange: () => { this.dirty = true; NA.tooltip.hide(); } });
     this.canvas.addEventListener('pointermove', (e) => this.hover(e));

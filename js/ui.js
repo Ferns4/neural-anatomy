@@ -130,6 +130,7 @@
       this.noDouble = !!opts.noDouble; // the architecture view uses clicks to fly instead
       this.wheelMode = opts.wheel || 'ctrl';
       this.wheelGate = opts.wheelGate || null;
+      this.onDouble = opts.onDouble || null; // (px, py) → true when the view handled the double-click itself
       this.ptrs = new Map(); this.g = null; this.start = null; this.lastTap = null; this.suppressClick = false;
       canvas.addEventListener('pointerdown', (e) => this.down(e));
       canvas.addEventListener('pointermove', (e) => this.move(e));
@@ -147,7 +148,7 @@
         if (!this.wheelGate || this.wheelGate(e)) this.zoomAt(p[0], p[1], f);
       });
       canvas.addEventListener('gestureend', () => { this.gs = 0; });
-      if (!this.noDouble) canvas.addEventListener('dblclick', (e) => { const p = this.local(e); this.toggleAt(p[0], p[1]); });
+      if (!this.noDouble) canvas.addEventListener('dblclick', (e) => { const p = this.local(e); if (!(this.onDouble && this.onDouble(p[0], p[1]))) this.toggleAt(p[0], p[1]); });
       if (opts.host) this.buildChip(opts.host);
     }
     get wheelZooms() { return this.wheelMode === 'always' || (this.wheelMode === 'fixed' && pageFixed()); }
@@ -209,7 +210,7 @@
       if (this.ptrs.size === 0) {
         if (!cancel && had && !this.g && e.pointerType === 'touch' && !this.noDouble) {
           const p = this.local(e), now = performance.now(), lt = this.lastTap;
-          if (lt && now - lt.t < 320 && Math.hypot(p[0] - lt.p[0], p[1] - lt.p[1]) < 28) { this.toggleAt(p[0], p[1]); this.lastTap = null; this.suppressClick = true; }
+          if (lt && now - lt.t < 320 && Math.hypot(p[0] - lt.p[0], p[1] - lt.p[1]) < 28) { if (!(this.onDouble && this.onDouble(p[0], p[1]))) this.toggleAt(p[0], p[1]); this.lastTap = null; this.suppressClick = true; }
           else this.lastTap = { p, t: now };
         }
         this.g = null; this.start = null;

@@ -163,7 +163,12 @@
     const T = target(), t = !!T.training, ff = T.ffTarget !== null && T.ffTarget !== undefined;
     CH.play.setAttribute('aria-pressed', String(t));
     CH.play.classList.toggle('is-running', t);
-    CH.playLabel.textContent = t ? (ff ? 'Training…' : 'Pause') : 'Train';
+    // a lab whose transport plays something other than training names its buttons (labels: play, title, step, reset)
+    const L = T.labels || {};
+    CH.playLabel.textContent = t ? (ff ? 'Training…' : 'Pause') : L.play || 'Train';
+    CH.play.title = L.title || 'Train or pause (Space)';
+    $('#btnStep').title = L.step || 'Apply one training step (S)'; $('#btnStep').setAttribute('aria-label', (L.step || 'Apply one training step').replace(/ \(.\)$/, ''));
+    $('#btnReset').title = L.reset || 'Re-initialize the weights (R)'; $('#btnReset').setAttribute('aria-label', (L.reset || 'Re-initialize the weights').replace(/ \(.\)$/, ''));
     $('#icoPlay').hidden = t; $('#icoPause').hidden = !t;
     CH.ff.hidden = !ff;
     CH.ffStart = ff ? T.step : null;

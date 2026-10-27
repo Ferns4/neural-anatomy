@@ -54,15 +54,57 @@
     App.register(ND);
   }
 
-  // The network view calls this whenever its zoom changes: far enough into a neuron, open it.
+  /* The neuron a zoom is aimed at: the one under the cursor (hovered) if any, else the one nearest the zoom's
+     centre within reach; with anyVisible (the zoom is at its limit), simply the nearest one still on screen. */
+  function aimed(anchor, anyVisible) {
+    const V = NA.netView, z = V.zoom, h = App.hover;
+    if (h && h.l !== undefined && h.j !== undefined) { const nd = V.layout.nodes.find((q) => q.l === h.l && q.j === h.j); if (nd) return nd; }
+    const [wx, wy] = z.toWorld(...(anchor || [V.W / 2, V.H / 2]));
+    let best = null, bd = Infinity;
+    for (const nd of V.layout.nodes) {
+      const sx = nd.x * z.k + z.tx, sy = nd.y * z.k + z.ty;
+      if (anyVisible && (sx < 0 || sy < 0 || sx > V.W || sy > V.H)) continue;
+      const d = Math.hypot(nd.x - wx, nd.y - wy);
+      if (d < bd) { bd = d; best = nd; }
+    }
+    if (!best) return null;
+    return anyVisible || bd <= Math.max(best.s / 2 + 14, best.s / 2 + (best.gap || 0) / 2) ? best : null;
+  }
+  // The network view calls this whenever its zoom changes: zoomed in on a neuron, open it.
   ND.maybeOpen = function () {
     const V = NA.netView, z = V.zoom;
-    if (ND.open || z.k < 3.4 || !z.anchor || !V.layout || !NA.ArchView) return;
-    const [wx, wy] = z.toWorld(z.anchor[0], z.anchor[1]);
-    let best = null, bd = Infinity;
-    for (const nd of V.layout.nodes) { const d = Math.hypot(nd.x - wx, nd.y - wy); if (d < bd) { bd = d; best = nd; } }
-    if (!best || bd > best.s / 2 + 14) return;
-    ND.show(best.l, best.j, best.x * z.k + z.tx, best.y * z.k + z.ty);
+    if (ND.open || ND.flying || z.k < 2.6 || !V.layout || !NA.ArchView) return;
+    const nd = aimed(z.anchor, z.k >= z.max - 0.01);
+    if (nd) ND.show(nd.l, nd.j, nd.x * z.k + z.tx, nd.y * z.k + z.ty);
+  };
+  // A double-click (or double-tap) on a neuron flies into it. Returns whether there was a neuron there.
+  ND.openAt = function (px, py) {
+    const V = NA.netView, z = V.zoom, [wx, wy] = z.toWorld(px, py);
+    const nd = V.layout && V.layout.nodes.find((q) => Math.hypot(q.x - wx, q.y - wy) <= q.s / 2 + 8);
+    if (!nd || !NA.ArchView) return false;
+    ND.flyTo(nd.l, nd.j);
+    return true;
+  };
+  // Zoom the diagram's camera into a neuron, then open it (also used by the Open buttons).
+  ND.flyTo = function (l, j) {
+    const V = NA.netView, z = V.zoom, nd = V.layout && V.layout.nodes.find((q) => q.l === l && q.j === j);
+    if (ND.open || ND.flying) return;
+    if (!nd) { ND.show(l, j, V.W / 2, V.H / 2); return; }
+    const done = () => { ND.flying = false; ND.show(l, j, nd.x * z.k + z.tx, nd.y * z.k + z.ty); };
+    if (NA.prefersReducedMotion()) { done(); return; }
+    const k0 = z.k, tx0 = z.tx, ty0 = z.ty, k1 = Math.max(k0, 3), tx1 = V.W / 2 - nd.x * k1, ty1 = V.H / 2 - nd.y * k1, t0 = performance.now();
+    ND.flying = true;
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / 340), e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+      z.set(k0 + (k1 - k0) * e, tx0 + (tx1 - tx0) * e, ty0 + (ty1 - ty0) * e);
+      if (p < 1) requestAnimationFrame(step); else done();
+    };
+    requestAnimationFrame(step);
+  };
+  // From the inspector or the phone's card: show the diagram if it is hidden, then fly in.
+  ND.openNeuron = function (l, j) {
+    if (NA.mobile && NA.mobile.mobile && NA.mobile.screen !== 'network') { NA.mobile.go('network'); setTimeout(() => ND.flyTo(l, j), 260); }
+    else ND.flyTo(l, j);
   };
   ND.show = function (l, j, sx, sy) {
     if (!ND.stage) build();

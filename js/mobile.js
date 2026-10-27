@@ -119,7 +119,8 @@
       fx ? el('div', { class: 'mp-fx' }, el('div', { text: fx[0] }), el('div', { class: 'fx-strong', text: fx[1] + (ablatable && !net.mask[l][j] ? '  (ablated → 0)' : '') })) : null,
       el('div', { class: 'mp-stats' }, ...stats),
       el('div', { class: 'btn-row' },
-        el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { M.go('insp'); App.emit('tab', 'neuron'); } }, 'Inspect neuron'),
+        el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { M.peek = null; renderPeek(); NA.netDeep && NA.netDeep.openNeuron(l, j); } }, 'Open ⤢'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { M.go('insp'); App.emit('tab', 'neuron'); } }, 'Inspect neuron'),
         ablatable ? el('button', { class: 'btn', type: 'button', onclick: () => App.toggleAblate(l, j) }, net.mask[l][j] ? 'Ablate' : 'Restore') : null));
   }
 

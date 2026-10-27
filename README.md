@@ -6,14 +6,15 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
 
 ## What you can do
 
-- **Model zoo.** Twelve models that load already trained:
+- **Model zoo.** Fourteen models that load already trained:
   - Foundations: Single Neuron, XOR, ReLU Polygon
   - Representation: Deep Spiral, Three Classes
   - Function fitting: Curve Fitting
-  - Perception: Digit Recognizer (draw your own digits)
+  - Perception: Digit Recognizer (draw your own digits), YOLO26 Object Detector
   - Language models: Tiny Transformer
   - Physics-informed: Physics-Informed Network
   - Generative models: Diffusion Model
+  - Signal processing: Radar Pulse Classifier
   - Failure modes: Vanishing Gradients, Overfitting
 - **Build your own network.** Add and remove hidden layers, resize each one, and choose the activation function for a whole layer or for any single neuron: ReLU, Leaky ReLU, ELU, GELU, Swish, Softplus, Tanh, Sigmoid, Sine, Gaussian or Linear. Each one is shown with its formula, its slope and the value it gives for the current input. Pick the loss function too: cross-entropy, squared error or hinge for classifiers; squared, absolute or Huber error for curve fitting.
 - **Validation and a held-out test.** Every dataset is split into training, validation and test sets. Validation is scored live as the network trains; the test set stays untouched until you press **Run test**, which reports accuracy, loss, a confusion matrix and the worst mistakes, and says how far to trust the validation numbers.
@@ -22,16 +23,19 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
 - **Backprop walkthrough.** One training example through a full step of gradient descent, with the real numbers.
 - **Hidden space.** PCA projections of each layer, with an animated, warped input grid.
 - **History.** Scrub back through training to see the network at any earlier step.
+- **All the way down.** Zoom into any model's architecture: a block, a layer, a single neuron's weighted sum, its PyTorch code, the float32 multiply bit by bit, the adders and logic gates that do it, their CMOS transistors, and the electrons drifting through a transistor's channel. Every level uses the real numbers of the model on screen, with an explanation and runnable Python.
 
-You can link straight to a model with its id, for example `#digits`, `#xor`, `#transformer`, `#pinn` or `#diffusion`.
+You can link straight to a model with its id, for example `#digits`, `#xor`, `#transformer`, `#pinn`, `#diffusion`, `#yolo26` or `#radar`.
 
 ## Beyond the MLP
 
-Three models open in labs of their own:
+Five models open in labs of their own:
 
 - **Tiny Transformer** (`#transformer`). A GPT-style language model (token and position embeddings, two blocks of 4-head causal self-attention and MLPs, 28k parameters) trained on a tiny made-up language whose stories can only be predicted by looking back: "alice likes tea . bob likes milk . alice drinks" → "tea". Edit the prompt or let the model write; see every token's residual stream with attention arcs and the logit lens; knock out heads to find the lookup circuit; explore the embedding space; watch lookups jump from chance to 100% when the circuit forms during training.
 - **Physics-Informed Network** (`#pinn`). A plain network and a PINN learn a damped oscillator from ten early measurements. The PINN also minimises the residual of u″ + 2ζω·u′ + ω²·u = 0, using exact derivatives of the network itself, and keeps following the true motion where the plain network has no data. Change the physics, the data or the loss terms and both retrain live.
 - **Diffusion Model** (`#diffusion`). A denoising diffusion model on 2-D points: watch noise turn into a pinwheel step by step, dissolve the data with the forward process, and drop points into the learned denoising field. DDPM and DDIM sampling, 10 to 100 steps, three pretrained datasets.
+- **YOLO26 Object Detector** (`#yolo26`). The layer list of Ultralytics' YOLO26 (Conv, C3k2, SPPF and C2PSA blocks, an FPN-PAN neck, detection at three scales, no DFL) at half the width of YOLO26n, trained on synthetic scenes of four kinds of shape with this repository's versions of YOLO26's ProgLoss, STAL and MuSGD. Drag, resize, add and remove shapes and the boxes follow, computed in your browser. Compare the one-to-many head, which needs non-maximum suppression, with the one-to-one head, which gives one box per object with no NMS (mAP@0.5 96.0% against 93.4% on 500 validation scenes).
+- **Radar Pulse Classifier** (`#radar`). A 1-D CNN that names a radar waveform (plain pulse, LFM chirp, Barker-13, Frank code, Costas FSK, or noise alone) from 256 raw I/Q samples, trained on about 3 million synthetic intercepts at −12 to +20 dB SNR. See each signal as I/Q traces, an I/Q plane, a spectrogram and the network's class activation map; measure accuracy by SNR live (99% at +2 dB and above, 77% at −4 dB).
 
 ## On your phone
 
@@ -45,7 +49,7 @@ It also installs as an app and then works offline:
 
 ## How it works
 
-Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come from Google Fonts). Every model trains in your browser.
+Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come from Google Fonts). Every model runs in your browser, and all but two also train there; the YOLO26 detector and the radar classifier were trained in PyTorch on a GPU, and their full training code is in each lab's Architecture view (top level, Python tab).
 
 | File | Role |
 |---|---|
@@ -61,7 +65,10 @@ Plain HTML, CSS and JavaScript: no build step and no dependencies (fonts come fr
 | `js/transformer.js`, `js/lm-data.js`, `js/lab-transformer.js` | The tiny GPT (hand-written backpropagation), its language and tokenizer, and its lab |
 | `js/pinn.js`, `js/lab-pinn.js` | The physics-informed network (value, u′ and u″ streams through every layer) and its lab |
 | `js/diffusion.js`, `js/lab-diffusion.js` | The diffusion model (cosine schedule, DDPM and DDIM sampling) and its lab |
-| `js/*-weights.js` | Pretrained weights (float16), trained offline with exactly the engine code above |
+| `js/yolo.js`, `js/lab-yolo.js` | The YOLO26-style detector: scene drawing, a forward pass that runs in a Web Worker, both heads' decoding and NMS, and its lab |
+| `js/radar.js`, `js/lab-radar.js` | Synthetic radar I/Q signals, the 1-D CNN, spectrogram and class activation map, and its lab |
+| `js/archview.js`, `js/arch-*.js`, `js/net-deep.js` | The zoomable architecture views; `arch-deep.js` holds the shared levels from a neuron down to the electrons |
+| `js/*-weights.js` | Pretrained weights (float16): trained offline with exactly the engine code above, or for YOLO26 and the radar in PyTorch with BatchNorm folded in |
 | `js/mobile.js` | The phone layout: screens, tab bar, settings sheet and peek card |
 | `js/chrome.js` | Header, controls, model zoo, timeline, keyboard shortcuts and start-up |
 | `pwa.js`, `sw.js`, `manifest.webmanifest` | Install as an app and offline support (the service worker is generated by the build) |

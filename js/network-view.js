@@ -21,7 +21,7 @@
     V.legend = document.getElementById('netLegend');
     new ResizeObserver(() => V.resize()).observe(V.stage);
     // zooming far into a neuron opens it (net-deep.js)
-    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onDouble: (px, py) => !!(NA.netDeep && NA.netDeep.openAt(px, py)), onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
@@ -796,16 +796,16 @@
       items.push(el('span', { class: 'lg-item' }, ramp('ramp-div'), 'forward: signal w·a and activations'));
       items.push(el('span', { class: 'lg-item' }, ramp('ramp-grad'), 'backward: |δ·a| and error signal δ (rings)'));
     } else {
-      const edgeText = { weight: 'connection = weight w, width ∝ |w| within its layer', signal: 'connection = signal w·a for the probe input', gradient: 'connection = |∂L/∂w| on the training set, log scale' }[L.edges];
+      const edgeText = { weight: 'connection: weight w, width ∝ |w|', signal: 'connection: signal w·a for the probe', gradient: 'connection: |∂L/∂w|, log scale' }[L.edges];
       items.push(el('span', { class: 'lg-item' }, ramp(L.edges === 'gradient' ? 'ramp-grad' : 'ramp-div'), edgeText));
-      const nodeText = { activation: 'neuron = activation a for the probe', preact: 'neuron = pre-activation z for the probe', gradient: 'neuron = RMS error signal δ, log scale' }[L.nodes];
-      items.push(el('span', { class: 'lg-item' }, ramp(L.nodes === 'gradient' ? 'ramp-grad' : 'ramp-div'), nodeText + (L.maps ? ' (corner square)' : '')));
-      if (L.maps) items.push(el('span', { class: 'lg-item' }, ramp('ramp-map'), ds.kind === 'plane' ? 'thumbnail = the neuron’s output over the whole input plane, dot = probe' : ds.kind === 'line' ? 'thumbnail = the neuron’s output as x goes from −1 to 1' : 'thumbnail = hidden weights as a 14×14 image; outputs = average of their top validation images'));
+      const nodeText = { activation: 'neuron: activation a for the probe', preact: 'neuron: pre-activation z for the probe', gradient: 'neuron: RMS error signal δ, log scale' }[L.nodes];
+      items.push(el('span', { class: 'lg-item' }, ramp(L.nodes === 'gradient' ? 'ramp-grad' : 'ramp-div'), nodeText + (L.maps ? ' (corner)' : '')));
+      if (L.maps) items.push(el('span', { class: 'lg-item' }, ramp('ramp-map'), ds.kind === 'plane' ? 'thumbnail: its output over the input plane (dot: probe)' : ds.kind === 'line' ? 'thumbnail: its output for x from −1 to 1' : 'thumbnail: weights as a 14×14 image; outputs: their top images'));
       let mixed = false;
       for (let l = 1; l < App.net.L; l++) if (App.net.layerActId(l) === 'mixed') mixed = true;
       if (App.net.L > 1 && (L.acts || mixed)) {
         const a = App.net.actOf(1, 0);
-        items.push(el('span', { class: 'lg-item' }, el('span', { class: 'lg-act' }, NA.ui.actGlyph(a.id, 16, 10), a.short), L.acts ? 'label = the neuron’s activation function; zoom in to read its formula' : 'labelled neurons use their own activation function'));
+        items.push(el('span', { class: 'lg-item' }, el('span', { class: 'lg-act' }, NA.ui.actGlyph(a.id, 16, 10), a.short), L.acts ? 'label: its activation function (zoom in for the formula)' : 'labelled neurons use their own activation'));
       }
     }
     items.push(el('span', { class: 'lg-item lg-signs' }, el('i', { class: 'sw sw-neg' }), 'negative', el('i', { class: 'sw sw-pos' }), 'positive'));
@@ -902,7 +902,7 @@
       if (tr.delta) kids.push(row('δ for this sample', fmt(tr.delta[l][j], 4)));
       if (l < net.L && !net.mask[l][j]) kids.push(el('div', { class: 'tt-note', text: 'Ablated: forced to output 0' }));
     }
-    kids.push(el('div', { class: 'tt-hint', text: (l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect') + '; zoom in on it to open it' }));
+    kids.push(el('div', { class: 'tt-hint', text: (l > 0 && l < net.L ? 'Click to inspect or change its activation' : 'Click to inspect') + ' · double-click or zoom in to open it' }));
     return kids;
   }
   function edgeTip(e) {

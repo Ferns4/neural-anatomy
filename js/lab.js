@@ -47,7 +47,8 @@
     const lab = H.lab;
     if (!lab) return;
     lab.frame(now);
-    const s = lab.training ? (lab.ffTarget !== null && lab.ffTarget !== undefined ? 'Pre-training' : 'Training') : lab.step === 0 ? 'Untrained' : 'Paused';
+    // labs whose transport plays something other than training (a live scene, a stream) name their own states
+    const s = lab.stateText ? lab.stateText() : lab.training ? (lab.ffTarget !== null && lab.ffTarget !== undefined ? 'Pre-training' : 'Training') : lab.step === 0 ? 'Untrained' : 'Paused';
     if (s !== H.lastState) {
       H.lastState = s;
       H.stateEl.textContent = s;
@@ -75,6 +76,21 @@
       },
     });
     return lab;
+  };
+
+  /* Loads a script once, on demand (large weight files only load when their lab opens). Resolves when it ran.
+     Uses the same version stamp as the page's own scripts, so a local preview never serves a stale copy. */
+  const loading = {};
+  H.loadScript = function (src) {
+    if (!loading[src]) {
+      const own = document.querySelector('script[src*="js/lab.js"]'), stamp = own ? (own.getAttribute('src').split('?')[1] || '') : '';
+      loading[src] = new Promise((resolve, reject) => {
+        const s = el('script', { src: src + (stamp ? '?' + stamp : '') });
+        s.onload = () => resolve(); s.onerror = () => { delete loading[src]; reject(new Error('Could not load ' + src)); };
+        document.head.append(s);
+      });
+    }
+    return loading[src];
   };
 
   // ------------------------------------------------------------------ UI building blocks

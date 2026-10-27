@@ -171,9 +171,10 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .mini-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-2); }
 
 /* ---------------------------------------------------------------- network stage */
-.lensbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.lens-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.lens-label { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.lensbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+.lens-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lens-label { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.lensbar .seg button { padding: 4px 8px; }
 .net-stage { position: relative; flex: 1; min-height: 0; }
 .net-stage canvas { position: absolute; inset: 0; touch-action: pan-y; }
 [data-layout="mobile"] .net-stage canvas, .net-stage canvas.is-zoomed { touch-action: none; }
@@ -189,7 +190,7 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .depth-ctl { position: absolute; left: 10px; bottom: 8px; display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); pointer-events: auto; }
 .depth-label { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
 .depth-n { font: 600 12px var(--font-mono); min-width: 12px; text-align: center; }
-.net-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-2); }
+.net-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--ink-2); }
 .lg-item { display: inline-flex; align-items: center; gap: 6px; }
 .ramp { display: inline-block; width: 40px; height: 8px; border-radius: 4px; flex: none; }
 .ramp-div { background: linear-gradient(90deg, var(--neg), var(--mid), var(--pos)); }
@@ -580,6 +581,39 @@ body[data-mode="lab"] .lab-hyper { display: flex; }
 .df-scrub input[type="range"] { flex: 1; min-width: 0; }
 .df-t { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; min-width: 128px; text-align: right; }
 .pinn-eq .fx-line { white-space: normal; }
+/* ---------------------------------------------------------------- finish: motion, target sizes, scrollbars */
+.btn, .icon-btn, .chip, .chip::before, .seg button, .tab, .ds-tile, .arch-crumb, .menu-item, .play-btn, .ro-test, .yl-add-btn { transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease, filter 0.15s ease; }
+.btn:active, .icon-btn:active, .chip:active, .seg button:active, .ds-tile:active, .play-btn:active { transform: scale(0.97); }
+.btn-primary:hover, .play-btn:hover { filter: brightness(1.07); }
+.chip, .seg button { min-height: 24px; }
+.panel-scroll, .insp-body, .ip-body, .code, .menu { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-2) 32%, transparent) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--ink-2) 30%, transparent) content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink-2) 50%, transparent); }
+/* YOLO26 and radar labs: their transport plays a scene or a stream, so there is no fast-forward */
+body[data-lab="yolo26"] #btnFF, body[data-lab="radar"] #btnFF { display: none; }
+.yl-stage canvas { touch-action: none; cursor: default; }
+.yl-stage canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.yl-controls { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.yl-controls .slider { flex: 1 1 200px; min-width: 0; }
+.yl-add { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 2px 0 10px; }
+.yl-add-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; height: auto; padding: 7px 4px 6px; font-size: 11.5px; }
+.yl-glyph { font-size: 15px; line-height: 1; }
+.yl-found { display: flex; flex-direction: column; gap: 4px; }
+.yl-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 12.5px; transition: border-color 0.15s ease, background-color 0.15s ease; }
+.yl-row:hover { border-color: var(--line-2); background: var(--panel-2); }
+.yl-row.is-sel { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); }
+.yl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.yl-dash { background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 6px) !important; }
+.yl-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.yl-tr { display: grid; grid-template-columns: minmax(0, 1.7fr) repeat(4, minmax(0, 1fr)); gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.yl-tr > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yl-tr > span:not(:first-child) { text-align: right; }
+.yl-layers .yl-tr { grid-template-columns: 24px minmax(0, 1.9fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 0.8fr); }
+.yl-layers .yl-tr > span:nth-child(2), .yl-layers .yl-tr > span:nth-child(3) { text-align: left; }
+.yl-th { border-top: 0; background: var(--panel-2); font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+[data-layout="mobile"] .yl-controls { padding: 6px 10px; gap: 4px 14px; }
 /* transformer lab */
 .lm-prompt-row { display: flex; gap: 8px; align-items: center; }
 .lm-prompt-row select { height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); padding: 0 6px; font-size: 12.5px; max-width: 46%; }
@@ -1079,6 +1113,13 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 <script src="js/diffusion-weights.js"></script>
 <script src="js/arch-diffusion.js"></script>
 <script src="js/lab-diffusion.js"></script>
+<script src="js/yolo.js"></script>
+<script src="js/arch-yolo.js"></script>
+<script src="js/lab-yolo.js"></script>
+<script src="js/radar.js"></script>
+<script src="js/radar-weights.js"></script>
+<script src="js/arch-radar.js"></script>
+<script src="js/lab-radar.js"></script>
 <script src="js/mobile.js"></script>
 <script src="js/chrome.js"></script>
 <script src="pwa.js"></script>

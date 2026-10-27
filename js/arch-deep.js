@@ -140,14 +140,24 @@
     for (let i = 0; i < n; i++) {
       const bit = Math.floor(u / 2 ** (n - 1 - i)) % 2, x = r.x + i * cw, col = field(i);
       ctx.fillStyle = bit ? theme.c(col, 0.85) : theme.c(col, 0.1);
-      ctx.fillRect(x + 0.5, y, Math.max(1, cw - 1), h);
+      if (cw > 7) { ctx.beginPath(); NA.rr(ctx, x + 0.75, y, cw - 1.5, h, Math.min(3, cw * 0.18)); ctx.fill(); } else ctx.fillRect(x + 0.5, y, Math.max(1, cw - 1), h);
       if (cw > 9) S.text(ctx, String(bit), x + cw / 2, y + h / 2, { size: Math.min(cw * 0.7, h * 0.7), mono: true, align: 'center', color: bit ? theme.c('panel') : theme.c('muted') });
     }
     return { cw, y, h };
   }
+  // A wire: a 1 glows and carries pulses travelling along it; a 0 is a plain dim line.
   function wire(ctx, pts, on, lw = 1.6) {
-    ctx.strokeStyle = on ? theme.c('pos') : theme.c('line-2'); ctx.lineWidth = on ? lw + 0.8 : lw;
-    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+    const path = () => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); };
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (on) {
+      ctx.strokeStyle = theme.c('pos', 0.2); ctx.lineWidth = lw + 5; path(); ctx.stroke();
+      ctx.strokeStyle = theme.c('pos'); ctx.lineWidth = lw + 0.8; path(); ctx.stroke();
+      if (!NA.prefersReducedMotion()) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = Math.max(1, lw * 0.8); ctx.setLineDash([2, 16]); ctx.lineDashOffset = -(((NA.archKit.now || performance.now()) / 22) % 18);
+        path(); ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
+      }
+    } else { ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = lw; path(); ctx.stroke(); }
+    ctx.lineCap = 'butt';
   }
   const ON = () => theme.c('pos'), OFF = () => theme.c('line-2');
   // the classic gate symbols, drawn into r
@@ -184,11 +194,113 @@
     for (let i = 0; i < seg.length; i++) { if (d <= seg[i]) { const t = seg[i] ? d / seg[i] : 0; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t]; } d -= seg[i]; }
     return pts[pts.length - 1];
   }
-  function electron(ctx, x, y, rad, hole) {
-    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2);
-    if (hole) { ctx.strokeStyle = theme.c('s2'); ctx.lineWidth = 1.2; ctx.stroke(); }
-    else { ctx.fillStyle = theme.c('s1'); ctx.fill(); }
+  // Small pictures drawn once and reused every frame: a carrier's glow, an atom's shading (per theme and size).
+  const SPRITES = new Map();
+  function sprite(key, rad, draw) {
+    const dpr = Math.min(3, window.devicePixelRatio || 1), k = `${key}:${rad.toFixed(1)}:${dpr}:${theme.dark ? 1 : 0}`;
+    let c = SPRITES.get(k);
+    if (!c) {
+      if (SPRITES.size > 160) SPRITES.clear();
+      c = document.createElement('canvas'); c.width = c.height = Math.ceil(rad * 2 * dpr) + 2;
+      const g = c.getContext('2d'); g.scale(dpr, dpr); draw(g, rad + 1 / dpr, rad);
+      SPRITES.set(k, c);
+    }
+    return c;
   }
+  const rgba = (name, a) => { const t = theme.tokens[name] || [128, 128, 128]; return `rgba(${t[0]},${t[1]},${t[2]},${a})`; };
+  // an electron: a bright core in a soft blue glow; a hole: a ring with an orange glow (a missing electron)
+  function electron(ctx, x, y, rad, hole, alpha = 1) {
+    const R = rad * 2.6, s = sprite(hole ? 'hole' : 'electron', R, (g, c, R0) => {
+      const gr = g.createRadialGradient(c, c, 0, c, c, R0), col = hole ? 's2' : 's1';
+      gr.addColorStop(0, rgba(col, hole ? 0.35 : 0.95)); gr.addColorStop(0.32, rgba(col, hole ? 0.28 : 0.55)); gr.addColorStop(1, rgba(col, 0));
+      g.fillStyle = gr; g.beginPath(); g.arc(c, c, R0, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(c, c, R0 / 2.6, 0, Math.PI * 2);
+      if (hole) { g.strokeStyle = rgba('s2', 1); g.lineWidth = Math.max(1, R0 / 7); g.stroke(); }
+      else { const core = g.createRadialGradient(c - R0 * 0.1, c - R0 * 0.1, 0, c, c, R0 / 2.6); core.addColorStop(0, 'rgba(255,255,255,0.95)'); core.addColorStop(1, rgba('s1', 1)); g.fillStyle = core; g.fill(); }
+    });
+    if (alpha < 1) ctx.globalAlpha *= alpha;
+    ctx.drawImage(s, x - R - 0.5, y - R - 0.5, s.width / Math.min(3, window.devicePixelRatio || 1), s.height / Math.min(3, window.devicePixelRatio || 1));
+    if (alpha < 1) ctx.globalAlpha /= alpha;
+  }
+  // a silicon atom: a shaded sphere lit from the upper left
+  function atom(ctx, x, y, rad) {
+    const s = sprite('atom', rad, (g, c, R0) => {
+      const gr = g.createRadialGradient(c - R0 * 0.35, c - R0 * 0.38, R0 * 0.08, c, c, R0);
+      const hi = theme.dark ? [150, 160, 176] : [205, 210, 218], mid = theme.dark ? [92, 101, 116] : [150, 158, 170], lo = theme.dark ? [48, 54, 64] : [104, 111, 124];
+      gr.addColorStop(0, `rgb(${hi})`); gr.addColorStop(0.55, `rgb(${mid})`); gr.addColorStop(1, `rgb(${lo})`);
+      g.fillStyle = gr; g.beginPath(); g.arc(c, c, R0, 0, Math.PI * 2); g.fill();
+    });
+    const d = Math.min(3, window.devicePixelRatio || 1);
+    ctx.drawImage(s, x - rad - 0.5, y - rad - 0.5, s.width / d, s.height / d);
+  }
+  /* Carriers that keep moving between frames (levels are rebuilt on every draw, so their state lives here):
+     straight flights at the thermal speed, a random new direction at each collision (a brief flash), and, when a
+     field is on, a steady push toward the drain. Positions are fractions of the box; x wraps around. */
+  const SIMS = new Map();
+  function carriers(key, n) {
+    let s = SIMS.get(key);
+    if (!s) { if (SIMS.size > 24) SIMS.clear(); s = { ps: [], t: null }; SIMS.set(key, s); }
+    while (s.ps.length < n) { const a = Math.random() * Math.PI * 2, i = s.ps.length; s.ps.push({ x: ((i * 0.618034) % 1), y: 0.08 + 0.84 * ((i * 0.41421) % 1), vx: Math.cos(a) * 0.45, vy: Math.sin(a) * 0.45, trail: [], flash: 0 }); }
+    return s;
+  }
+  function stepCarriers(s, now, drift) {
+    const dt = s.t === null ? 0 : Math.min(0.05, Math.max(0, (now - s.t) / 1000)), VT = 0.45, TAU = 0.14;
+    s.t = now;
+    if (NA.prefersReducedMotion()) return;
+    for (const p of s.ps) {
+      p.vx += drift * dt;
+      if (Math.random() < dt / TAU) { const a = Math.random() * Math.PI * 2, sp = VT * (0.55 + Math.random() * 0.9); p.vx = Math.cos(a) * sp; p.vy = Math.sin(a) * sp * 1.4; p.flash = 1; p.fx = p.x; p.fy = p.y; }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.y < 0.04 || p.y > 0.96) { p.vy = -p.vy; p.y = clamp(p.y, 0.04, 0.96); }
+      if (p.x > 1 || p.x < 0) { p.x = ((p.x % 1) + 1) % 1; p.trail.length = 0; }
+      p.trail.push(p.x, p.y);
+      if (p.trail.length > 16) p.trail.splice(0, 2);
+      p.flash = Math.max(0, p.flash - dt * 5);
+    }
+  }
+  function drawCarriers(ctx, s, box, rad, hole, count, alpha = 1) {
+    const col = hole ? 's2' : 's1';
+    s.ps.forEach((p, i) => {
+      const a = alpha * clamp(count - i, 0, 1);
+      if (a <= 0.01) return;
+      // the path since the last few frames, fading out behind
+      const tr = p.trail;
+      for (let k = 2; k < tr.length; k += 2) {
+        ctx.strokeStyle = rgba(col, (0.45 * a * k) / tr.length); ctx.lineWidth = Math.max(1, rad * 0.55);
+        ctx.beginPath(); ctx.moveTo(box.x + tr[k - 2] * box.w, box.y + tr[k - 1] * box.h); ctx.lineTo(box.x + tr[k] * box.w, box.y + tr[k + 1] * box.h); ctx.stroke();
+      }
+      if (p.flash > 0.05) { ctx.strokeStyle = rgba(col, 0.5 * p.flash * a); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(box.x + p.fx * box.w, box.y + p.fy * box.h, rad * (1.5 + (1 - p.flash) * 3), 0, Math.PI * 2); ctx.stroke(); }
+      electron(ctx, box.x + p.x * box.w, box.y + p.y * box.h, rad, hole, a);
+    });
+  }
+  // A crystal of silicon, drawn once per size: atoms in a square lattice, each bond two shared electrons.
+  const LATTICE = new Map();
+  function lattice(w, h, g) {
+    const dpr = Math.min(3, window.devicePixelRatio || 1), key = `${Math.round(w)}x${Math.round(h)}:${g.toFixed(1)}:${dpr}:${theme.dark ? 1 : 0}`;
+    let c = LATTICE.get(key);
+    if (!c) {
+      if (LATTICE.size > 8) LATTICE.clear();
+      c = document.createElement('canvas'); c.width = Math.ceil(w * dpr); c.height = Math.ceil(h * dpr);
+      const ctx = c.getContext('2d'); ctx.scale(dpr, dpr);
+      const bg = ctx.createLinearGradient(0, 0, 0, h);
+      bg.addColorStop(0, rgba('panel-2', 1)); bg.addColorStop(1, rgba('panel', 1));
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+      const off = g / 2, bond = (x1, y1, x2, y2) => {
+        const nx = (y2 - y1) / g, ny = (x1 - x2) / g, d = g * 0.07;
+        ctx.strokeStyle = rgba('muted', 0.3); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x1 + nx * d, y1 + ny * d); ctx.lineTo(x2 + nx * d, y2 + ny * d); ctx.moveTo(x1 - nx * d, y1 - ny * d); ctx.lineTo(x2 - nx * d, y2 - ny * d); ctx.stroke();
+        // the two electrons of the bond, sitting between the atoms
+        ctx.fillStyle = rgba('s1', 0.35);
+        for (const sgn of [-1, 1]) { ctx.beginPath(); ctx.arc((x1 + x2) / 2 + nx * d * sgn, (y1 + y2) / 2 + ny * d * sgn, Math.max(0.8, g * 0.035), 0, Math.PI * 2); ctx.fill(); }
+      };
+      for (let y = off; y < h; y += g) for (let x = off; x < w; x += g) { if (x + g < w) bond(x, y, x + g, y); if (y + g < h) bond(x, y, x, y + g); }
+      for (let y = off; y < h; y += g) for (let x = off; x < w; x += g) atom(ctx, x, y, g * 0.2);
+      LATTICE.set(key, c);
+    }
+    return c;
+  }
+  // the replay's gate voltage: the old value, then a quick ramp to the new one as the switch happens
+  const ramp = (before, after) => { const p = phase(); return before + (after - before) * clamp((p - 0.25) / 0.07, 0, 1); };
   // the replay's time line: before → inputs switch → output moves → settled
   function timeline(ctx, S, r, labels) {
     const p = phase(), u = S.u(r, 7, 12);
@@ -580,21 +692,23 @@
   D.adder = function (X, x, y, n, o = {}) {
     const R = ripple(x, y, n, o.cin || 0), val = (arr) => arr.reduce((p, v, i) => p + v * 2 ** i, 0), cells = W2(X, [0, 0.34, 1, 0.3], [0, 0.36, 1, 0.26]);
     return node({
-      title: o.title || `${n}-bit adder`, sub: o.what || `${x} + ${y}`, tone: 's4',
+      title: o.title || `${n}-bit adder`, sub: o.what || `${x} + ${y}`, tone: 's4', animate: true,
       summary: (ctx, r, S) => drawBits(ctx, S, r, val(R.s) + (R.cout ? 0 : 0), n, () => 's4'),
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), g = S.place(r, cells), cw = g.w / n;
         S.lines(ctx, [`  ${bin(x, n)}   (${o.xLabel || x})`, `+ ${bin(y, n)}   (${o.yLabel || y})${o.cin ? ' + carry-in 1' : ''}`, `= ${R.cout ? '1' : ' '}${bin(val(R.s), n)}   carry out ${R.cout}`], S.place(r, [0, 0.0, 1, 0.26]), { mono: true, size: u, strong: (i) => i === 2 });
+        // the carry ripples from bit 0 (right) to the top bit (left): each sum is final only once it has arrived
+        const reach = NA.prefersReducedMotion() ? n : ((S.now / 2800) % 1) * (n + 3) - 1;
         for (let j = 0; j < n; j++) {
-          const i = n - 1 - j, x0 = g.x + j * cw;
-          ctx.fillStyle = theme.c('s4', 0.12); ctx.fillRect(x0 + 1, g.y, cw - 2, g.h);
-          ctx.strokeStyle = theme.c('s4', 0.6); ctx.lineWidth = 1; ctx.strokeRect(x0 + 1.5, g.y + 0.5, cw - 3, g.h - 1);
+          const i = n - 1 - j, x0 = g.x + j * cw, done = i < reach, here = i === Math.floor(reach);
+          ctx.fillStyle = theme.c('s4', here ? 0.32 : done ? 0.14 : 0.06); ctx.beginPath(); NA.rr(ctx, x0 + 1, g.y, cw - 2, g.h, Math.min(5, cw * 0.2)); ctx.fill();
+          ctx.strokeStyle = theme.c(here ? 'focus' : 's4', here ? 1 : 0.6); ctx.lineWidth = here ? 2 : 1; ctx.beginPath(); NA.rr(ctx, x0 + 1.5, g.y + 0.5, cw - 3, g.h - 1, Math.min(5, cw * 0.2)); ctx.stroke();
           const t = Math.min(cw * 0.55, u);
           S.text(ctx, `${R.a[i]}${R.b[i]}`, x0 + cw / 2, g.y + g.h * 0.22, { size: t, mono: true, align: 'center', color: theme.c('ink-2') });
-          S.text(ctx, String(R.s[i]), x0 + cw / 2, g.y + g.h * 0.68, { size: t * 1.2, mono: true, w: 700, align: 'center', color: R.s[i] ? theme.c('pos') : theme.c('muted') });
-          if (R.c[i + 1]) { ctx.fillStyle = theme.c('s2'); ctx.beginPath(); ctx.arc(x0 + 1, g.y + g.h * 0.45, Math.max(2, Math.min(4, cw * 0.15)), 0, Math.PI * 2); ctx.fill(); }
+          S.text(ctx, done || here ? String(R.s[i]) : '·', x0 + cw / 2, g.y + g.h * 0.68, { size: t * 1.2, mono: true, w: 700, align: 'center', color: done && R.s[i] ? theme.c('pos') : theme.c('muted') });
+          if (R.c[i + 1] && i + 1 <= reach) { ctx.fillStyle = theme.c('s2'); ctx.beginPath(); ctx.arc(x0 + 1, g.y + g.h * 0.45, Math.max(2, Math.min(4, cw * 0.15)), 0, Math.PI * 2); ctx.fill(); }
         }
-        S.text(ctx, 'each box is one full adder (bit 0 on the right); top: the two input bits, bottom: the sum bit; an orange dot is a carry passed to the left', r.x, g.y + g.h + u * 1.2, { size: u * 0.8, color: theme.c('muted'), maxW: r.w });
+        S.text(ctx, 'each box is one full adder (bit 0 on the right); top: the two input bits, bottom: the sum bit, final once the carry has rippled in; an orange dot is a carry passed to the left', r.x, g.y + g.h + u * 1.2, { size: u * 0.8, color: theme.c('muted'), maxW: r.w });
       },
       grids: [{ id: 'fa', rect: cells, rows: 1, cols: n, make: (i, j) => { const b = n - 1 - j; return Object.assign(D.fullAdder(X, R.a[b], R.b[b], R.c[b]), { title: `Full adder, bit ${b}` }); } }],
       about: [...(o.about || []), `A ripple-carry adder adds binary numbers the way you add on paper: column by column from the right, each column's carry feeding the next. Each box is a full adder that adds two bits and the incoming carry. Here ${n} of them chained give ${bin(val(R.s), n).replace(/^0+(?=.)/, '')} in binary. Zoom into a box to open its gates.`, 'The carry has to ripple through every box, so wide adders in fast chips use carry-lookahead or parallel-prefix designs (such as Kogge–Stone) that work out all the carries in a few gate delays, at the cost of more gates.'],
@@ -605,7 +719,7 @@
     const p = a ^ b, s = p ^ cin, g1 = a & b, g2 = p & cin, cout = g1 | g2;
     const R = { x1: [0.2, 0.1, 0.15, 0.22], x2: [0.52, 0.18, 0.15, 0.22], a2: [0.52, 0.52, 0.15, 0.2], a1: [0.2, 0.7, 0.15, 0.2], o1: [0.78, 0.6, 0.15, 0.22] };
     return node({
-      title: 'Full adder', sub: `${a} + ${b} + ${cin} = ${cout}${s} (carry, sum)`, tone: 's4',
+      title: 'Full adder', sub: `${a} + ${b} + ${cin} = ${cout}${s} (carry, sum)`, tone: 's4', animate: true,
       summary: (ctx, r, S) => S.text(ctx, `${a}+${b}+${cin} → ${s}, c${cout}`, r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.w / 8, 6, 12), mono: true, align: 'center', maxW: r.w }),
       inner: (ctx, r, S) => {
         const P = (k) => S.place(r, R[k]), pin = (q, side, f) => [side ? q.x + q.w : q.x, q.y + q.h * f];
@@ -651,7 +765,7 @@
       : type === 'AND' ? [['n1', 'NAND', [a, b], [0.25, 0.3, 0.2, 0.4]], ['n2', 'NOT', [n1], [0.62, 0.33, 0.16, 0.34]]]
         : [['n1', 'NOR', [a, b], [0.25, 0.3, 0.2, 0.4]], ['n2', 'NOT', [GATE.NOR(a, b)], [0.62, 0.33, 0.16, 0.34]]];
     return node({
-      title: `${type} gate`, sub: `${ins.join(', ')} → ${out}`, tone: 's7',
+      title: `${type} gate`, sub: `${ins.join(', ')} → ${out}`, tone: 's7', animate: true,
       summary: (ctx, r) => gateGlyph(ctx, type, r, out),
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 14), P = (f) => S.place(r, f), pin = (q, side, f) => [side ? q.x + q.w : q.x, q.y + q.h * f];
@@ -700,8 +814,12 @@
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), st = stage(), p = phase(), cur = st === 0 ? prev : ins, P = (f) => S.place(r, f);
         const vdd = r.y + r.h * 0.02, gnd = r.y + r.h * 0.97, xo = r.x + r.w * 0.86;
+        // the supply rails: VDD glows (it is the 1), ground does not
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = rgba('s2', 0.22); ctx.lineWidth = 9; ctx.beginPath(); ctx.moveTo(r.x + r.w * 0.12, vdd); ctx.lineTo(r.x + r.w * 0.8, vdd); ctx.stroke();
         ctx.strokeStyle = theme.c('s2'); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(r.x + r.w * 0.12, vdd); ctx.lineTo(r.x + r.w * 0.8, vdd); ctx.stroke();
         ctx.strokeStyle = theme.c('ink-2'); ctx.beginPath(); ctx.moveTo(r.x + r.w * 0.12, gnd); ctx.lineTo(r.x + r.w * 0.8, gnd); ctx.stroke();
+        ctx.lineCap = 'butt';
         S.text(ctx, 'VDD (1)', r.x + r.w * 0.82, vdd + 2, { size: u * 0.85, w: 650, color: theme.c('s2') });
         S.text(ctx, 'ground (0)', r.x + r.w * 0.82, gnd - 2, { size: u * 0.85, w: 650, color: theme.c('ink-2') });
         const q = Object.fromEntries(T.map(([id, , , f]) => [id, P(f)])), top = (b) => [b.x + b.w * 0.58, b.y], bot = (b) => [b.x + b.w * 0.58, b.y + b.h];
@@ -731,16 +849,33 @@
           ctx.strokeStyle = cur[i] ? ON() : OFF(); ctx.lineWidth = cur[i] ? 2.2 : 1.4; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(b.x + b.w * 0.06, y); ctx.stroke();
           S.text(ctx, `${'AB'[i]}=${cur[i]}`, x0, y - u * 0.75, { size: u * 0.8, mono: true, w: 650, color: cur[i] ? theme.c('pos') : theme.c('muted') });
         });
-        // the output voltage moves from its old value to its new one while the switch happens
-        const level = st === 0 ? outBefore : st === 1 ? outBefore : st === 2 ? outBefore + (out - outBefore) * clamp((p - 0.3) / 0.4, 0, 1) : out;
+        // the output voltage: an RC curve from its old value to its new one, the wiring's capacitance charging
+        // (or discharging) through the transistors that just turned on
+        const vAt = (q) => (q < 0.3 ? outBefore : out + (outBefore - out) * Math.exp(-(q - 0.3) / 0.085)), level = vAt(p);
+        const glow = ctx.createRadialGradient(xo, yOut, 0, xo, yOut, 16);
+        glow.addColorStop(0, rgba('pos', 0.55 * level)); glow.addColorStop(1, rgba('pos', 0));
+        ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(xo, yOut, 16, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = theme.c('pos', 0.25 + 0.75 * level); ctx.beginPath(); ctx.arc(xo, yOut, 6, 0, Math.PI * 2); ctx.fill();
-        S.text(ctx, `Y = ${fmt(level, level % 1 ? 1 : 0)}`, xo + 10, yOut, { size: u, mono: true, w: 700 });
-        // electrons along the conducting path while the output charges or discharges (they move opposite to the current)
+        S.text(ctx, `Y = ${level > 0.995 ? '1' : level < 0.005 ? '0' : fmt(level, 2)}`, xo + 10, yOut, { size: u, mono: true, w: 700 });
+        // the same voltage over the whole replay, with a marker at the present moment
+        const vr = P(type === 'NOR' ? [0.62, 0.3, 0.36, 0.15] : [0.62, 0.55, 0.36, 0.15]);
+        ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.strokeRect(vr.x + 0.5, vr.y + 0.5, vr.w - 1, vr.h - 1);
+        S.text(ctx, 'V(Y) over the replay', vr.x, vr.y - u * 0.7, { size: u * 0.75, color: theme.c('muted'), w: 600 });
+        const VX = (q) => vr.x + q * vr.w, VY = (v) => vr.y + vr.h - 3 - v * (vr.h - 6);
+        ctx.strokeStyle = rgba('pos', 0.35); ctx.lineWidth = 1.5; ctx.beginPath();
+        for (let i = 0; i <= 60; i++) { const q = i / 60; i ? ctx.lineTo(VX(q), VY(vAt(q))) : ctx.moveTo(VX(q), VY(vAt(q))); }
+        ctx.stroke();
+        ctx.strokeStyle = theme.c('pos'); ctx.lineWidth = 2; ctx.beginPath();
+        for (let i = 0; i <= 60 && i / 60 <= p; i++) { const q = i / 60; i ? ctx.lineTo(VX(q), VY(vAt(q))) : ctx.moveTo(VX(q), VY(vAt(q))); }
+        ctx.stroke();
+        ctx.fillStyle = theme.c('focus'); ctx.beginPath(); ctx.arc(VX(p), VY(level), 3.5, 0, Math.PI * 2); ctx.fill();
+        // electrons along the conducting path while the output charges or discharges (they move opposite to the
+        // current), each with a short fading tail; they thin out as the voltage settles
         if (st === 2) {
-          const path = charge ? paths.p : paths.n, k = 9, t = (p - 0.3) / 0.4;
-          for (let i = 0; i < k; i++) { const [x, y] = along(path, i / k + t * 0.9); electron(ctx, x, y, 3); }
+          const path = charge ? paths.p : paths.n, k = 10, t = (p - 0.3) / 0.4, strength = Math.abs(out - level) / Math.max(1e-6, Math.abs(out - outBefore));
+          for (let i = 0; i < k; i++) for (let j = 4; j >= 0; j--) { const [x, y] = along(path, i / k + t * 0.9 - j * 0.012); electron(ctx, x, y, j ? 2.2 : 3, false, (j ? 0.18 * (5 - j) / 5 : 1) * clamp(0.25 + strength, 0, 1)); }
         }
-        timeline(ctx, S, { x: r.x + r.w * 0.6, y: r.y + r.h * (type === 'NOR' ? 0.2 : 0.76), w: r.w * 0.38, h: u * 2.2 }, ['before', 'switch', charge ? 'charging' : 'discharging', 'settled']);
+        timeline(ctx, S, { x: r.x + r.w * 0.6, y: r.y + r.h * (type === 'NOR' ? 0.12 : 0.76), w: r.w * 0.38, h: u * 2.2 }, ['before', 'switch', charge ? 'charging' : 'discharging', 'settled']);
       },
       about: [
         `CMOS logic pairs two kinds of transistors. PMOS transistors (top) conduct when their gate is 0 and connect the output to the supply, VDD, which is logic 1; NMOS transistors (bottom) conduct when their gate is 1 and connect the output to ground, logic 0. ${type === 'NAND' ? 'In a NAND gate the two PMOS are in parallel and the two NMOS in series, so the output is 0 only when both inputs are 1.' : type === 'NOR' ? 'In a NOR gate the PMOS are in series and the NMOS in parallel, so the output is 1 only when both inputs are 0.' : 'An inverter is one of each: whichever is on decides the output.'}`,
@@ -757,12 +892,38 @@
       title: n ? 'NMOS transistor' : 'PMOS transistor', sub: t.on ? 'on' : 'off', tone: n ? 's1' : 's2', animate: true,
       summary: (ctx, r) => fetGlyph(ctx, t.kind, r, t.on),
       inner: (ctx, r, S) => {
-        const u = S.u(r, 8, 13), st = stage(), p = phase(), on = st === 0 ? t.before : t.on, flow = st === 2 && t.path;
+        const u = S.u(r, 8, 13), st = stage(), lvl = st === 0 ? (t.before ? 1 : 0) : ramp(t.before ? 1 : 0, t.on ? 1 : 0), on = lvl > 0.5, flow = st === 2 && t.path;
         const P = (f) => S.place(r, f), sub = P([0.04, 0.44, 0.92, 0.42]), src = P([0.08, 0.44, 0.24, 0.18]), drn = P([0.68, 0.44, 0.24, 0.18]), ox = P([0.3, 0.385, 0.4, 0.055]), gate = P([0.3, 0.24, 0.4, 0.145]), ch = P(chan);
-        ctx.fillStyle = theme.c(n ? 's2' : 's1', 0.13); ctx.fillRect(sub.x, sub.y, sub.w, sub.h);
-        ctx.fillStyle = theme.c(n ? 's1' : 's2', 0.3); ctx.fillRect(src.x, src.y, src.w, src.h); ctx.fillRect(drn.x, drn.y, drn.w, drn.h);
-        ctx.fillStyle = theme.c('line-2'); ctx.fillRect(ox.x, ox.y, ox.w, ox.h);
-        ctx.fillStyle = on ? theme.c('ink-2') : theme.c('muted', 0.7); ctx.fillRect(gate.x, gate.y, gate.w, gate.h);
+        const body = n ? 's2' : 's1', dop = n ? 's1' : 's2';
+        // the body: doped silicon, fading with depth
+        let gr = ctx.createLinearGradient(0, sub.y, 0, sub.y + sub.h);
+        gr.addColorStop(0, rgba(body, 0.18)); gr.addColorStop(1, rgba(body, 0.05));
+        ctx.fillStyle = gr; ctx.beginPath(); NA.rr(ctx, sub.x, sub.y, sub.w, sub.h, 8); ctx.fill();
+        // source and drain: implanted wells, rounded at the bottom
+        const well = (b) => {
+          ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x + b.w, b.y); ctx.lineTo(b.x + b.w, b.y + b.h * 0.5);
+          ctx.quadraticCurveTo(b.x + b.w, b.y + b.h, b.x + b.w / 2, b.y + b.h); ctx.quadraticCurveTo(b.x, b.y + b.h, b.x, b.y + b.h * 0.5); ctx.closePath();
+          const g2 = ctx.createLinearGradient(0, b.y, 0, b.y + b.h); g2.addColorStop(0, rgba(dop, 0.45)); g2.addColorStop(1, rgba(dop, 0.16));
+          ctx.fillStyle = g2; ctx.fill(); ctx.strokeStyle = rgba(dop, 0.55); ctx.lineWidth = 1; ctx.stroke();
+        };
+        well(src); well(drn);
+        // the inversion layer: a thin conducting sheet that appears as the gate voltage rises
+        if (lvl > 0.01) {
+          const g3 = ctx.createLinearGradient(0, ch.y, 0, ch.y + ch.h * 1.6);
+          g3.addColorStop(0, rgba(dop, 0.6 * lvl)); g3.addColorStop(1, rgba(dop, 0));
+          ctx.fillStyle = g3; ctx.fillRect(ch.x, ch.y, ch.w, ch.h * 1.6);
+        }
+        // the oxide, glassy, and the metal gate; when the gate is on its field reaches through the oxide
+        ctx.fillStyle = rgba('line-2', 0.9); ctx.fillRect(ox.x, ox.y, ox.w, ox.h);
+        ctx.fillStyle = theme.dark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.6)'; ctx.fillRect(ox.x, ox.y, ox.w, 1.5);
+        gr = ctx.createLinearGradient(0, gate.y, 0, gate.y + gate.h);
+        gr.addColorStop(0, rgba('ink-2', 0.55 + 0.4 * lvl)); gr.addColorStop(1, rgba('ink-2', 0.38 + 0.37 * lvl));
+        ctx.fillStyle = gr; ctx.beginPath(); NA.rr(ctx, gate.x, gate.y, gate.w, gate.h, 5); ctx.fill();
+        if (lvl > 0.01) {
+          ctx.strokeStyle = rgba(dop, 0.55 * lvl); ctx.lineWidth = 1.2; ctx.setLineDash([3, 4]); ctx.lineDashOffset = -(S.now / 60) % 7;
+          for (let k = 0; k < 7; k++) { const x = gate.x + gate.w * (0.1 + (0.8 * k) / 6); ctx.beginPath(); ctx.moveTo(x, gate.y + gate.h + 1); ctx.lineTo(x, ch.y + ch.h * 0.3); ctx.stroke(); }
+          ctx.setLineDash([]); ctx.lineDashOffset = 0;
+        }
         const lab = (s, x, y, o = {}) => S.text(ctx, s, x, y, Object.assign({ size: u * 0.82, align: 'center', color: theme.c('ink-2') }, o));
         lab(n ? 'n+ source' : 'p+ source', src.x + src.w / 2, src.y + src.h * 0.5); lab(n ? 'n+ drain' : 'p+ drain', drn.x + drn.w / 2, drn.y + drn.h * 0.5);
         lab(n ? 'p-type silicon (body)' : 'n-type silicon (body)', sub.x + sub.w / 2, sub.y + sub.h * 0.82, { color: theme.c('muted') });
@@ -771,25 +932,23 @@
         // terminals
         const term = (x, y0, s, v) => { ctx.strokeStyle = theme.c('ink-2'); ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, r.y + r.h * 0.1); ctx.stroke(); lab(s, x, r.y + r.h * 0.06, { w: 650, color: theme.c('ink') }); if (v) lab(v, x, r.y + r.h * 0.155, { size: u * 0.72, color: theme.c('muted') }); };
         term(src.x + src.w / 2, src.y, 'S', n ? 'ground' : 'VDD'); term(drn.x + drn.w / 2, drn.y, 'D', 'to the output'); term(gate.x + gate.w / 2, gate.y, 'G', `${t.input} = ${st === 0 ? t.vBefore : t.v} (${on ? 'on' : 'off'})`);
-        // carriers: plenty in the source and drain; a sheet of them in the channel when the gate is on
-        const T = S.now / 1000, dots = 26;
+        // carriers: plenty in the source and drain, jiggling with heat; in the channel a sheet of them that
+        // appears with the gate voltage and streams toward the drain while current flows
+        const T = S.now / 1000, dots = 24;
         for (let i = 0; i < dots; i++) {
-          const jx = Math.sin(T * 9 + i * 2.1) * 2, jy = Math.cos(T * 7 + i * 1.7) * 2;
-          const xs = src.x + ((i * 37) % 100) / 100 * src.w, ys = src.y + ((i * 53) % 100) / 100 * src.h * 0.9 + 2;
-          electron(ctx, xs + jx, ys + jy, 2.2, hole);
-          const xd = drn.x + ((i * 41) % 100) / 100 * drn.w, yd = drn.y + ((i * 29) % 100) / 100 * drn.h * 0.9 + 2;
-          electron(ctx, xd - jx, yd + jy, 2.2, hole);
+          const jx = Math.sin(T * 9 + i * 2.1) * 1.8, jy = Math.cos(T * 7 + i * 1.7) * 1.8;
+          const xs = src.x + 4 + ((i * 37) % 100) / 100 * (src.w - 8), ys = src.y + 4 + ((i * 53) % 100) / 100 * src.h * 0.62;
+          electron(ctx, xs + jx, ys + jy, 2.1, hole);
+          const xd = drn.x + 4 + ((i * 41) % 100) / 100 * (drn.w - 8), yd = drn.y + 4 + ((i * 29) % 100) / 100 * drn.h * 0.62;
+          electron(ctx, xd - jx, yd + jy, 2.1, hole);
         }
-        if (on) {
-          ctx.fillStyle = theme.c(n ? 's1' : 's2', 0.25); ctx.fillRect(ch.x, ch.y, ch.w, ch.h);
-          const k = 14;
-          for (let i = 0; i < k; i++) {
-            const base = i / k, drift = flow ? ((p - 0.3) / 0.4) * 2.5 : 0, f = (base + drift) % 1;
-            const x = ch.x + f * ch.w + Math.sin(T * 11 + i) * (flow ? 1 : 2.5), y = ch.y + ch.h * (0.3 + 0.4 * ((i * 7) % 5) / 4) + Math.cos(T * 13 + i * 3) * 1.2;
-            electron(ctx, x, y, 2.2, hole);
-          }
-          lab(flow ? `${hole ? 'holes' : 'electrons'} flowing through the channel →` : 'channel formed: no voltage across it now, no net flow', ch.x + ch.w / 2, ch.y + ch.h + u * 1.4, { size: u * 0.8, color: flow ? theme.c('s1') : theme.c('muted') });
-        } else lab('no channel: the transistor is off', ch.x + ch.w / 2, ch.y + ch.h + u * 1.4, { size: u * 0.8, color: theme.c('muted') });
+        const sim = carriers(`mos:${t.kind}:${t.path ? 1 : 0}`, 18);
+        stepCarriers(sim, S.now, flow ? 3.2 : 0);
+        ctx.save(); ctx.beginPath(); ctx.rect(ch.x, ch.y - 2, ch.w, ch.h + 4); ctx.clip();
+        drawCarriers(ctx, sim, ch, 2.1, hole, 18 * lvl);
+        ctx.restore();
+        if (on) lab(flow ? `${hole ? 'holes' : 'electrons'} flowing through the channel →` : 'channel formed: no voltage across it now, no net flow', ch.x + ch.w / 2, ch.y + ch.h + u * 1.4, { size: u * 0.8, color: flow ? theme.c(dop) : theme.c('muted') });
+        else lab(lvl > 0.01 ? 'the channel is forming…' : 'no channel: the transistor is off', ch.x + ch.w / 2, ch.y + ch.h + u * 1.4, { size: u * 0.8, color: theme.c('muted') });
         timeline(ctx, S, { x: r.x + r.w * 0.1, y: r.y + r.h * 0.89, w: r.w * 0.8, h: u * 2.2 }, ['before', 'gate switches', t.path ? (t.charge ? 'output charges' : 'output discharges') : 'its neighbour switches', 'settled']);
       },
       about: n ? [
@@ -811,36 +970,34 @@
       title: cap ? 'Electrons on the capacitor' : 'Electrons in the channel', sub: cap ? (t.charged ? 'charged: a stored 1' : 'empty: a stored 0') : n ? 'free electrons in silicon' : 'holes in silicon', tone: 's1', animate: true,
       summary: (ctx, r) => { for (let i = 0; i < 12; i++) electron(ctx, r.x + ((i * 37) % 100) / 100 * r.w, r.y + ((i * 61) % 100) / 100 * r.h, 1.8, !n); },
       inner: (ctx, r, S) => {
-        const u = S.u(r, 8, 13), st = stage(), p = phase(), T = S.now / 1000;
+        const u = S.u(r, 8, 13), st = stage(), T = S.now / 1000;
         const box = S.place(r, X.wide ? [0, 0.04, 0.64, 0.8] : [0, 0.03, 1, 0.56]), g = Math.max(18, Math.min(box.w, box.h) / 7);
-        ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(box.x, box.y, box.w, box.h);
-        // the lattice: silicon atoms, each bonded to four neighbours
-        ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1;
-        for (let y = box.y + g / 2; y < box.y + box.h; y += g) for (let x = box.x + g / 2; x < box.x + box.w; x += g) {
-          if (x + g < box.x + box.w) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + g, y); ctx.stroke(); }
-          if (y + g < box.y + box.h) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + g); ctx.stroke(); }
-        }
-        for (let y = box.y + g / 2; y < box.y + box.h; y += g) for (let x = box.x + g / 2; x < box.x + box.w; x += g) { ctx.fillStyle = theme.c('muted', 0.55); ctx.beginPath(); ctx.arc(x, y, g * 0.17, 0, Math.PI * 2); ctx.fill(); }
+        // the crystal (drawn once per size), framed like a view through a microscope
+        ctx.save(); ctx.beginPath(); NA.rr(ctx, box.x, box.y, box.w, box.h, 10); ctx.clip();
+        ctx.drawImage(lattice(box.w, box.h, g), box.x, box.y, box.w, box.h);
         if (cap) {
           // two plates: the charged state has electrons pushed onto one plate and pulled off the other
-          const k = t.charged ? 30 : 4;
-          for (let i = 0; i < k; i++) { const x = box.x + ((i * 37) % 100) / 100 * box.w, y = box.y + box.h * (0.08 + 0.18 * (((i * 53) % 100) / 100)) + Math.sin(T * 6 + i) * 1.5; electron(ctx, x, y, 2.6); }
-          if (t.charged) for (let i = 0; i < 30; i++) S.text(ctx, '+', box.x + ((i * 41) % 100) / 100 * box.w, box.y + box.h * (0.78 + 0.16 * (((i * 29) % 100) / 100)), { size: u, w: 700, color: theme.c('s2'), align: 'center' });
-          S.text(ctx, t.charged ? 'extra electrons on one plate, missing electrons (+) on the other' : 'no charge separated: a stored 0', box.x + 6, box.y + box.h * 0.5, { size: u * 0.85, color: theme.c('ink-2'), maxW: box.w - 12 });
+          const k = t.charged ? 30 : 4, plate = (y) => { const gr = ctx.createLinearGradient(0, y - 4, 0, y + 4); gr.addColorStop(0, rgba('ink-2', 0.2)); gr.addColorStop(0.5, rgba('ink-2', 0.65)); gr.addColorStop(1, rgba('ink-2', 0.2)); ctx.fillStyle = gr; ctx.fillRect(box.x, y - 4, box.w, 8); };
+          plate(box.y + box.h * 0.3); plate(box.y + box.h * 0.7);
+          for (let i = 0; i < k; i++) { const x = box.x + ((i * 37) % 100) / 100 * box.w, y = box.y + box.h * (0.06 + 0.2 * (((i * 53) % 100) / 100)) + Math.sin(T * 6 + i) * 1.5; electron(ctx, x, y, 2.8); }
+          if (t.charged) for (let i = 0; i < 30; i++) S.text(ctx, '+', box.x + ((i * 41) % 100) / 100 * box.w, box.y + box.h * (0.76 + 0.18 * (((i * 29) % 100) / 100)), { size: u, w: 700, color: theme.c('s2'), align: 'center' });
+          ctx.restore();
+          S.text(ctx, t.charged ? 'extra electrons on one plate, missing electrons (+) on the other' : 'no charge separated: a stored 0', box.x, box.y + box.h + u * 1.3, { size: u * 0.85, color: theme.c('ink-2'), maxW: box.w });
         } else {
-          // free carriers: fast random thermal motion, plus a slow drift when there is a field
-          const on = st === 0 ? t.before : t.on, field = on && t.path && st === 2, k = on ? 26 : 3;
-          for (let i = 0; i < k; i++) {
-            const seed = i * 12.9898, speed = 0.35 + ((i * 7) % 10) / 20;
-            let x = ((Math.sin(seed) * 43758.5453) % 1 + 1) % 1, y = ((Math.sin(seed * 1.7) * 23421.631) % 1 + 1) % 1;
-            x += Math.sin(T * 5 * speed + i) * 0.04 + Math.sin(T * 13 + i * 2.3) * 0.015; y += Math.cos(T * 4.3 * speed + i * 1.3) * 0.05 + Math.cos(T * 11 + i) * 0.015;
-            if (field) x += ((p - 0.3) / 0.4) * (n ? 1 : 1) * 0.9;
-            x = ((x % 1) + 1) % 1; y = clamp(y, 0.03, 0.97);
-            electron(ctx, box.x + x * box.w, box.y + y * box.h, 3, !n);
-          }
-          if (field) S.arrow(ctx, box.x + box.w * 0.2, box.y + box.h + u * 1.2, box.x + box.w * 0.8, box.y + box.h + u * 1.2, { lw: 1.5, head: 6, color: theme.c('s1') });
-          S.text(ctx, field ? `drift toward the drain: this is the current` : on ? 'channel on, but no voltage across it: only random thermal motion' : 'transistor off: almost no free carriers here', box.x, box.y + box.h + u * (field ? 2.6 : 1.3), { size: u * 0.85, color: field ? theme.c('s1') : theme.c('muted'), maxW: box.w });
+          // free carriers: fast random thermal motion, collisions, and a steady drift when there is a field
+          const before = t.before ? 1 : 0, after = t.on ? 1 : 0, level = st === 0 ? before : ramp(before, after), field = t.on && t.path && st === 2;
+          const sim = carriers(`chan:${t.kind}`, 30);
+          stepCarriers(sim, S.now, field ? 2.6 : 0);
+          // the push of the field: a faint wash from source to drain while current flows
+          if (field) { const gr = ctx.createLinearGradient(box.x, 0, box.x + box.w, 0); gr.addColorStop(0, rgba(n ? 's1' : 's2', 0.0)); gr.addColorStop(1, rgba(n ? 's1' : 's2', 0.12)); ctx.fillStyle = gr; ctx.fillRect(box.x, box.y, box.w, box.h); }
+          drawCarriers(ctx, sim, box, Math.max(2.4, g * 0.11), !n, 3 + 27 * level);
+          ctx.restore();
+          S.text(ctx, 'source', box.x + 6, box.y + 10, { size: u * 0.75, w: 600, color: theme.c('muted') });
+          S.text(ctx, 'drain', box.x + box.w - 6, box.y + 10, { size: u * 0.75, w: 600, color: theme.c('muted'), align: 'right' });
+          if (field) S.arrow(ctx, box.x + box.w * 0.2, box.y + box.h + u * 1.2, box.x + box.w * 0.8, box.y + box.h + u * 1.2, { lw: 1.5, head: 6, color: theme.c(n ? 's1' : 's2') });
+          S.text(ctx, field ? 'drift toward the drain: this is the current' : level > 0.5 ? 'channel on, but no voltage across it: only random thermal motion' : 'transistor off: almost no free carriers here', box.x, box.y + box.h + u * (field ? 2.6 : 1.3), { size: u * 0.85, color: field ? theme.c(n ? 's1' : 's2') : theme.c('muted'), maxW: box.w });
         }
+        ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; ctx.beginPath(); NA.rr(ctx, box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1, 10); ctx.stroke();
         const side = S.place(r, X.wide ? [0.68, 0.04, 0.32, 0.9] : [0, 0.68, 1, 0.3]);
         S.lines(ctx, cap ? ['A DRAM capacitor holds', 'a few femtofarads; a stored 1', 'is tens of thousands of', 'electrons\' worth of charge.', 'It leaks away, so every', 'cell is refreshed every', '64 ms or so.'] : ['grey: silicon atoms', n ? 'blue: free electrons' : 'hollow: holes', '', 'thermal speed ≈ 10⁵ m/s', 'a collision every ≈ 0.1 ps', 'drift: a small push', 'along the field on top', 'channel: tens of nm long', 'crossing it: < 1 ps'], side, { size: u * 0.92, colorOf: (i) => (i < 2 ? theme.c('ink') : theme.c('ink-2')) });
       },

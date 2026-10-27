@@ -128,7 +128,8 @@
         el('div', { class: 'n-nav' },
           el('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Previous neuron in this layer', onclick: nav(-1) }, '‹'),
           el('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Next neuron in this layer', onclick: nav(1) }, '›'))));
-      if (this.ablateBtn) root.append(el('div', { class: 'btn-row' }, this.ablateBtn, el('span', { class: 'sec-note', text: 'Ablating forces this neuron to output 0 so you can see what breaks.' })));
+      const openBtn = el('button', { class: 'btn btn-primary', type: 'button', title: 'Open this neuron: its sum, code, arithmetic and circuits, down to the electrons', onclick: () => NA.netDeep && NA.netDeep.openNeuron(l, j) }, 'Open neuron ⤢');
+      root.append(el('div', { class: 'btn-row' }, openBtn, this.ablateBtn, this.ablateBtn ? el('span', { class: 'sec-note', text: 'Ablating forces this neuron to output 0 so you can see what breaks.' }) : null));
 
       this.eqEl = el('div', { class: 'eq' });
       if (l > 0) root.append(section('Computation for the probe input', this.eqEl));

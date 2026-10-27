@@ -200,28 +200,40 @@
       const a = this.anim;
       if (!a) { const node = this.node(); this.drawLevel(ctx, node, R, this.camNow(), 1); this.drawHoverCell(ctx, node, R); }
       else {
-        // the parent zooms toward the part while the part's own screen fades in (reversed when backing out)
+        /* The parent zooms toward the part, and the part's own level is drawn inside the part's box, growing with
+           it until it fills the view: you travel into the box rather than cutting to a new screen. Backing out
+           plays the same thing in reverse. */
         const s = a.s, parent = a.parent, child = a.child;
         const cam = { k: 1, tx: 0, ty: 0 };
         const lk = Math.exp(Math.log(a.c0.k) + (Math.log(a.c1.k) - Math.log(a.c0.k)) * s);
         const cx = a.w0[0] + (a.w1[0] - a.w0[0]) * s, cy = a.w0[1] + (a.w1[1] - a.w0[1]) * s;
         cam.k = lk; cam.tx = R.x + R.w / 2 - cx * lk; cam.ty = R.y + R.h / 2 - cy * lk;
-        const childAlpha = smooth((s - 0.5) / 0.5);
-        if (childAlpha < 1) this.drawLevel(ctx, parent, R, cam, 1 - childAlpha * 0.9);
-        if (childAlpha > 0) this.drawLevel(ctx, child, R, { k: 1, tx: 0, ty: 0 }, childAlpha, true);
+        const childAlpha = smooth((s - 0.18) / 0.5), parentAlpha = 1 - smooth((s - 0.5) / 0.45) * 0.92;
+        this.drawLevel(ctx, parent, R, cam, parentAlpha, false, child.id, childAlpha);
+        if (childAlpha > 0) {
+          // where the part's box is on screen right now, and the child level scaled to fit inside it
+          const box = this.camRect({ x: a.w1[0] - a.bw / 2, y: a.w1[1] - a.bh / 2, w: a.bw, h: a.bh }, cam);
+          const sc = Math.min(1, Math.min(box.w / R.w, box.h / R.h)), ox = box.x + box.w / 2 - (R.x + R.w / 2) * sc, oy = box.y + box.h / 2 - (R.y + R.h / 2) * sc;
+          ctx.save();
+          ctx.translate(ox, oy); ctx.scale(sc, sc);
+          this.drawLevel(ctx, child, R, { k: 1, tx: 0, ty: 0 }, childAlpha, true);
+          ctx.restore();
+        }
       }
       ctx.globalAlpha = 1;
       this.syncBar();
     }
-    drawLevel(ctx, node, R, cam, alpha, cover) {
+    // fadeId: the part being entered, whose small preview fades as its own level grows inside it
+    drawLevel(ctx, node, R, cam, alpha, cover, fadeId, fade = 0) {
       const r = this.camRect(R, cam);
       ctx.globalAlpha = alpha;
-      if (cover) { ctx.fillStyle = theme.c('panel'); ctx.fillRect(0, 0, this.W, this.H); }
+      // a level drawn over another covers it, as a panel with soft corners growing out of its box
+      if (cover) { ctx.fillStyle = theme.c('panel'); ctx.beginPath(); NA.rr(ctx, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 12); ctx.fill(); }
       // the zoom buttons sit at the top right, so the open level's title stops short of them
       S.text(ctx, node.title + (node.sub ? '  ·  ' + node.sub : ''), r.x + 2, r.y + 14, { size: clamp(14 * cam.k, 9, 40), w: 650, maxW: cam.k > 1.001 ? r.w : Math.max(60, r.w - (this.chipW || 0)) });
       const c = this.content(node, r);
       if (node.inner) { ctx.save(); ctx.globalAlpha = alpha; node.inner(ctx, c, S); ctx.restore(); }
-      for (const ch of node.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), alpha);
+      for (const ch of node.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), ch.id === fadeId ? alpha * (1 - fade) : alpha);
     }
     // the grid cell under the cursor gets an outline, so it is clear which number zooming in will open
     drawHoverCell(ctx, node, R) {
@@ -316,7 +328,7 @@
     enter(child) {
       const R = this.levelRect(), parent = this.node(), c = this.content(parent, R), cr = S.place(c, child.rect);
       const k1 = Math.min(R.w / cr.w, R.h / cr.h), c0 = this.camNow();
-      this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, c0, c1: { k: k1 },
+      this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, c0, c1: { k: k1 }, bw: cr.w, bh: cr.h,
         w0: [(R.x + R.w / 2 - c0.tx) / c0.k, (R.y + R.h / 2 - c0.ty) / c0.k], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: () => { this.path = this.path.concat(child.id); } };
       this.selected = null; this.wheelHold = true;
       this.dirty = true;
@@ -336,7 +348,7 @@
       const cr = S.place(this.content(parent, R), child.rect), k1 = Math.min(R.w / cr.w, R.h / cr.h);
       this.path = parentPath;
       this.zoomSet(1, 0, 0);
-      this.anim = { parent, child: cur, s: 1, t0: performance.now(), dir: -1, c0: { k: 1 }, c1: { k: k1 }, w0: [R.x + R.w / 2, R.y + R.h / 2], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: null };
+      this.anim = { parent, child: cur, s: 1, t0: performance.now(), dir: -1, c0: { k: 1 }, c1: { k: k1 }, bw: cr.w, bh: cr.h, w0: [R.x + R.w / 2, R.y + R.h / 2], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: null };
       this.selected = null; this.wheelHold = true;
       this.dirty = true;
     }

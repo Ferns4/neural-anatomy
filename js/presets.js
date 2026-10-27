@@ -237,9 +237,43 @@
         { text: 'Drop points into the denoising field at a middle noise level and follow them to the data.', label: 'Explore the field', action: 'field' },
         { text: 'Train a new denoiser on two moons from random weights; samples refresh as it learns.', label: 'Train on two moons', action: 'moons' },
       ],
+    },
+    {
+      id: 'yolo26', group: 'Perception', lab: 'yolo26', name: 'YOLO26 Object Detector', tagline: 'Every object in one pass, with no NMS.',
+      meta: 'YOLO26 layout · 385k parameters · 4 classes · 128 px',
+      about: 'YOLO26 (Ultralytics, January 2026) is the newest of the YOLO real-time detectors. This is its layer list from yolo26.yaml (Conv, C3k2, SPPF and C2PSA blocks, an FPN-PAN neck and a detection head at three scales) at half the width of YOLO26n, trained here on 614,400 synthetic scenes of circles, triangles, squares and stars. Like the real model it has two heads: a one-to-many head that proposes several overlapping boxes per object and needs non-maximum suppression (NMS) to clean them up, and a one-to-one head trained to put exactly one box on each object, so its output is final as it comes.',
+      look: [
+        'Detect: drag a shape, resize it with the wheel, double-click to remove it; the boxes follow, computed by the network in your browser.',
+        'Compare heads: the one-to-many head proposes several boxes per object, and NMS has to delete the extras. The one-to-one head gives one box per object with no NMS at all; that is what makes YOLO26 end-to-end.',
+        'Grids: on pictures this small the fine 16 × 16 grid finds almost every shape; only shapes past about 30 pixels move to the 8 × 8 grid, and the 4 × 4 grid never wins.',
+        'Architecture: open the backbone, a block, a convolution, one number of its feature map, and keep going down to the transistors.',
+      ],
+      try: [
+        { text: 'Switch to the one-to-many head and show its raw boxes: every object is covered several times before NMS.', label: 'See the duplicates', action: 'nms' },
+        { text: 'Two squares overlapping (IoU 0.35, as much as any pair in training) with a strict NMS threshold of 0.2: NMS deletes one of the real squares. The one-to-one head has no threshold to get wrong and keeps both.', label: 'Overlapping shapes', action: 'overlap' },
+        { text: 'Tiny shapes, 7 to 10 pixels across: all found on the finest grid, which YOLO26’s small-target-aware assignment makes sure gets trained on them.', label: 'Small objects', action: 'small' },
+        { text: 'Sensor noise at σ = 0.15, three times the most seen in training: the detector finds only 3 of the 6 shapes and adds 3 false boxes.', label: 'Add noise', action: 'noise' },
+      ],
+    },
+    {
+      id: 'radar', group: 'Signal processing', lab: 'radar', name: 'Radar Pulse Classifier', tagline: 'Naming a radar waveform from raw I/Q samples.',
+      meta: '1-D CNN · 27k parameters · 6 classes · 256 I/Q samples',
+      about: 'A receiver samples the radio spectrum as I/Q: 256 complex samples, 12.8 µs at 20 million samples a second. Somewhere in that window there may be a radar pulse, buried in noise. A small 1-D convolutional network reads the raw samples and names the waveform: an unmodulated pulse, a linear-FM chirp, a Barker-13 phase code, a Frank polyphase code, a Costas frequency-hopping code, or nothing but noise. It was trained on about 3 million synthetic signals with random timing, carrier offset, phase, code parameters and signal-to-noise ratio (−12 to +20 dB per sample).',
+      look: [
+        'Signal: I and Q are two views of one rotating arrow. The Spectrogram shows each waveform’s fingerprint: a flat line for a plain pulse, a slope for a chirp, six steps for a Costas code.',
+        'Accuracy: 99% at +2 dB and above, 97% at 0 dB, 77% at −4 dB, and close to guessing below −10 dB. The chirp fades first; a plain pulse holds out longest, because spotting it only takes energy.',
+        'What the CNN sees: the class activation map lights up over the pulse and stays dark over the noise around it, although the network was never told where the pulse is.',
+        'Architecture: open a layer for its feature maps, then one neuron’s weighted sum over its window of samples, and keep going down to the transistors.',
+      ],
+      try: [
+        { text: 'Lower the SNR to −6 dB: the network still names the waveform about half the time.', label: 'Weak signal', action: 'lowSnr' },
+        { text: 'A chirp in the spectrogram: its frequency climbs or falls in a straight line across the pulse.', label: 'Show a chirp', action: 'chirp' },
+        { text: 'The two phase codes, Barker-13 and Frank, have almost the same spectrogram; the network tells them apart by their phase jumps.', label: 'Phase codes', action: 'codes' },
+        { text: 'Stream signals live: a new intercept every second at a random SNR, with a running score.', label: 'Start the stream', action: 'stream' },
+      ],
     });
 
-  const GROUPS = ['Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Failure modes'];
+  const GROUPS = ['Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Signal processing', 'Failure modes'];
 
   NA.presets = { PRESETS, GROUPS, byId: Object.fromEntries(PRESETS.map((p) => [p.id, p])) };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

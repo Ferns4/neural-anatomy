@@ -195,7 +195,7 @@
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: 'PINN architecture: click a part or zoom in to open it', build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
-    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact solution (dashed)'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--neg)' } }), 'plain network: data loss only'),
