@@ -1,6 +1,6 @@
 /* archview.js — zoomable architecture diagrams with semantic zoom. The view shows one level at a time,
    filling the screen: the whole model, then a block, then its attention layer, then one head. Zoom in on a
-   part (pinch, Ctrl + scroll, the + button) or click it and the view flies into it, the part opening into its
+   part (mouse wheel, pinch or the + button) or click it and the view flies into it, the part opening into its
    own screen with its inner workings and maths; zoom out (or the breadcrumbs) to come back. Each level is
    rebuilt from live data on every draw, so the numbers inside always belong to the current model and input.
 
@@ -130,7 +130,7 @@
       this.bar = el('div', { class: 'arch-bar' }, this.back, this.crumbs);
       stage.append(this.canvas, this.bar);
       this.zoom = new NA.ui.Zoom(this.canvas, {
-        host: stage, panOne: true, max: 3, noDouble: true,
+        host: stage, panOne: true, max: 3, noDouble: true, wheel: 'always', wheelGate: () => this.wheelOpen(),
         onChange: () => { this.dirty = true; NA.tooltip.hide(); if (!this.locked() && this.zoom.k > 2.3) this.zoomedIn(); },
         onUnderflow: () => { if (!this.locked()) this.exit(); },
       });
@@ -249,10 +249,11 @@
     }
     // zoomed far enough into the level: open the part nearest the middle of the view
     zoomedIn() {
-      const [W, H] = this.size(), cx = W / 2, cy = (H + 46) / 2;
+      // the part under the cursor or the fingers, or under the middle for the + button
+      const [W, H] = this.size(), a = this.zoom.anchor, cx = a ? a[0] : W / 2, cy = a ? a[1] : (H + 46) / 2;
       let f = this.pick(cx, cy);
       if (!f || !this.canEnter(f.node)) {
-        // nearest enterable part to the middle
+        // nearest enterable part to that point
         const node = this.node(), c = this.content(node, this.camRect(this.levelRect(), this.camNow()));
         let best = null, bd = Infinity;
         for (const ch of node.children || []) {
@@ -271,7 +272,7 @@
       const k1 = Math.min(R.w / cr.w, R.h / cr.h), c0 = this.camNow();
       this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, c0, c1: { k: k1 },
         w0: [(R.x + R.w / 2 - c0.tx) / c0.k, (R.y + R.h / 2 - c0.ty) / c0.k], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: () => { this.path = this.path.concat(child.id); } };
-      this.selected = null;
+      this.selected = null; this.wheelHold = true;
       this.dirty = true;
       NA.tooltip.hide();
     }
@@ -288,7 +289,7 @@
       this.path = parentPath;
       this.zoomSet(1, 0, 0);
       this.anim = { parent, child: cur, s: 1, t0: performance.now(), dir: -1, c0: { k: 1 }, c1: { k: k1 }, w0: [R.x + R.w / 2, R.y + R.h / 2], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: null };
-      this.selected = null;
+      this.selected = null; this.wheelHold = true;
       this.dirty = true;
     }
     stepAnim(now) {
@@ -296,14 +297,24 @@
       a.s = a.dir > 0 ? e : 1 - e;
       if (p >= 1) {
         this.anim = null;
-        this.lockUntil = now + 650; this.gestureLock = this.zoom.ptrs.size > 0;
+        // fingers still down must lift before a pinch can open another level; the wheel waits for a pause (wheelOpen)
+        this.lockUntil = now + 120; this.gestureLock = this.zoom.ptrs.size > 0;
         if (a.done) a.done();
         this.zoomSet(1, 0, 0);
         this.focusKey = null;
         this.notify();
       }
     }
-    zoomSet(k, tx, ty) { const keep = this.zoom.onChange; this.zoom.onChange = () => {}; this.zoom.set(k, tx, ty); this.zoom.onChange = keep; }
+    zoomSet(k, tx, ty) { const keep = this.zoom.onChange; this.zoom.onChange = () => {}; this.zoom.set(k, tx, ty); this.zoom.onChange = keep; this.zoom.rebase(); }
+    // one long scroll or trackpad pinch should open one level, not several: once a level changes, the wheel
+    // has to pause briefly before it zooms again
+    wheelOpen() {
+      const now = performance.now(), quiet = now - (this.lastWheel || 0) > 220;
+      this.lastWheel = now;
+      if (this.anim || (this.wheelHold && !quiet)) return false;
+      this.wheelHold = false;
+      return true;
+    }
     // tell the lab what is being looked at: the level, or a part clicked inside it
     notify() {
       if (!this.root) return;

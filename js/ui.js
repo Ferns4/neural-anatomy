@@ -114,9 +114,13 @@
   }
 
   // ------------------------------------------------------------------ zoom
-  /* Pinch, double-tap, ctrl+wheel (trackpad pinch) and button zoom for one canvas, with panning.
-     Drawing code calls apply(ctx, dpr) before drawing in unzoomed ("world") coordinates, and maps
-     pointer positions back with toWorld(). panOne: one finger or the mouse pans once zoomed in. */
+  /* Pinch (touch, or a trackpad: ctrl+wheel, or Safari's gesture events), wheel, double-tap and button zoom
+     for one canvas, with panning. Drawing code calls apply(ctx, dpr) before drawing in unzoomed ("world")
+     coordinates, and maps pointer positions back with toWorld(). panOne: one finger or the mouse pans once
+     zoomed in. wheel: 'ctrl' (the plain wheel scrolls the page; for canvases inside scrolling panels),
+     'fixed' (the plain wheel zooms while the page itself does not scroll) or 'always'. wheelGate(e) may
+     veto a wheel zoom, e.g. to stop one long scroll from running through several levels. */
+  const pageFixed = () => document.documentElement.scrollHeight <= window.innerHeight + 2;
   class Zoom {
     constructor(canvas, opts = {}) {
       this.c = canvas; this.k = 1; this.tx = 0; this.ty = 0; this.max = opts.max || 4;
@@ -124,15 +128,29 @@
       this.onUnderflow = opts.onUnderflow || null;
       this.panOne = !!opts.panOne;
       this.noDouble = !!opts.noDouble; // the architecture view uses clicks to fly instead
+      this.wheelMode = opts.wheel || 'ctrl';
+      this.wheelGate = opts.wheelGate || null;
       this.ptrs = new Map(); this.g = null; this.start = null; this.lastTap = null; this.suppressClick = false;
       canvas.addEventListener('pointerdown', (e) => this.down(e));
       canvas.addEventListener('pointermove', (e) => this.move(e));
       canvas.addEventListener('pointerup', (e) => this.up(e, false));
       canvas.addEventListener('pointercancel', (e) => this.up(e, true));
       canvas.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
+      // Safari reports a trackpad pinch as gesture events rather than ctrl+wheel; on a touch screen the
+      // pointer events above already handle the pinch, so the gesture events are ignored there
+      canvas.addEventListener('gesturestart', (e) => { if (this.ptrs.size) return; e.preventDefault(); this.gs = 1; });
+      canvas.addEventListener('gesturechange', (e) => {
+        if (this.ptrs.size || !this.gs) return;
+        e.preventDefault();
+        const p = this.local(e), f = e.scale / this.gs;
+        this.gs = e.scale;
+        if (!this.wheelGate || this.wheelGate(e)) this.zoomAt(p[0], p[1], f);
+      });
+      canvas.addEventListener('gestureend', () => { this.gs = 0; });
       if (!this.noDouble) canvas.addEventListener('dblclick', (e) => { const p = this.local(e); this.toggleAt(p[0], p[1]); });
       if (opts.host) this.buildChip(opts.host);
     }
+    get wheelZooms() { return this.wheelMode === 'always' || (this.wheelMode === 'fixed' && pageFixed()); }
     get pinching() { return !!(this.g && this.g.type === 'pinch') || this.ptrs.size > 1; }
     get busy() { return !!this.g || this.ptrs.size > 1; }
     local(e) { const r = this.c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
@@ -147,6 +165,7 @@
       this.sync(); this.onChange(this);
     }
     zoomAt(px, py, factor) {
+      this.anchor = [px, py]; // where the zoom is centred: the cursor, the fingers or the middle
       // zooming out while already at 1× is reported, so a view can step back out a level
       if (factor < 1 && this.k <= 1.0001 && this.onUnderflow) { this.onUnderflow(px, py); return; }
       const k = clamp(this.k * factor, 1, this.max), f = k / this.k;
@@ -154,6 +173,12 @@
     }
     toggleAt(px, py) { if (this.k > 1.2) this.set(1, 0, 0); else this.zoomAt(px, py, 2.5); }
     reset() { if (this.k !== 1) this.set(1, 0, 0); }
+    // after the view jumps (a new level opens mid-pinch), measure the rest of the pinch from here
+    rebase() {
+      if (!this.g || this.g.type !== 'pinch' || this.ptrs.size < 2) return;
+      const [a, b] = [...this.ptrs.values()];
+      Object.assign(this.g, { d0: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], k0: this.k, tx0: this.tx, ty0: this.ty, under: false });
+    }
     down(e) {
       this.ptrs.set(e.pointerId, this.local(e));
       if (this.ptrs.size === 1) { this.suppressClick = false; this.start = { p: this.local(e), tx: this.tx, ty: this.ty }; }
@@ -170,6 +195,7 @@
       if (this.g && this.g.type === 'pinch' && this.ptrs.size >= 2) {
         const [a, b] = [...this.ptrs.values()], g = this.g;
         const d = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        this.anchor = m;
         if (this.onUnderflow && g.k0 <= 1.0001 && (g.k0 * d) / g.d0 < 0.72 && !g.under) { g.under = true; this.onUnderflow(m[0], m[1]); return; }
         const k = clamp((g.k0 * d) / g.d0, 1, this.max), wx = (g.m0[0] - g.tx0) / g.k0, wy = (g.m0[1] - g.ty0) / g.k0;
         this.set(k, m[0] - wx * k, m[1] - wy * k);
@@ -194,14 +220,26 @@
       }
     }
     wheel(e) {
-      if (e.ctrlKey) { e.preventDefault(); const p = this.local(e); this.zoomAt(p[0], p[1], Math.exp(-e.deltaY * 0.01)); }
-      else if (this.k > 1) { e.preventDefault(); this.set(this.k, this.tx - e.deltaX, this.ty - e.deltaY); }
+      const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? this.size()[1] : 1, dx = e.deltaX * unit, dy = e.deltaY * unit;
+      if (e.ctrlKey || (this.wheelZooms && Math.abs(dy) >= Math.abs(dx))) {
+        // a trackpad pinch arrives as ctrl + small steps; a mouse-wheel notch (about 100, with or without ctrl)
+        // zooms about 1.6×
+        e.preventDefault();
+        if (this.wheelGate && !this.wheelGate(e)) return;
+        const p = this.local(e), rate = e.ctrlKey && Math.abs(dy) < 50 ? 0.01 : 0.0045;
+        this.zoomAt(p[0], p[1], Math.exp(-clamp(dy, -240, 240) * rate));
+      } else if (this.k > 1) { e.preventDefault(); this.set(this.k, this.tx - dx, this.ty - dy); }
     }
     buildChip(host) {
       const center = () => { const [w, h] = this.size(); return [w / 2, h / 2]; };
       const minus = el('button', { type: 'button', class: 'zc-btn', 'aria-label': 'Zoom out', title: 'Zoom out', onclick: () => { const c = center(); this.zoomAt(c[0], c[1], 1 / 1.6); } }, '−');
-      this.levelEl = el('button', { type: 'button', class: 'zc-level', 'aria-label': 'Reset zoom', title: 'Reset zoom (or double-tap)', onclick: () => this.reset() }, '1×');
-      const plus = el('button', { type: 'button', class: 'zc-btn', 'aria-label': 'Zoom in', title: 'Zoom in (pinch, double-tap or Ctrl + scroll)', onclick: () => { const c = center(); this.zoomAt(c[0], c[1], 1.6); } }, '+');
+      this.levelEl = el('button', { type: 'button', class: 'zc-level', 'aria-label': 'Reset zoom', title: this.noDouble ? 'Reset zoom' : 'Reset zoom (or double-tap)', onclick: () => this.reset() }, '1×');
+      const plus = el('button', { type: 'button', class: 'zc-btn', 'aria-label': 'Zoom in', onclick: () => { const c = center(); this.zoomAt(c[0], c[1], 1.6); } }, '+');
+      // the hint names the gestures that work right now (the plain wheel zooms only where it is not needed to scroll)
+      plus.addEventListener('pointerenter', () => {
+        const how = [this.wheelZooms ? 'scroll' : 'Ctrl + scroll', 'pinch', this.noDouble ? null : 'double-tap'].filter(Boolean);
+        plus.title = `Zoom in (${how.slice(0, -1).join(', ')} or ${how[how.length - 1]})`;
+      });
       this.chip = el('div', { class: 'zoom-chip', role: 'group', 'aria-label': 'Zoom' }, minus, this.levelEl, plus);
       host.appendChild(this.chip);
     }

@@ -340,7 +340,7 @@
     root.append(this.stage, this.archStage);
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) });
     root.append(this.foot);
-    this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, onChange: () => { this.dirty = true; NA.tooltip.hide(); } });
+    this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, wheel: 'fixed', onChange: () => { this.dirty = true; NA.tooltip.hide(); } });
     this.canvas.addEventListener('pointermove', (e) => this.hover(e));
     this.canvas.addEventListener('pointerleave', () => NA.tooltip.hide());
     this.canvas.addEventListener('click', (e) => this.click(e));

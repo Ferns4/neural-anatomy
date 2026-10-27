@@ -528,8 +528,7 @@ body[data-mode="lab"] .lab-hyper { display: flex; }
 .lab-hyper .field select { min-width: 84px; }
 /* architecture view: one level at a time, with a path back out */
 .arch-stage { background: var(--panel); }
-.arch-canvas { position: absolute; inset: 0; touch-action: pan-y; outline: none; }
-.arch-canvas.is-zoomed { touch-action: none; }
+.arch-canvas { position: absolute; inset: 0; touch-action: none; outline: none; } /* pinches always reach the diagram */
 .arch-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .arch-bar { position: absolute; left: 10px; right: 10px; top: 8px; z-index: 2; display: flex; align-items: center; gap: 8px; pointer-events: none; }
 .arch-bar > * { pointer-events: auto; }
@@ -768,6 +767,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .ip-head .seg button { padding: 6px 9px; font-size: 12px; }
 [data-layout="mobile"] .ip-body { max-height: 32vh; padding: 0 10px 10px; }
 [data-layout="mobile"] .lab-center .lab-stage { flex: 1 1 0; height: auto; min-height: 220px; }
+[data-layout="mobile"] .lab-stage canvas { touch-action: none; }
 [data-layout="mobile"] .ip-title { font-size: 13px; }
 [data-layout="mobile"] .code { font-size: 11px; }
 [data-layout="mobile"] .arch-crumb { padding: 5px 10px; }
@@ -1014,7 +1014,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
         <h3>Validation and test data</h3>
         <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run test, once you have finished tuning.</p>
         <h3>Zoom</h3>
-        <p>Pinch, double-tap or Ctrl + scroll on the network, the output map or the hidden space to zoom into that part; drag to pan. Labels stay readable and show full formulas once there is room.</p>
+        <p>Zoom into any part of the network with the mouse wheel, a pinch or a double-tap, and drag to pan. On the output map and the hidden space, and in a window narrow enough for the page to scroll, hold Ctrl while you scroll. Labels stay readable and show full formulas once there is room. In a lab’s Architecture view, the mouse wheel or a pinch opens the part under it, and zooming back out returns a level.</p>
         <div id="helpInstall" hidden>
           <h3>Install as an app</h3>
           <p>On an iPhone or iPad, open this site in Safari, tap Share, then Add to Home Screen. On Android, open the browser menu and tap Install app. On a computer, use the install button in the address bar. The app opens full-screen and keeps working offline.</p>

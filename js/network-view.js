@@ -20,7 +20,7 @@
     V.overlay = document.getElementById('netOverlay');
     V.legend = document.getElementById('netLegend');
     new ResizeObserver(() => V.resize()).observe(V.stage);
-    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); } });
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
