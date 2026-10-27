@@ -2,7 +2,7 @@
    Drives the network view through App.walk while the Backprop tab is open. */
 (function (NA) {
   'use strict';
-  const { fmt, fmtPct, el, clamp } = NA;
+  const { fmtSci: fmt, fmtPct, el, clamp } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const E = NA.engine;
 
@@ -236,7 +236,7 @@
       const all = [];
       for (let l = 0; l < L; l++) for (let j = 0; j < net.sizes[l + 1]; j++) for (let i = 0; i < net.sizes[l]; i++) all.push({ l, i, j, g: tr.delta[l + 1][j] * tr.a[l][i] });
       all.sort((a, b) => Math.abs(b.g) - Math.abs(a.g));
-      const rows = all.slice(0, 5).map((r) => { const w = net.W[r.l][r.j * net.sizes[r.l] + r.i]; return `${App.neuronName(r.l, r.i, true)}→${App.neuronName(r.l + 1, r.j, true)}: ${fmt(w, 3)} − ${WK.eta}×${fmt(r.g, 4)} = ${fmt(w - WK.eta * r.g, 3)}`; });
+      const rows = all.slice(0, 5).map((r) => { const w = net.W[r.l][r.j * net.sizes[r.l] + r.i]; return `${App.neuronName(r.l, r.i, true)} → ${App.neuronName(r.l + 1, r.j, true)}: ${fmt(w, 3)} − ${WK.eta}×${fmt(r.g, 4)} = ${fmt(w - WK.eta * r.g, 3)}`; });
       M('The five weights with the largest gradients:', ...rows);
       const etaSel = el('select', { id: 'wkEta', 'aria-label': 'Step size η' }, ...[0.01, 0.03, 0.1, 0.3, 1].map((v) => el('option', { value: v, selected: v === WK.eta }, 'η = ' + v)));
       etaSel.addEventListener('change', () => { WK.eta = +etaSel.value; WK.render(); });

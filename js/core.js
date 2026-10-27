@@ -45,18 +45,28 @@
 
   // ---------------------------------------------------------------- formatting
   const MINUS = '−';
+  // a number in scientific notation as people write it: mantissa × 10 with a superscript exponent
+  const SUPERS = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+  function sci(av) { const [m, e] = av.toExponential(1).split('e'), n = +e; return `${m}×10${n < 0 ? '⁻' : ''}${String(Math.abs(n)).split('').map((c) => SUPERS[c]).join('')}`; }
   function fmt(v, digits = 2) {
     if (v === null || v === undefined || Number.isNaN(v)) return '—';
     if (!isFinite(v)) return (v < 0 ? MINUS : '') + '∞';
     const av = Math.abs(v);
     let s;
-    if (av !== 0 && (av < 0.5 * Math.pow(10, -digits) || av >= 1e5)) s = av.toExponential(1).replace('e-', 'e' + MINUS).replace('e+', 'e');
+    if (av !== 0 && (av < 0.5 * Math.pow(10, -digits) || av >= 1e5)) s = sci(av); // 3.5×10⁻¹⁴, not 3.5e-14
     else s = av.toFixed(digits);
     const isZero = /^0(\.0+)?$/.test(s);
     return (v < 0 && !isZero ? MINUS : '') + s;
   }
+  // a number as code (Python or JS): a plain literal, ASCII minus and e for the exponent (fmt is for reading)
+  function fmtCode(v, digits = 2) {
+    if (v === null || v === undefined || Number.isNaN(v)) return 'float("nan")';
+    if (!isFinite(v)) return v < 0 ? 'float("-inf")' : 'float("inf")';
+    const av = Math.abs(v), s = av !== 0 && (av < 0.5 * Math.pow(10, -digits) || av >= 1e5) ? av.toExponential(1).replace('e+', 'e') : av.toFixed(digits);
+    return (v < 0 && !/^0(\.0+)?$/.test(s) ? '-' : '') + s;
+  }
   function fmtSigned(v, digits = 2) { const s = fmt(v, digits); return v > 0 && s !== fmt(0, digits) ? '+' + s : s; }
-  function fmtPct(v, digits = 0) { return isFinite(v) ? (v * 100).toFixed(digits) + '%' : '—'; }
+  function fmtPct(v, digits = 0) { return isFinite(v) ? (v * 100).toFixed(digits).replace('-', '\u2212') + '%' : '—'; }
   function fmtInt(n) { return Math.round(n).toLocaleString('en-US'); }
   function fmtCompact(n) {
     const a = Math.abs(n);
@@ -205,7 +215,7 @@
 
   Object.assign(NA, {
     RNG, clamp, lerp, smoothstep, range, maxAbs, quantile,
-    MINUS, fmt, fmtSigned, fmtPct, fmtInt, fmtCompact, sub,
+    MINUS, fmt, fmtCode, fmtSigned, fmtPct, fmtInt, fmtCompact, sub,
     Emitter, hexToRgb, parseColor, css, mixLab, mixRgb, buildLUT, theme,
     el, $, $$, clear, fitCanvas, prefersReducedMotion, store,
   });

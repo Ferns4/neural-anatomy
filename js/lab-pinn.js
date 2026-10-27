@@ -97,6 +97,14 @@
   PL.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); };
   PL.archText = function () { return `t → ${this.depth} × ${this.width} tanh → u(t), with u′ and u″ by exact differentiation`; };
   PL.frame = function (now) {
+    /* Three plots share the stage, so the explanation stays open at first only if all three still fit at a useful
+       size with it open: the fit at least 150 px tall and a phase portrait of PH_MIN or more. Measured on the
+       first frame, once the panels have their final sizes, and before anything is painted. */
+    if (this.checkInfo) {
+      this.checkInfo = false;
+      const lay = this.stage.offsetParent && this.layout(this.stage.clientWidth, this.stage.clientHeight);
+      if (lay && (!lay.ph || lay.main.h < 150)) this.info.toggle(false);
+    }
     this.runFrame();
     if (now - (this.lastRo || 0) > 120) {
       this.lastRo = now;
@@ -196,18 +204,28 @@
     this.arch = new NA.ArchView(this.archStage, { label: 'PINN architecture: click a part or zoom in to open it', build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
+    // the PINN's entry and the collocation points follow the loss terms in use (renderFoot)
+    this.footPinn = el('span');
+    this.footColloc = el('span', { class: 'lg-item' }, el('i', { class: 'key-tri' }), 'collocation point');
     root.append(this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact solution (dashed)'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--neg)' } }), 'plain network: data loss only'),
-      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN: data + physics'),
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), this.footPinn),
       el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled' }), 'measurement'),
-      el('span', { class: 'lg-item' }, el('i', { class: 'key-tri' }), 'collocation point')));
+      this.footColloc));
+    this.checkInfo = this.info.open; // see frame()
     const move = (e) => { const p = this.plotAt(e); if (p !== null) { this.probeT = p; this.dirty = true; this.leftDirty = true; this.inspDirty = true; this.archStale = true; } };
     this.canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) move(e); });
     this.canvas.addEventListener('pointerdown', move);
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
     this.resizeObs.observe(this.stage);
     this.setCenterView(this.centerView);
+  };
+  // The key under the plots names the PINN's loss terms as they are set now, and shows the collocation points only when they are drawn
+  PL.renderFoot = function () {
+    const w = this.weights(), parts = [w.data && 'data', w.phys && 'physics', w.ic && 'initial conditions'].filter(Boolean);
+    this.footPinn.textContent = `PINN: ${parts.length ? parts.join(' + ') : 'no loss terms'}`;
+    this.footColloc.hidden = !this.terms.phys;
   };
   PL.setCenterView = function (v) {
     this.centerView = v;
@@ -220,7 +238,7 @@
   };
   const pct = (v) => fmtPct(v, v < 0.1 ? 1 : 0);
   const PLOTS_INFO = (L) => {
-    const P = L.prob, m = L.m, num = (v, d) => fmt(v, d).replace('−', '-');
+    const P = L.prob, m = L.m, num = (v, d) => NA.fmtCode(v, d);
     return {
       kicker: 'Plots view', title: 'The fit, the physics and the phase portrait',
       about: [
@@ -325,19 +343,51 @@ plt.show()`,
     this.cv = out;
     return out;
   };
+  /* Where the three plots go, for the stage's size. The fit is the main picture: full width on top, never
+     shorter than MAIN_MIN. The residual goes under it. The phase portrait is a square that is unreadable under
+     about PH_MIN, so it takes the first arrangement that leaves it that much: beside the residual, else in a
+     column beside both plots (short, wide stages), else under the residual (tall, narrow ones). When none
+     does, it is left out and a note says so, rather than drawn as a postage stamp. */
+  const MAIN_MIN = 96, RES_MIN = 44, PH_MIN = 120, AX = 46, PAD = 12, TOP = 24, GAP = 40, BOT = 12, NOTE_H = 18;
+  PL.layout = function (W, Hh) {
+    const plotW = W - AX - PAD, avail = Hh - TOP - GAP - BOT;
+    // beside the residual: the main plot keeps a little over half the height
+    {
+      let mainH = Math.max(MAIN_MIN, avail * 0.55), belowH = avail - mainH;
+      if (belowH < PH_MIN) { belowH = PH_MIN; mainH = avail - PH_MIN; }
+      const s = Math.min(belowH, plotW * 0.45), resW = plotW - s - 40;
+      if (mainH >= Math.max(MAIN_MIN, avail * 0.42) && s >= PH_MIN && resW >= 130) {
+        const below = TOP + mainH + GAP;
+        return { kind: 'below', main: { x: AX, y: TOP, w: plotW, h: mainH }, res: { x: AX, y: below, w: resW, h: belowH }, ph: { x: W - PAD - s, y: below, w: s, h: s } };
+      }
+    }
+    // a column of its own on the right, as tall as both plots, when the fit can stay at least 300 px wide
+    {
+      const s = Math.min(Hh - TOP - BOT, plotW * 0.42), mainW = plotW - s - 36, mainH = Math.max(MAIN_MIN, avail * 0.6), resH = avail - mainH;
+      if (s >= PH_MIN && mainW >= 300 && resH >= RES_MIN) return { kind: 'side', main: { x: AX, y: TOP, w: mainW, h: mainH }, res: { x: AX, y: TOP + mainH + GAP, w: mainW, h: resH }, ph: { x: W - PAD - s, y: TOP, w: s, h: s } };
+    }
+    // one under the other
+    {
+      const room = avail - 34, s0 = Math.min(plotW - 40, room * 0.34), mainH = Math.max(MAIN_MIN, (room - s0) * 0.7), resH = room - s0 - mainH;
+      if (s0 >= PH_MIN && resH >= RES_MIN) {
+        const resY = TOP + mainH + GAP, phY = resY + resH + 34, s = Math.min(plotW - 40, Hh - BOT - phY);
+        return { kind: 'stack', main: { x: AX, y: TOP, w: plotW, h: mainH }, res: { x: AX, y: resY, w: plotW, h: resH }, ph: { x: AX + (plotW - s) / 2, y: phY, w: s, h: s } };
+      }
+    }
+    // no room for a readable phase portrait: the fit and the residual share the height, with a note under them
+    const room = avail - NOTE_H, mainH = Math.max(Math.min(MAIN_MIN, room - RES_MIN), room * 0.6);
+    return { kind: 'nophase', main: { x: AX, y: TOP, w: plotW, h: mainH }, res: { x: AX, y: TOP + mainH + GAP, w: plotW, h: Math.max(24, room - mainH) }, ph: null };
+  };
   PL.draw = function () {
     const W = Math.max(240, this.stage.clientWidth), Hh = Math.max(220, this.stage.clientHeight), ctx = NA.fitCanvas(this.canvas, W, Hh);
-    const P = this.prob, cv = this.curves(), show = this.show, wide = W >= 560 && Hh >= 420, pad = 12;
+    const P = this.prob, cv = this.curves(), show = this.show;
     ctx.clearRect(0, 0, W, Hh);
-    // layout: main plot on top; residual and phase portrait below (side by side when there is room)
-    const main = { x: 46, y: 24, w: W - 46 - pad, h: wide ? Hh * 0.52 : Hh * 0.42 };
-    const below = main.y + main.h + 40;
-    let res, ph;
-    if (wide) { const pw = Math.min(Hh - below - 30, W * 0.38); res = { x: 46, y: below, w: W - 46 - pad - pw - 40, h: Hh - below - 30 }; ph = { x: W - pad - pw, y: below, w: pw, h: pw }; }
-    else { const rh = (Hh - below - 50) * 0.42; res = { x: 46, y: below, w: W - 46 - pad, h: rh }; const s = Math.min(W - 2 * pad - 40, Hh - (below + rh + 34) - 22); ph = { x: (W - s) / 2 + 10, y: below + rh + 34, w: s, h: s }; }
-    this.lay = { main, res, ph };
+    const lay = this.layout(W, Hh), { main, res, ph } = lay;
+    this.lay = lay;
+    this.renderFoot();
     const font = (wgt, px) => `${wgt} ${px}px ${getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'}`;
-    const title = (r, text) => { ctx.font = font(600, 10.5); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(text.toUpperCase(), r.x, r.y - 8); };
+    // titles hold maths (u(t), ω): upper-casing would turn them into different symbols, so they keep their case
+    const title = (r, text) => { ctx.font = font(600, 11); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(text, r.x, r.y - 8); };
     const frame = (r) => { ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); };
     // --- main plot
     const yMax = 1.25, X = (t) => main.x + t * main.w, Y = (u) => main.y + main.h / 2 - (u / yMax) * (main.h / 2);
@@ -345,8 +395,10 @@ plt.show()`,
     ctx.fillStyle = theme.c('ink', theme.dark ? 0.06 : 0.04);
     ctx.fillRect(X(0), main.y, X(P.tMax) - X(0), main.h);
     ctx.font = font(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center';
-    ctx.fillText('measured', X(P.tMax / 2), main.y + 12);
-    ctx.fillText('no data: prediction only', X((P.tMax + 1) / 2), main.y + 12);
+    // each region's label, only where it fits inside its region (measurements can end very early or very late)
+    const band = (labels, a, b) => { const text = labels.find((s) => ctx.measureText(s).width + 8 <= X(b) - X(a)); if (text) ctx.fillText(text, X((a + b) / 2), main.y + 12); };
+    band(['measured'], 0, P.tMax);
+    band(['no data: prediction only', 'no data'], P.tMax, 1);
     frame(main);
     ctx.strokeStyle = theme.c('line-2'); ctx.beginPath(); ctx.moveTo(main.x, Y(0)); ctx.lineTo(main.x + main.w, Y(0)); ctx.stroke();
     ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
@@ -374,11 +426,16 @@ plt.show()`,
     ctx.strokeStyle = theme.c('ink', 0.35); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(X(pt), main.y); ctx.lineTo(X(pt), main.y + main.h); ctx.stroke(); ctx.setLineDash([]);
     for (const [key, col] of [['plain', COL.plain()], ['pinn', COL.pinn()]]) if (show[key]) { ctx.beginPath(); ctx.arc(X(pt), clampY(cv[key].u[pi]), 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill(); }
     // --- residual (log of |r|)
-    title(res, '|ODE residual| / ω²  (log scale)');
+    // its title stops short of the phase portrait's when the two sit side by side
+    ctx.font = font(600, 11);
+    const resRoom = lay.kind === 'below' ? ph.x - res.x - 12 : W - res.x - 4;
+    title(res, ['|ODE residual| / ω²  (log scale)', '|residual| / ω²  (log scale)', '|residual| / ω²'].find((s) => ctx.measureText(s).width <= resRoom) || '|residual|');
     frame(res);
     const lo = -4, hi = 1.5, RY = (r) => res.y + res.h - ((clamp(Math.log10(Math.abs(r) + 1e-6), lo, hi) - lo) / (hi - lo)) * res.h, RX = (i) => res.x + (i / cv.n) * res.w;
     ctx.fillStyle = theme.c('muted'); ctx.font = font(500, 10); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    for (const e of [-4, -2, 0]) { ctx.fillText('1e' + e, res.x - 6, RY(Math.pow(10, e))); ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(res.x, RY(Math.pow(10, e))); ctx.lineTo(res.x + res.w, RY(Math.pow(10, e))); ctx.stroke(); }
+    // grid lines every 2 decades, or every 4 when the plot is too short for their labels to stay 14 px apart
+    const decade = res.h / (hi - lo), ticks = decade * 2 >= 14 ? [-4, -2, 0] : decade * 4 >= 14 ? [-4, 0] : [0];
+    for (const e of ticks) { ctx.fillText('1e' + e, res.x - 6, RY(Math.pow(10, e))); ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(res.x, RY(Math.pow(10, e))); ctx.lineTo(res.x + res.w, RY(Math.pow(10, e))); ctx.stroke(); }
     ctx.fillStyle = theme.c('ink', theme.dark ? 0.06 : 0.04); ctx.fillRect(res.x, res.y, P.tMax * res.w, res.h);
     ctx.save(); ctx.beginPath(); ctx.rect(res.x, res.y, res.w, res.h); ctx.clip();
     const rline = (arr, col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.8; ctx.beginPath(); for (let i = 0; i <= cv.n; i++) { const x = RX(i), y = RY(arr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke(); };
@@ -386,7 +443,14 @@ plt.show()`,
     if (show.pinn) rline(cv.pinn.r, COL.pinn());
     ctx.restore();
     // --- phase portrait: u against u′/ω
-    title(ph, ph.w < 250 ? 'Phase: u vs u′/ω' : 'Phase portrait: u against u′/ω');
+    if (!ph) {
+      ctx.font = font(500, 10.5); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      const notes = this.info && this.info.open ? ['The phase portrait needs more room: hide the explanation to see it.', 'Phase portrait: hide the explanation to see it.'] : ['The phase portrait needs a taller window.', 'Phase portrait: no room here.'];
+      ctx.fillText(notes.find((s) => ctx.measureText(s).width <= W - 2 * PAD) || notes[1], PAD, Hh - BOT + 4);
+      return;
+    }
+    ctx.font = font(600, 11);
+    title(ph, ['Phase portrait: u against u′/ω', 'Phase: u against u′/ω', 'Phase: u vs u′/ω'].find((s) => ctx.measureText(s).width <= W - ph.x - 4) || 'Phase');
     frame(ph);
     const s = 1.25, PX = (u) => ph.x + ph.w / 2 + (u / s) * (ph.w / 2), PY = (v) => ph.y + ph.h / 2 - (v / s) * (ph.h / 2);
     ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(ph.x, PY(0)); ctx.lineTo(ph.x + ph.w, PY(0)); ctx.moveTo(PX(0), ph.y); ctx.lineTo(PX(0), ph.y + ph.h); ctx.stroke();
@@ -413,16 +477,19 @@ plt.show()`,
       const lg = (items) => el('div', { class: 'mini-legend' }, ...items.map(([n, col]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: col } }), n)));
       P.tiles = el('div', { class: 'tiles' });
       body.append(P.tiles);
-      P.terms = mk('PINN loss terms', { height: 150, logY: true, format: (v) => fmt(v, 5) }, lg([['data', 'var(--ink-2)'], ['physics', 'var(--pos)'], ['initial conditions', 'var(--s4)']]), 'The data term wants the curve through the measurements; the physics term wants u″ + 2ζωu′ + ω²u = 0 at every collocation point. Early on they disagree; the solution that satisfies both is the true motion.');
-      P.err = mk('Error against the exact solution', { height: 140, logY: true, format: (v) => fmtPct(v, 1) }, lg([['plain network', 'var(--neg)'], ['PINN', 'var(--pos)']]), 'Relative L2 error over the whole window, including where there is no data.');
+      P.termsKey = el('div', { class: 'mini-legend' }); // filled in updateTab with the terms that are drawn
+      P.terms = mk('PINN loss terms', { height: 150, logY: true, format: (v) => fmt(v, 5) }, P.termsKey, 'The data term wants the curve through the measurements; the physics term wants u″ + 2ζωu′ + ω²u = 0 at every collocation point. Early on they disagree; the solution that satisfies both is the true motion.');
+      // in percent, like the readouts and the Overview; on a log scale, so 2% and 5% stay apart under a 300% start
+      P.err = mk('Error against the exact solution', { height: 140, logY: true, format: (v) => fmtPct(v, 1), yFormat: (v) => fmtPct(v, v < 0.01 ? 1 : 0) }, lg([['plain network', 'var(--neg)'], ['PINN', 'var(--pos)']]), 'Relative L2 error over the whole window, including where there is no data.');
     } else if (id === 'deriv') {
       P.table = el('div', { class: 'kv-grid' });
       P.chain = el('div', { class: 'fx' });
       P.canvas = el('canvas');
       body.append(UI.section('The residual at the probe', P.table),
         UI.section('How the network differentiates itself', UI.note('Every layer carries three numbers per neuron: its value and its first and second derivative with respect to t. They are exact (no finite differences), and backpropagation runs through all three streams.'), P.chain),
-        UI.section('u′ and u″ across the window', el('div', { class: 'chart-box' }, P.canvas), el('div', { class: 'mini-legend' },
-          el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN u′/ω'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s7)' } }), 'PINN u″/ω²'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact (dashed)'))));
+        // section titles are set in capitals, which would turn u′ and u″ into U′ and U″: the title says it in words
+        UI.section('Both derivatives across the window', el('div', { class: 'chart-box' }, P.canvas), el('div', { class: 'mini-legend' },
+          el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'PINN u′/ω'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s7)' } }), 'PINN u″/ω²'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--ink-2)' } }), 'exact u′/ω (dashed)'))));
     } else if (id === 'net') {
       P.arch = el('div', { class: 'kv-grid' });
       P.canvas = el('canvas');
@@ -446,7 +513,10 @@ plt.show()`,
       const last = this.last || this.history[this.history.length - 1] || {};
       clear(P.tiles).append(UI.tile('Step', fmtInt(this.step), this.pretrained ? 'trained offline, same code' : null), UI.tile('Data loss', fmt(last.data, 5)), UI.tile('Physics loss', fmt(last.phys, 5), `weight λ = ${fmt(this.lambda, 2)}`), UI.tile('IC loss', this.terms.ic ? fmt(last.ic, 5) : 'off'));
       const s = (key, name, color) => ({ name, color, points: this.history.filter((q) => q[key] > 0).map((q) => [q.step, q[key]]) });
-      P.terms.frame(); P.terms.set({ series: [s('data', 'data', theme.c('ink-2')), s('phys', 'physics', theme.c('pos')), s('ic', 'initial conditions', theme.c('s4'))].filter((x) => x.points.length) });
+      // a term that is switched off records nothing, so it is neither drawn nor listed in the key
+      const terms = [['data', 'data', 'ink-2'], ['phys', 'physics', 'pos'], ['ic', 'initial conditions', 's4']].map(([key, name, tok]) => Object.assign(s(key, name, theme.c(tok)), { tok })).filter((x) => x.points.length);
+      clear(P.termsKey).append(...terms.map((x) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: `var(--${x.tok})` } }), x.name)));
+      P.terms.frame(); P.terms.set({ series: terms });
       P.err.frame(); P.err.set({ series: [s('plainErr', 'plain network', theme.c('neg')), s('pinnErr', 'PINN', theme.c('pos'))] });
     } else if (id === 'deriv') this.renderDeriv(P);
     else if (id === 'net') this.renderNet(P);

@@ -16,14 +16,14 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Neural Anatomy">
 <meta property="og:title" content="Neural Anatomy">
-<meta property="og:description" content="An interactive lab for looking inside small neural networks: weights, activations, gradients, hidden representations and a step-by-step view of backpropagation.">
+<meta property="og:description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model and YOLO26: watch them learn, zoom down to the transistors, and build your own.">
 <meta property="og:url" content="https://ferns4.github.io/neural-anatomy/">
 <meta property="og:image" content="https://ferns4.github.io/neural-anatomy/og-image.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <script>try{var t=JSON.parse(localStorage.getItem("na.theme"));if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Neural Anatomy</title>
-<meta name="description" content="An interactive lab for looking inside small neural networks: weights, activations, gradients, hidden representations and a step-by-step view of backpropagation.">
+<meta name="description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model and YOLO26: watch them learn, zoom down to the transistors, and build your own.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap">
@@ -181,7 +181,9 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .net-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .lh { position: absolute; top: 8px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 1px; pointer-events: auto; text-align: center; }
 .lh-title { font: 600 12px var(--font-ui); white-space: nowrap; }
-.net-stage canvas.is-zoomed ~ .net-overlay .lh { padding: 3px 7px 5px; border-radius: 9px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 0 0 1px var(--line); }
+/* zoomed in, the floating layer headers shrink to title pills; their controls come back at 1× */
+.net-stage canvas.is-zoomed ~ .net-overlay .lh { padding: 2px 8px 3px; border-radius: 9px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 0 0 1px var(--line); }
+.net-stage canvas.is-zoomed ~ .net-overlay .lh > :not(.lh-title), .net-stage canvas.is-zoomed ~ .net-overlay .add-layer { display: none; }
 .lh-meta { font: 500 10.5px var(--font-mono); color: var(--muted); white-space: nowrap; }
 .lh-row { display: flex; align-items: center; gap: 4px; }
 .lh-row .mini-btn { width: 18px; height: 18px; font-size: 13px; border-radius: 5px; }
@@ -372,7 +374,10 @@ input[type="range"] { width: 100%; accent-color: var(--ink); margin: 0; }
 .tl-status { font: 500 12px var(--font-mono); white-space: nowrap; }
 .tl-wrap { flex: 1; min-width: 0; }
 .tl-wrap canvas { cursor: ew-resize; border-radius: 6px; touch-action: none; }
-.tl-actions { display: flex; gap: 6px; }
+.tl-actions { display: flex; gap: 6px; position: relative; margin-left: auto; }
+/* the strip never changes width under the pointer: the two buttons keep their room while hidden, and a hint fills it */
+.tl-actions .btn[hidden] { display: inline-flex !important; visibility: hidden; }
+.tl-hint { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--muted); white-space: nowrap; pointer-events: none; }
 
 /* ---------------------------------------------------------------- overlays */
 .tooltip { position: fixed; z-index: 60; pointer-events: none; min-width: 150px; max-width: 290px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: var(--shadow); font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
@@ -422,6 +427,10 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
 .lh.is-tiny .lh-chip-text { display: none; }
 .lh.is-tiny .lh-chip-count { display: inline; }
 .lh.is-tiny .lh-chip-loss .lh-chip-text { display: inline; }
+/* tiny headers keep the curve and the neuron count, packed tightly, without the caret; micro ones only the curve */
+.lh.is-tiny .lh-chip { gap: 2px; padding: 0 4px; }
+.lh.is-tiny .lh-chip .act-glyph { width: 15px; height: 10px; }
+.lh.is-tiny .lh-chip-caret, .lh.is-micro .lh-chip-count { display: none; }
 .add-layer { position: absolute; top: 22px; transform: translateX(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 1px dashed var(--line-2); border-radius: 50%; background: var(--panel); color: var(--muted); font: 500 15px/1 var(--font-ui); pointer-events: auto; }
 .add-layer:hover:not(:disabled) { color: var(--ink); border-style: solid; border-color: var(--ink-2); }
 .depth-ctl .mini-btn { border-radius: 50%; }
@@ -556,7 +565,8 @@ body[data-mode="lab"] .lab-hyper { display: flex; }
 .info-panel { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line); background: var(--panel); }
 .ip-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
 .ip-titles { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.ip-kicker { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the kicker names parts whose titles hold maths (x₀, ε_θ, t, u) and lower-case tokens: it keeps their case */
+.ip-kicker { font: 600 10.5px var(--font-ui); letter-spacing: 0.02em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ip-title { font: 600 13.5px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ip-head .seg { flex: none; }
 .ip-toggle { width: 28px; height: 28px; flex: none; }
@@ -608,12 +618,34 @@ body[data-lab="yolo26"] #btnFF, body[data-lab="radar"] #btnFF { display: none; }
 .yl-dash { background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 6px) !important; }
 .yl-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; }
 .yl-tr { display: grid; grid-template-columns: minmax(0, 1.7fr) repeat(4, minmax(0, 1fr)); gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-.yl-tr > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yl-tr > span { min-width: 0; overflow: visible; white-space: normal; text-overflow: clip; overflow-wrap: break-word; }
 .yl-tr > span:not(:first-child) { text-align: right; }
-.yl-layers .yl-tr { grid-template-columns: 24px minmax(0, 1.9fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 0.8fr); }
+.yl-layers .yl-tr { grid-template-columns: 18px minmax(0, 1fr) 44px 74px 52px; }
 .yl-layers .yl-tr > span:nth-child(2), .yl-layers .yl-tr > span:nth-child(3) { text-align: left; }
-.yl-th { border-top: 0; background: var(--panel-2); font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.yl-th { border-top: 0; background: var(--panel-2); font-weight: 600; color: var(--muted); font-size: 11px; align-items: end; line-height: 1.3; }
+/* the tables measure their own width: the inspector is 330–392 px beside the picture but full width under 1260 px */
+.yl-table { container-type: inline-size; }
+/* Two heads, in a narrow panel: each row's name gets a line of its own and the four numbers share the next */
+@container (max-width: 459px) {
+  .yl-heads .yl-tr { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 3px; }
+  .yl-heads .yl-lab { grid-column: 1 / -1; color: var(--ink); }
+  .yl-heads .yl-th .yl-lab { display: none; }
+}
+/* the layer list: an output such as 16 × 32 × 32 stays on one line; the module's name wraps instead */
+.yl-layers .yl-tr > span:nth-child(4) { white-space: nowrap; }
+/* key–value rows whose values are sentences (a training recipe): body text beside its name, not bold monospace */
+.kv-prose .kv { grid-template-columns: 96px minmax(0, 1fr); }
+.kv-prose .kv-v { font: 400 12.5px/1.5 var(--font-ui); color: var(--ink-2); text-align: left; }
+/* YOLO's weights could not be loaded: the message and Retry in the place of the picture, and as notes elsewhere */
+.yl-error-stage { display: flex; align-items: center; justify-content: center; padding: 24px; }
+.yl-error { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 46ch; text-align: center; }
+.yl-error p { margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+.yl-error-note { display: flex; flex-direction: column; gap: 8px; }
+/* radar's Test now keeps one width while it counts */
+.rd-test { min-width: 11.5em; font-variant-numeric: tabular-nums; }
 [data-layout="mobile"] .yl-controls { padding: 6px 10px; gap: 4px 14px; }
+/* on a phone the two threshold sliders share one row, so the picture is tall enough for its box labels */
+[data-layout="mobile"] .yl-controls .slider { flex-basis: 130px; }
 /* transformer lab */
 .lm-prompt-row { display: flex; gap: 8px; align-items: center; }
 .lm-prompt-row select { height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); padding: 0 6px; font-size: 12.5px; max-width: 46%; }
@@ -668,11 +700,12 @@ body[data-lab="yolo26"] #btnFF, body[data-lab="radar"] #btnFF { display: none; }
 .lens-row.is-sel .lens-stage { color: var(--ink); font-weight: 700; }
 .lens-row.is-nocontext .lens-tops { opacity: 0.55; }
 .lens-stage { font-size: 11.5px; color: var(--ink-2); }
-.lens-tops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+/* two guesses per line: four left about 60 px each in the desktop inspector ("car… 1…") */
+.lens-tops { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
 .lens-tok { position: relative; display: flex; justify-content: space-between; gap: 4px; padding: 2px 5px; border-radius: 4px; background: var(--panel-2); overflow: hidden; font-size: 11px; }
 .lens-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--tok); opacity: 0.22; }
 .lens-w, .lens-p { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lens-w { font: 600 11px var(--font-mono); color: var(--tok); }
+.lens-w { font: 600 11px var(--font-mono); color: var(--ink); }
 .lens-p { color: var(--muted); font-size: 10.5px; }
 .attr-list { display: flex; flex-direction: column; gap: 3px; }
 .attr-row { display: grid; grid-template-columns: 132px minmax(0, 1fr) 52px; gap: 8px; align-items: center; font-size: 12px; }
@@ -893,8 +926,13 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .net-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding: 6px 10px; }
 [data-layout="mobile"] .lg-signs { margin-left: 0; }
 [data-layout="mobile"] .lh-row .mini-btn { width: 24px; height: 24px; font-size: 15px; }
-[data-layout="mobile"] .timeline { flex: none; flex-wrap: nowrap; padding: 6px 8px; gap: 8px; }
-[data-layout="mobile"] .tl-head { display: none; }
+/* phone: a label row above the strip; after a drag the two buttons float just above it as a small action bar */
+[data-layout="mobile"] .timeline { position: relative; flex: none; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 3px; padding: 5px 8px 6px; }
+[data-layout="mobile"] .tl-head { display: flex; flex-direction: row; align-items: baseline; gap: 8px; min-width: 0; }
+[data-layout="mobile"] .tl-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--ink-2); }
+[data-layout="mobile"] .tl-actions { position: absolute; z-index: 7; left: 0; right: 0; bottom: calc(100% + 8px); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 8px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); }
+[data-layout="mobile"] .timeline:not(.has-actions) .tl-actions { display: none; }
+[data-layout="mobile"] .tl-actions .btn { height: 40px; font-size: 13.5px; }
 [data-layout="mobile"] .tl-wrap { flex: 1 1 auto; flex-basis: auto; order: 0; }
 [data-layout="mobile"] button { touch-action: manipulation; }
 [data-layout="mobile"] .mnav { display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); background: var(--panel); border-top: 1px solid var(--line); }
@@ -971,6 +1009,113 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .lab-foot > * { flex: none; }
 [data-layout="mobile"] .df-scrub { padding: 6px 10px; gap: 8px; }
 [data-layout="mobile"] .df-t { min-width: 0; font-size: 11px; }
+/* ---------------------------------------------------------------- polish: shared fixes from the full audit */
+/* panels open without a double rule: the first section has no divider above it */
+.panel-scroll > .insp-sec:first-child, .insp-body > .insp-sec:first-child, .insp-body > div > .insp-sec:first-child { border-top: 0; margin-top: 0; padding-top: 10px; }
+/* maths keeps its case: x, ŷ, IoU, mAP, W·A */
+.pill { text-transform: none; letter-spacing: 0.02em; font-size: 10.5px; }
+.ro-k, .ct-head { text-transform: none; letter-spacing: 0.02em; }
+/* the state pill keeps one width, so the readouts beside it do not shift */
+.state-pill { min-width: 84px; text-align: center; }
+/* four tiles make two rows of two rather than three and an orphan */
+.tiles:has(> :nth-child(4):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* the explanation under a picture keeps one height while open, so the picture does not jump with each text */
+.info-panel.is-open .ip-body { height: clamp(96px, 22vh, 210px); max-height: none; }
+/* breadcrumbs that overflow fade at the left instead of being cut through a word */
+.arch-crumbs.is-cut { mask-image: linear-gradient(to right, transparent 0, #000 32px); -webkit-mask-image: linear-gradient(to right, transparent 0, #000 32px); }
+/* toasts size to their text (left: 50% alone would cap them at half the screen) */
+.toast { width: max-content; }
+.sheet-head .icon-btn { flex: none; }
+/* the backprop steps: one even row */
+.wk-progress { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(34px, 1fr); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.wk-step { min-width: 0; }
+.wk-step-lab { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* the top bar's subtitle speaks to the part of the site on screen */
+.sub-lab { display: none; }
+body[data-mode="lab"] .sub-lab { display: inline; }
+body[data-mode="lab"] .sub-mlp { display: none; }
+/* help: the sections flow in two even columns */
+.help-cols { display: block; column-count: 2; column-gap: 32px; }
+.help-cols > div { display: contents; }
+.help-cols h3 { break-after: avoid; }
+.help-cols p, .help-cols .keys { break-inside: avoid; }
+.help-cols h3:first-child { margin-top: 0; }
+.t-touch { display: none; }
+@media (pointer: coarse) { .t-touch { display: inline; } .t-mouse { display: none; } }
+@media (max-width: 760px) { .help-cols { column-count: 1; } }
+[data-layout="mobile"] .help-keys { display: none; }
+/* short screens (a 1280 × 720 laptop): the panels keep a usable height and the page scrolls a little */
+@media (min-width: 1261px) and (max-height: 820px) {
+  .app { height: auto; min-height: 100%; grid-template-rows: auto auto minmax(600px, calc(100vh - 150px)) auto; }
+}
+@media (min-width: 761px) and (max-height: 820px) {
+  .net-legend { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding-right: 28px; mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+  .net-legend::-webkit-scrollbar { display: none; }
+  .lensbar { gap: 6px 12px; }
+}
+/* phones: toolbars and legends wrap instead of hiding their controls off the edge */
+[data-layout="mobile"] .lab-toolbar { flex-wrap: wrap; overflow: visible; gap: 8px; }
+[data-layout="mobile"] .lab-toolbar > * { flex: 0 1 auto; max-width: 100%; }
+[data-layout="mobile"] .lab-toolbar .seg { flex-wrap: wrap; }
+[data-layout="mobile"] .lab-foot { flex-wrap: wrap; white-space: normal; overflow: visible; gap: 4px 12px; }
+[data-layout="mobile"] .lab-foot > * { flex: 0 1 auto; }
+[data-layout="mobile"] .net-legend { padding-right: 30px; mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+/* the lens strip still scrolls (it is long), with a fade that says there is more */
+[data-layout="mobile"] .lensbar { padding-right: 36px; scroll-snap-type: x proximity; mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); }
+[data-layout="mobile"] .lens-group { scroll-snap-align: start; }
+/* phones: tabs share the bar evenly, and a long name wraps instead of being cut */
+[data-layout="mobile"] .insp-tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+[data-layout="mobile"] .tab { white-space: normal; line-height: 1.2; overflow: visible; text-overflow: clip; padding: 10px 3px 9px; min-height: 46px; }
+/* phones: the explanation's title gets its own line, the switch and the toggle the next */
+[data-layout="mobile"] .ip-head { flex-wrap: wrap; row-gap: 6px; }
+[data-layout="mobile"] .ip-titles { flex: 1 1 calc(100% - 52px); order: 0; }
+[data-layout="mobile"] .ip-toggle { order: 1; width: 40px; height: 40px; }
+[data-layout="mobile"] .ip-head .seg { order: 2; }
+[data-layout="mobile"] .ip-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+[data-layout="mobile"] .info-panel.is-open .ip-body { height: clamp(110px, 26vh, 240px); }
+/* phones: controls a finger can hit, and labels that can be read */
+[data-layout="mobile"] .btn { height: 40px; padding: 0 14px; font-size: 13.5px; }
+[data-layout="mobile"] .btn-quiet { height: 38px; padding: 0 12px; font-size: 13px; }
+[data-layout="mobile"] .btn-try { height: 40px; font-size: 13px; }
+[data-layout="mobile"] .seg button { min-height: 36px; }
+[data-layout="mobile"] .chip { min-height: 34px; }
+[data-layout="mobile"] .arch-crumb { min-height: 34px; }
+[data-layout="mobile"] .code-copy { height: 32px; }
+[data-layout="mobile"] .field select, [data-layout="mobile"] .field input:not([type="range"]) { height: 40px; }
+[data-layout="mobile"] .sheet-bar .btn { height: 40px; }
+[data-layout="mobile"] .ro-label, [data-layout="mobile"] .field > span, [data-layout="mobile"] .lens-label, [data-layout="mobile"] .ip-kicker { font-size: 11px; }
+[data-layout="mobile"] .lab-hyper .field select { min-width: 0; width: 100%; }
+/* the model builder */
+/* the builder's architecture view: the zoomable model and its explanation, in place of the bench and results */
+.bd-arch { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+/* pinching zooms the transformer's tokens picture on a phone; the buttons would cover the last rows of a long prompt */
+body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .zoom-chip { display: none; }
+.bd-res-error { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--critical) 45%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--critical) 7%, var(--panel)); color: var(--ink); font-size: 12.5px; line-height: 1.45; }
+.bd-run-prob { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bd-block-actions { flex-wrap: wrap; }
+.bd-erase::before { background: none; border: 1.5px solid var(--ink-2); box-sizing: border-box; }
+.bd-card-sum { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.bd-empty { margin-bottom: 10px; }
+.bd-card-ico { touch-action: none; cursor: grab; } /* the icon is a drag handle, also on touch screens */
+.bd-part.is-unsuited { opacity: 0.62; filter: grayscale(0.55); }
+@media (hover: none) { .bd-part:hover { border-color: var(--line-2); box-shadow: none; transform: none; } }
+[data-layout="mobile"] .bd-dot { width: 22px; height: 22px; }
+/* phone: the network's compact header controls keep their size (the layout is measured around them) but get a
+   finger-sized target: an invisible margin around each */
+[data-layout="mobile"] .lh-chip, [data-layout="mobile"] .lh .mini-btn, [data-layout="mobile"] .depth-ctl .mini-btn, [data-layout="mobile"] .zc-level { position: relative; }
+[data-layout="mobile"] .lh-chip::after, [data-layout="mobile"] .lh .mini-btn::after, [data-layout="mobile"] .depth-ctl .mini-btn::after, [data-layout="mobile"] .zc-level::after { content: ""; position: absolute; inset: -6px -3px; }
+.bd-dot { position: relative; }
+.bd-dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; } /* a finger-sized target around a small dot */
+[data-layout="mobile"] .bd-neurons { gap: 6px; margin-left: 0; }
+[data-layout="mobile"] .bd-mini { margin-left: 0; }
+[data-layout="mobile"] .bd-nbtn { width: 36px; height: 34px; font-size: 16px; }
+[data-layout="mobile"] .bd-card-x { width: 36px; height: 36px; font-size: 20px; }
+[data-layout="mobile"] .bd-classbtn { height: 36px; padding: 0 12px 0 10px; font-size: 13px; }
+[data-layout="mobile"] .bd-fix { height: 36px; }
+[data-layout="mobile"] .bd-part { min-height: 46px; font-size: 13.5px; }
+[data-layout="mobile"] .bd-run-pick input { width: 20px; height: 20px; }
+[data-layout="mobile"] .bd-run-pick { min-height: 36px; }
+[data-layout="mobile"] .bd-card { padding: 10px 12px; }
 @media (max-height: 680px) {
   [data-layout="mobile"][data-screen="network"] .timeline { display: none; }
 }
@@ -1008,7 +1153,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2" y="9" width="5.5" height="5" rx="1.2"/><rect x="8.5" y="9" width="5.5" height="5" rx="1.2"/><rect x="5.2" y="2.2" width="5.5" height="5" rx="1.2" transform="rotate(-8 8 4.7)"/></g></svg>
       <span>Build your own</span>
     </button>
-    <span class="topbar-sub">Pick a model, then turn on lenses to see what each neuron computes and how it learns.</span>
+    <span class="topbar-sub"><span class="sub-mlp">Pick a model, then turn on lenses to see what each neuron computes and how it learns.</span><span class="sub-lab">Train it, change it, and zoom into any part of it, down to the transistors.</span></span>
     <div class="topbar-actions">
       <button class="icon-btn" id="installBtn" type="button" aria-label="Install the app" title="Install the app" hidden>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2M5 6.9 8 9.9l3-3M3 11.2v1.3c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1043,7 +1188,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
       <div class="readout"><span class="ro-label">Train loss</span><span class="ro-value" id="roTrain">—</span></div>
       <div class="readout"><span class="ro-label">Val. loss</span><span class="ro-value" id="roVal">—</span></div>
       <div class="readout ro-keep"><span class="ro-label" id="roAccLabel">Val. accuracy</span><span class="ro-value" id="roAcc">—</span></div>
-      <button class="ro-test" id="btnTest" type="button" title="Score the model on the held-out test set (T)"><span class="ro-label">Held-out test</span><span class="ro-value" id="roTestRun">Run</span></button>
+      <button class="ro-test" id="btnTest" type="button" title="Score the model on the held-out test set (T)"><span class="ro-label">Held-out test</span><span class="ro-value" id="roTestRun">Run ›</span></button>
     </div>
     <div class="readouts lab-readouts" aria-live="off"><span class="state-pill" id="labState">Paused</span><span class="lab-ro" id="labReadouts"></span></div>
     <button class="icon-btn" id="btnSettings" type="button" aria-label="Training settings" title="Training settings" aria-haspopup="dialog">
@@ -1193,15 +1338,15 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
         <h3>Colour</h3>
         <p>Blue is positive and orange is negative everywhere: weights, activations, signals and the two classes of a binary problem. Violet measures gradients, the pressure to change.</p>
         <h3>The probe</h3>
-        <p>One input is always being traced through the network. Hover over the Output map to move it, click to pin it, or click a data point to use that example. The Neuron tab shows its arithmetic.</p>
+        <p>One input is always being traced through the network. <span class="t-mouse">Hover over the Output map to move it, click to pin it, or click a data point to use that example.</span><span class="t-touch">Drag on the Output map to move it, or tap a data point to use that example.</span> The Neuron tab shows its arithmetic.</p>
         <h3>Maps</h3>
         <p>With Maps on, each neuron shows what it outputs for every possible input, so you can watch simple shapes in the first layer combine into complex ones deeper in.</p>
         <h3>Building the network</h3>
         <p>Use − and + under a layer to change its size, the + between layers or the Hidden layers control to add depth, and the chip under each layer to pick its activation function. To give one neuron its own function, select it and use the Neuron tab. The chip under Output picks the loss function.</p>
         <h3>Build your own</h3>
-        <p>The Build your own button opens the model builder. Drag parts between the Input and the Output (or click them), drag blocks to reorder them, and drag one off the model to remove it; drop a Neuron on a dense layer to add it there. Click a block to change it, the Input block to choose or make the problem, and the Output block to choose the loss. Every time you train after a change, the run is listed under Runs with what changed.</p>
+        <p>The Build your own button opens the model builder. Drag parts between the Input and the Output (or click them), drag blocks to reorder them, and drag one off the model to remove it; drop a Neuron on a dense layer to add it there. Click a block to change it, the Input block to choose or make the problem, and the Output block to choose the loss. Every time you train after a change, the run is listed under Runs with what changed. Architecture shows the model you built as a diagram you can zoom into, like every other model.</p>
         <h3>Validation and test data</h3>
-        <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run test, once you have finished tuning.</p>
+        <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run held-out test, once you have finished tuning.</p>
         <h3>Zoom</h3>
         <p>Zoom into any part of the network with the mouse wheel, a pinch or a double-tap, and drag to pan. On the output map and the hidden space, and in a window narrow enough for the page to scroll, hold Ctrl while you scroll. Labels stay readable and show full formulas once there is room. In a lab’s Architecture view, the mouse wheel or a pinch opens the part under it, and zooming back out returns a level.</p>
         <h3>All the way down</h3>
@@ -1211,7 +1356,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
           <p>On an iPhone or iPad, open this site in Safari, tap Share, then Add to Home Screen. On Android, open the browser menu and tap Install app. On a computer, use the install button in the address bar. The app opens full-screen and keeps working offline.</p>
         </div>
       </div>
-      <div>
+      <div class="help-keys">
         <h3>Keyboard</h3>
         <dl class="keys">
           <dt><kbd>Space</kbd></dt><dd>Train / pause</dd>
@@ -1229,50 +1374,51 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
   </div>
 </div>
 
-<script src="js/core.js"></script>
-<script src="js/engine.js"></script>
-<script src="js/data.js"></script>
-<script src="js/presets.js"></script>
-<script src="js/app.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/network-view.js"></script>
-<script src="js/data-view.js"></script>
-<script src="js/hidden-space.js"></script>
-<script src="js/charts.js"></script>
-<script src="js/insights.js"></script>
-<script src="js/inspector.js"></script>
-<script src="js/walkthrough.js"></script>
-<script src="js/lab.js"></script>
-<script src="js/archview.js"></script>
-<script src="js/arch-deep.js"></script>
-<script src="js/net-deep.js"></script>
-<script src="js/lm-data.js"></script>
-<script src="js/transformer.js"></script>
-<script src="js/lm-weights.js"></script>
-<script src="js/arch-transformer.js"></script>
-<script src="js/lab-transformer.js"></script>
-<script src="js/pinn.js"></script>
-<script src="js/pinn-weights.js"></script>
-<script src="js/arch-pinn.js"></script>
-<script src="js/lab-pinn.js"></script>
-<script src="js/diffusion.js"></script>
-<script src="js/diffusion-weights.js"></script>
-<script src="js/arch-diffusion.js"></script>
-<script src="js/lab-diffusion.js"></script>
-<script src="js/yolo.js"></script>
-<script src="js/arch-yolo.js"></script>
-<script src="js/lab-yolo.js"></script>
-<script src="js/radar.js"></script>
-<script src="js/radar-weights.js"></script>
-<script src="js/arch-radar.js"></script>
-<script src="js/lab-radar.js"></script>
-<script src="js/builder-engine.js"></script>
-<script src="js/builder-tasks.js"></script>
-<script src="js/builder-viz.js"></script>
-<script src="js/builder-py.js"></script>
-<script src="js/lab-builder.js"></script>
-<script src="js/mobile.js"></script>
-<script src="js/chrome.js"></script>
-<script src="pwa.js"></script>
+<script src="js/core.js?v=ccfabac78b"></script>
+<script src="js/engine.js?v=ccfabac78b"></script>
+<script src="js/data.js?v=ccfabac78b"></script>
+<script src="js/presets.js?v=ccfabac78b"></script>
+<script src="js/app.js?v=ccfabac78b"></script>
+<script src="js/ui.js?v=ccfabac78b"></script>
+<script src="js/network-view.js?v=ccfabac78b"></script>
+<script src="js/data-view.js?v=ccfabac78b"></script>
+<script src="js/hidden-space.js?v=ccfabac78b"></script>
+<script src="js/charts.js?v=ccfabac78b"></script>
+<script src="js/insights.js?v=ccfabac78b"></script>
+<script src="js/inspector.js?v=ccfabac78b"></script>
+<script src="js/walkthrough.js?v=ccfabac78b"></script>
+<script src="js/lab.js?v=ccfabac78b"></script>
+<script src="js/archview.js?v=ccfabac78b"></script>
+<script src="js/arch-deep.js?v=ccfabac78b"></script>
+<script src="js/net-deep.js?v=ccfabac78b"></script>
+<script src="js/lm-data.js?v=ccfabac78b"></script>
+<script src="js/transformer.js?v=ccfabac78b"></script>
+<script src="js/lm-weights.js?v=ccfabac78b"></script>
+<script src="js/arch-transformer.js?v=ccfabac78b"></script>
+<script src="js/lab-transformer.js?v=ccfabac78b"></script>
+<script src="js/pinn.js?v=ccfabac78b"></script>
+<script src="js/pinn-weights.js?v=ccfabac78b"></script>
+<script src="js/arch-pinn.js?v=ccfabac78b"></script>
+<script src="js/lab-pinn.js?v=ccfabac78b"></script>
+<script src="js/diffusion.js?v=ccfabac78b"></script>
+<script src="js/diffusion-weights.js?v=ccfabac78b"></script>
+<script src="js/arch-diffusion.js?v=ccfabac78b"></script>
+<script src="js/lab-diffusion.js?v=ccfabac78b"></script>
+<script src="js/yolo.js?v=ccfabac78b"></script>
+<script src="js/arch-yolo.js?v=ccfabac78b"></script>
+<script src="js/lab-yolo.js?v=ccfabac78b"></script>
+<script src="js/radar.js?v=ccfabac78b"></script>
+<script src="js/radar-weights.js?v=ccfabac78b"></script>
+<script src="js/arch-radar.js?v=ccfabac78b"></script>
+<script src="js/lab-radar.js?v=ccfabac78b"></script>
+<script src="js/builder-engine.js?v=ccfabac78b"></script>
+<script src="js/builder-tasks.js?v=ccfabac78b"></script>
+<script src="js/builder-viz.js?v=ccfabac78b"></script>
+<script src="js/builder-py.js?v=ccfabac78b"></script>
+<script src="js/arch-builder.js?v=ccfabac78b"></script>
+<script src="js/lab-builder.js?v=ccfabac78b"></script>
+<script src="js/mobile.js?v=ccfabac78b"></script>
+<script src="js/chrome.js?v=ccfabac78b"></script>
+<script src="pwa.js?v=ccfabac78b"></script>
 </body>
 </html>

@@ -243,7 +243,7 @@
       meta: 'YOLO26 layout · 385k parameters · 4 classes · 128 px',
       about: 'YOLO26 (Ultralytics, January 2026) is the newest of the YOLO real-time detectors. This is its layer list from yolo26.yaml (Conv, C3k2, SPPF and C2PSA blocks, an FPN-PAN neck and a detection head at three scales) at half the width of YOLO26n, trained here on 614,400 synthetic scenes of circles, triangles, squares and stars. Like the real model it has two heads: a one-to-many head that proposes several overlapping boxes per object and needs non-maximum suppression (NMS) to clean them up, and a one-to-one head trained to put exactly one box on each object, so its output is final as it comes.',
       look: [
-        'Detect: drag a shape, resize it with the wheel, double-click to remove it; the boxes follow, computed by the network in your browser.',
+        'Detect: drag a shape to move it, resize it (the mouse wheel or a pinch), and remove it with a double-click or a double-tap; the boxes follow, computed by the network in your browser.',
         'Compare heads: the one-to-many head proposes several boxes per object, and NMS has to delete the extras. The one-to-one head gives one box per object with no NMS at all; that is what makes YOLO26 end-to-end.',
         'Grids: on pictures this small the fine 16 × 16 grid finds almost every shape; only shapes past about 30 pixels move to the 8 × 8 grid, and the 4 × 4 grid never wins.',
         'Architecture: open the backbone, a block, a convolution, one number of its feature map, and keep going down to the transistors.',
@@ -282,6 +282,7 @@
       'The shapes between the blocks show how the data changes size on its way through. A block outlined in red does not fit; its button adds what is missing.',
       'The dots on a dense block are its neurons. While training they show how often each one fires: a dot that goes hollow is a dead neuron. Click one to give it its own activation.',
       'Runs lists every run with what changed since the one before and its validation score; the chart overlays their curves.',
+      'Architecture opens the model you built: a block, a neuron’s weighted sum on the example, and on down to the transistors, as in every other model.',
       'Python writes the whole setup (the data, the model, the loss and the training loop) as a PyTorch script.',
     ],
     try: [

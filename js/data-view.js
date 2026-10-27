@@ -1,7 +1,7 @@
 /* data-view.js — the specimen panel: decision map, curve fit or drawing pad, plus the hidden-space view. */
 (function (NA) {
   'use strict';
-  const { theme, clamp, fmt, fmtPct, el, rr } = NA;
+  const { theme, clamp, fmtSci: fmt, fmtPct, el, rr } = NA; // fmtSci: P(blue) 3.5×10⁻¹⁴, not 3.5e−14
   const App = NA.app;
   const D = NA.data;
 
@@ -20,7 +20,12 @@
     App.on('view', (v) => DV.setView(v));
     App.on('sampleDigit', (d) => { const k = Array.from(App.ds.valIdx).find((i) => App.ds.y[i] === d); if (k !== undefined) App.setProbeSample(k); });
     App.on('test', () => { DV.dirty = true; DV.galleryKey = ''; });
-    theme.onChange(mark);
+    // the dataset thumbnails and the digit gallery are painted once into their own canvases, so a theme
+    // change repaints them too
+    theme.onChange(() => {
+      DV.dirty = true; DV.galleryKey = '';
+      for (const t of DV.thumbs || []) drawDatasetThumb(t.c, t.id);
+    });
     let lastW = 0;
     new ResizeObserver(() => {
       const w = DV.body.clientWidth;
@@ -95,7 +100,7 @@
     const tools = el('div', { class: 'chip-row', role: 'group', 'aria-label': 'Map overlays' },
       chip('Train', 'train', 'Show training points (filled dots)'),
       chip('Validation', 'val', 'Show validation points (rings): tracked live while training'),
-      chip('Test', 'test', 'Show the held-out test points (squares). Run the test from the Training tab.'),
+      chip('Test', 'test', 'Show the held-out test points (squares). Run held-out test from the Training tab.'),
       chip('Errors', 'errors', 'Ring the points the network gets wrong'),
       chip('Neuron lines', 'neuronLines', 'Draw where each first-layer neuron’s pre-activation crosses zero'));
     DV.canvas = el('canvas', { class: 'plane-canvas', 'aria-label': 'Decision map of the network over the input plane' });
@@ -355,6 +360,7 @@
     ctx.strokeStyle = theme.c('ink-2', 0.55); ctx.lineWidth = 1.3;
     ctx.beginPath(); for (let i = 0; i <= 200; i++) { const x = -1 + i / 100; i ? ctx.lineTo(X(x), Y(f(x))) : ctx.moveTo(X(x), Y(f(x))); } ctx.stroke();
     // contributions of the last hidden layer
+    let biasLabel = null;
     if (App.overlays.contributions && L > 1) {
       const A = g.F.a[L - 1], W2 = net.W[L - 1], m = net.sizes[L - 1];
       for (let j = 0; j < m; j++) {
@@ -368,8 +374,7 @@
       const b = net.b[L - 1][0];
       ctx.strokeStyle = theme.c('muted', 0.8); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x0, Y(b)); ctx.lineTo(x0 + w, Y(b)); ctx.stroke();
-      ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.font = `500 10px ${NA.getFont('mono')}`;
-      ctx.fillText('bias ' + fmt(b, 2), x0 + 6, Y(b) - 2);
+      biasLabel = { text: 'bias ' + fmt(b, 2), y: Y(b) };
     }
     // data points
     for (const split of [2, 1, 0]) {
@@ -383,6 +388,14 @@
     const out = g.F.a[L];
     ctx.strokeStyle = theme.c('pos'); ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
     ctx.beginPath(); for (let p = 0; p < n; p++) { const yy = Y(out[p]); p ? ctx.lineTo(X(g.raw[p]), yy) : ctx.moveTo(X(g.raw[p]), yy); } ctx.stroke();
+    // the bias line's name goes over the points and curves, on a backing, so they never hide it
+    if (biasLabel) {
+      ctx.font = `500 10px ${NA.getFont('mono')}`;
+      const tw = ctx.measureText(biasLabel.text).width, bx = x0 + 6, by = clamp(biasLabel.y - 2, y0 + 14, y0 + h - 2);
+      ctx.fillStyle = theme.c('panel', 0.85); rr(ctx, bx - 3, by - 12, tw + 6, 13, 3); ctx.fill();
+      ctx.fillStyle = theme.c('ink-2'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText(biasLabel.text, bx, by);
+    }
     // probe
     const pr = App.probe;
     if (pr) {
@@ -534,19 +547,24 @@
   }
 
   function drawDigitPred() {
-    const tr = App.probeTrace(), L = App.net.L, a = tr.a[L];
+    const tr = App.probeTrace(), L = App.net.L, a = tr.a[L], p = App.probe;
+    // an empty pad still produces ten probabilities, but a "prediction" for nothing would only mislead
+    const blank = p.label === null && NA.maxAbs(p.raw) < 0.02;
     let k = 0; for (let q = 1; q < a.length; q++) if (a[q] > a[k]) k = q;
     const cols = [];
     for (let q = 0; q < a.length; q++) {
-      const h = Math.max(2, a[q] * 44);
-      cols.push(el('div', { class: 'dp-col' + (q === k ? ' is-top' : ''), title: `Digit ${q}: ${fmtPct(a[q], 1)}` },
+      const h = blank ? 2 : Math.max(2, a[q] * 44);
+      cols.push(el('div', { class: 'dp-col' + (q === k && !blank ? ' is-top' : ''), title: blank ? `Digit ${q}` : `Digit ${q}: ${fmtPct(a[q], 1)}` },
         el('div', { class: 'dp-bar-wrap' }, el('div', { class: 'dp-bar', style: { height: h + 'px' } })),
         el('div', { class: 'dp-lab', text: String(q) })));
     }
-    const head = el('div', { class: 'dp-head' },
-      el('span', { class: 'dp-big', text: String(k) }),
-      el('span', { class: 'dp-conf', text: `${fmtPct(a[k], a[k] > 0.995 ? 1 : 0)} confident` }),
-      App.probe.label !== null ? el('span', { class: 'dp-true', text: `true digit ${App.probe.label}` }) : el('span', { class: 'dp-true', text: 'your drawing' }));
+    const head = blank
+      // the muted "?" keeps the big digit's place, so nothing below moves when drawing starts
+      ? el('div', { class: 'dp-head' }, el('span', { class: 'dp-big', 'aria-hidden': 'true', style: { color: 'var(--muted)' }, text: '?' }), el('span', { class: 'dp-true', text: 'Draw a digit to see what the network reads' }))
+      : el('div', { class: 'dp-head' },
+        el('span', { class: 'dp-big', text: String(k) }),
+        el('span', { class: 'dp-conf', text: `${fmtPct(a[k], a[k] > 0.995 ? 1 : 0)} confident` }),
+        el('span', { class: 'dp-true', text: p.label !== null ? `true digit ${p.label}` : 'your drawing' }));
     NA.clear(DV.predEl).append(head, el('div', { class: 'dp-cols' }, ...cols));
   }
 
@@ -581,12 +599,13 @@
       if (ds.task === 'binary') parts.push(el('span', { class: 'ro-k', text: 'P(blue)' }), el('span', { class: 'mono', text: fmt(tr.a[L][0], 3) }));
       else { let k = 0; for (let q = 1; q < tr.a[L].length; q++) if (tr.a[L][q] > tr.a[L][k]) k = q; parts.push(el('span', { class: 'ro-k', text: 'Predicts' }), el('span', { text: `${['orange', 'blue', 'green'][k]} ${fmtPct(tr.a[L][k])}` })); }
       if (p.label !== null) parts.push(el('span', { class: 'ro-k', text: 'True' }), el('span', { text: ['orange', 'blue', 'green'][p.label] }));
-      else parts.push(el('span', { class: 'ro-hint', text: 'Click to pin the probe' }));
+      else parts.push(el('span', { class: 'ro-hint', text: `${NA.tapWord()} to pin the probe` }));
     } else if (ds.kind === 'line') {
       parts.push(el('span', { class: 'ro-k', text: 'x' }), el('span', { class: 'mono', text: fmt(p.raw[0], 2) }), el('span', { class: 'ro-k', text: 'ŷ' }), el('span', { class: 'mono', text: fmt(tr.a[L][0], 3) }));
       if (p.label !== null) parts.push(el('span', { class: 'ro-k', text: 'target' }), el('span', { class: 'mono', text: fmt(p.label, 3) }));
     } else {
-      parts.push(el('span', { class: 'ro-hint', text: p.label !== null ? `Test sample · true digit ${p.label}. Draw on top of it to change it.` : 'Your drawing is centred and scaled to fit 14×14 pixels, just like the training digits.' }));
+      // named after its split: "Test" means the held-out set everywhere else, and the gallery shows validation digits
+      parts.push(el('span', { class: 'ro-hint', text: p.label !== null ? `${SPLIT_NAME[ds.split[p.sample]]} sample · true digit ${p.label}. Draw on top of it to change it.` : 'Your drawing is centred and scaled to fit 14×14 pixels, just like the training digits.' }));
     }
     NA.clear(DV.readout).append(...parts);
   }
@@ -594,6 +613,7 @@
   function buildDataControls() {
     const ds = App.ds, sp = App.spec;
     NA.clear(DV.controls);
+    DV.thumbs = [];
     const kindSets = Object.entries(D.DATASETS).filter(([id, d]) => d.kind === ds.kind);
     if (kindSets.length > 1) {
       const tiles = el('div', { class: 'ds-tiles', role: 'radiogroup', 'aria-label': 'Dataset' });
@@ -602,6 +622,7 @@
         const b = el('button', { class: 'ds-tile', type: 'button', role: 'radio', 'aria-checked': String(id === ds.id), title: `${d.label}: ${d.hint}`, onclick: () => App.applyPatch({ dataset: id }) }, c, el('span', { text: d.label }));
         tiles.appendChild(b);
         drawDatasetThumb(c, id);
+        DV.thumbs.push({ c, id });
       }
       DV.controls.append(el('div', { class: 'ctl-block' }, el('div', { class: 'eyebrow', text: 'Dataset' }), tiles));
     } else {
@@ -641,6 +662,7 @@
 
   function drawDatasetThumb(c, id) {
     const S = 44, ctx = NA.fitCanvas(c, S, S), d = D.DATASETS[id];
+    ctx.clearRect(0, 0, S, S); // repainted on a theme change: the rounded corners must not keep the old colour
     ctx.fillStyle = theme.c('panel-2'); rr(ctx, 0, 0, S, S, 5); ctx.fill();
     const ds = D.buildDataset({ dataset: id, n: d.kind === 'line' ? 60 : 140, noise: 0.1, trainRatio: 1, seed: 3 });
     if (d.kind === 'plane') {

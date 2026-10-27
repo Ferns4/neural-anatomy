@@ -4,7 +4,7 @@
    (or the Network breadcrumb) returns to the diagram. */
 (function (NA) {
   'use strict';
-  const { el, fmt } = NA;
+  const { el, fmtSci: fmt } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const ND = { open: false };
 
@@ -40,7 +40,7 @@
     ND.stage.append(ND.host);
     ND.panel.append(ND.stage);
     ND.arch = new NA.ArchView(ND.host, {
-      label: 'Inside a neuron: click a part or zoom in to open it',
+      label: `Inside a neuron: ${NA.tapWord(true)} a part or zoom in to open it`,
       kicker: 'Neuron',
       build: (size) => Object.assign(neuron({ wide: size.w / size.h >= 1.05 }, ND.l, ND.j), { id: 'n' }),
       onFocus: (node, path) => ND.info.set(ND.arch.infoFor(node, path)),
@@ -70,11 +70,13 @@
     if (!best) return null;
     return anyVisible || bd <= Math.max(best.s / 2 + 14, best.s / 2 + (best.gap || 0) / 2) ? best : null;
   }
-  // The network view calls this whenever its zoom changes: zoomed in on a neuron, open it.
+  // The network view calls this whenever its zoom changes: zoomed in on a neuron, open it. With a mouse that is
+  // from 2.6×; on a touch screen only at the zoom limit, since a moderate pinch is how a phone reads small labels
+  // (and a tapped neuron's card has an Open button).
   ND.maybeOpen = function () {
-    const V = NA.netView, z = V.zoom;
-    if (ND.open || ND.flying || z.k < 2.6 || !V.layout || !NA.ArchView) return;
-    const nd = aimed(z.anchor, z.k >= z.max - 0.01);
+    const V = NA.netView, z = V.zoom, atLimit = z.k >= z.max - 0.01;
+    if (ND.open || ND.flying || z.k < (V.touch ? z.max - 0.01 : 2.6) || !V.layout || !NA.ArchView) return;
+    const nd = aimed(z.anchor, atLimit);
     if (nd) ND.show(nd.l, nd.j, nd.x * z.k + z.tx, nd.y * z.k + z.ty);
   };
   // A double-click (or double-tap) on a neuron flies into it. Returns whether there was a neuron there.

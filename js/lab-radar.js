@@ -14,6 +14,10 @@
   const us = (n) => fmt(n / 20, 2); // samples → microseconds (20 samples per µs)
   const mhz = (f) => `${f >= 0 ? '+' : '−'}${fmt(Math.abs(f) * 20, 2)} MHz`; // cycles per sample → MHz
   const uf = (w, px) => `${w} ${px}px ${NA.getFont('ui')}`, mf = (w, px) => `${w} ${px}px ${NA.getFont('mono')}`;
+  // a touch screen: the readouts under a finger come from sliding it along the plots, not from hovering
+  const touchUI = () => !!(NA.mobile && NA.mobile.mobile) || (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
+  // "a Barker-13" but "an LFM chirp" (said el-ef-em)
+  const aName = (k) => `${/^(LFM|[AEIOU])/.test(CL[k]) ? 'an' : 'a'} ${CL[k]}`;
   const argmax = (a) => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[k]) k = i; return k; };
   const maxAbs = (a) => { let m = 0; for (let i = 0; i < a.length; i++) if (Math.abs(a[i]) > m) m = Math.abs(a[i]); return m; };
 
@@ -104,7 +108,7 @@
     if (this.offTheme) this.offTheme();
     if (this.resizeObs) this.resizeObs.disconnect();
     if (this.arch) this.arch.destroy();
-    this.test = null;
+    this.test = null; this.accSrc = 'eval'; // the test goes with the page; its matrix cannot be shown again
   };
   RL.archText = function () { return '1-D CNN · 2 × 256 I/Q samples → 6 waveforms'; };
 
@@ -160,7 +164,7 @@
       UI.section('What was sent', this.sentBox),
       UI.section('How it works',
         el('div', { class: 'fx' },
-          el('div', { class: 'fx-line fx-strong', text: 'x[n] = A·e^{jφ[n]} + w[n],  n = 0 … 255' }),
+          el('div', { class: 'fx-line fx-strong', text: 'x[n] = A·e^(jφ[n]) + w[n],  n = 0 … 255' }),
           el('div', { class: 'fx-line', text: 'I = Re x,  Q = Im x,  A² = SNR,  w: noise of power 1' }),
           el('div', { class: 'fx-line fx-muted', text: 'pulse   φ = 2π·f₀·n + φ₀' }),
           el('div', { class: 'fx-line fx-muted', text: 'chirp   f = f₀ ± B·(n/L − ½)' }),
@@ -231,10 +235,14 @@
       spec: el('div', { class: 'chip-row' }, UI.chip('True frequency', this.show.specLaw, (on) => { this.show.specLaw = on; this.dirty = true; }, 'The waveform’s frequency law, dashed')),
       cnn: el('div', { class: 'chip-row' }),
       acc: el('div', { class: 'chip-row' },
-        this.testBtn = el('button', { class: 'btn btn-quiet', type: 'button', title: 'Run 100 fresh signals of each kind at the slider’s SNR through the network (T)', onclick: () => this.runTest() }, 'Test now'),
+        // rd-test: one width while it counts (Testing… 73 / 600), so the buttons beside it stay put
+        this.testBtn = el('button', { class: 'btn btn-quiet rd-test', type: 'button', title: 'Run 100 fresh signals of each kind at the slider’s SNR through the network (T)', onclick: () => this.runTest() }, 'Test now'),
         this.srcSeg = UI.seg([{ value: 'eval', label: 'After training', title: '400 signals of each kind at each SNR, measured after training' }, { value: 'live', label: 'Your test', title: 'Your test in this browser' }], this.accSrc, (v) => { if (v === 'live' && !this.test) { this.srcSeg.set('eval'); return; } this.accSrc = v; this.dirty = true; this.infoStale = true; }, 'Which confusion matrix')),
       arch: el('div', { class: 'chip-row' }),
     };
+    // there is nothing to show as Your test until a test has run
+    this.liveBtn = NA.$$('button', this.srcSeg)[1];
+    this.syncLive();
     root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, ...Object.values(this.chipSets)));
     this.stage = el('div', { class: 'lab-stage' });
     this.canvas = el('canvas', { 'aria-label': 'The radar signal and the network’s verdict' });
@@ -296,13 +304,29 @@
   };
 
   // ------------------------------------------------------------------ drawing
-  const title = (ctx, r, text) => { ctx.font = uf(600, 10.5); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillText(text.toUpperCase(), r.x, r.y - 7); };
+  // plot titles in small capitals, as the panels' section titles are, except units and names whose case carries
+  // meaning (dB, MHz, µs, ReLU): "+8 DB" or "(MHZ)" would read as other units
+  const KEEP = /(dB|MHz|µs|ReLU)/;
+  const caps = (text) => text.split(KEEP).map((s, i) => (i % 2 ? s : s.toUpperCase())).join('');
+  // text: a title, or a list of ever shorter ones, of which the first that fits over the plot is drawn
+  const title = (ctx, r, text) => {
+    ctx.font = uf(600, 10.5); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    const all = [].concat(text), t = all.find((s) => ctx.measureText(caps(s)).width <= r.w + 4) || all[all.length - 1];
+    ctx.fillText(caps(t), r.x, r.y - 7);
+  };
   const frame = (ctx, r) => { ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); };
   const shadePulse = (ctx, r, X, p, label) => {
     ctx.fillStyle = theme.c('ink', theme.dark ? 0.07 : 0.045);
     const a = X(p.n0), b = X(p.n0 + p.L - 1);
     ctx.fillRect(Math.max(r.x, a), r.y, Math.min(r.x + r.w, b) - Math.max(r.x, a), r.h);
-    if (label) { ctx.font = uf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(label, (a + b) / 2, r.y + 4); }
+    // the label on a patch of the panel's colour, so the traces under it do not cross it; none on a short plot,
+    // where the patch would hide too much of them (the legend says what the shading is)
+    if (label && r.h >= 90) {
+      ctx.font = uf(500, 10); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const w = ctx.measureText(label).width + 8, cx = (a + b) / 2;
+      ctx.fillStyle = theme.c('panel', 0.85); NA.rr(ctx, cx - w / 2, r.y + 3, w, 13, 4); ctx.fill();
+      ctx.fillStyle = theme.c('muted'); ctx.fillText(label, cx, r.y + 4.5);
+    }
   };
   const timeTicks = (ctx, r, X) => {
     ctx.font = mf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
@@ -359,17 +383,37 @@
 
   RL.drawSignal = function (ctx, M) {
     const g = this.sig, s = g.s, p = s.p, iq = s.iq, cls = g.cls, f = this.ifreq();
-    // the two time plots share one column (and one time scale); the I/Q plane sits beside them when there is room
-    const padL = 40, side = M.w >= 500, cs = side ? Math.min(M.w * 0.3, M.h * 0.6) : 0, colW = M.w - padL - 4 - (side ? cs + 30 : 0);
-    const avail = M.h - 18 - 20 - 26 - 20; // two titles and two rows of time ticks
-    const th = Math.max(40, avail * 0.53), fh = Math.max(34, avail - th);
-    const top = { x: M.x + padL, y: M.y + 18, w: colW, h: th };
-    const by = top.y + th + 46, fr = { x: top.x, y: by, w: colW, h: fh };
-    const cr = side ? { x: top.x + colW + 30, y: top.y + (fr.y + fr.h - top.y - cs) / 2, w: cs, h: cs } : null;
+    /* The two time plots share one column (and one time scale). The I/Q plane goes beside them when they keep
+       250 px of width; else under them when the stage is tall enough; else, smaller, beside them again (a phone),
+       as long as they keep 180 px. Every plot keeps a height its axis labels fit in: what has no room is left
+       out, the I/Q plane first, then the frequency plot, with a word on how to get it back when the open
+       explanation is what takes the room. */
+    const padL = 40, TT = 18, TK = 20, GAP = 8, MIN_T = 64, MIN_F = 52;
+    const two = M.h - 2 * (TT + TK) - GAP; // the height the two time plots share
+    let place = 'none', cs = Math.min(M.w * 0.3, M.h * 0.62, 280);
+    if (cs >= 110 && M.w - padL - 34 - cs >= 250) place = 'side';
+    else {
+      // under them: up to 60% of the width, while the time plots keep a quarter more than their minimum
+      cs = Math.min(M.w * 0.6, 240, two - TT - GAP - 1.25 * (MIN_T + MIN_F));
+      if (cs >= 120) place = 'under';
+      else { cs = Math.min(110, M.w - padL - 20 - 180, M.h - TT - 4); if (cs >= 72) place = 'small'; }
+    }
+    const colW = M.w - padL - 4 - (place === 'side' ? cs + 30 : place === 'small' ? cs + 16 : 0);
+    const room = two - (place === 'under' ? TT + GAP + cs : 0), showF = room >= MIN_T + MIN_F;
+    const hint = (place === 'none' || !showF) && this.info.open, low = hint ? 16 : 0;
+    const th = showF ? Math.max(MIN_T, (room - low) * 0.53) : M.h - TT - TK - low, fh = showF ? room - low - th : 0;
+    const top = { x: M.x + padL, y: M.y + TT, w: colW, h: th };
+    const fr = showF ? { x: top.x, y: top.y + th + TK + GAP + TT, w: colW, h: fh } : null, bottom = fr ? fr.y + fr.h : top.y + top.h;
+    const cr = place === 'side' || place === 'small' ? { x: top.x + colW + (place === 'side' ? 30 : 16), y: Math.max(top.y, top.y + (bottom - top.y - cs) / 2), w: cs, h: cs }
+      : place === 'under' ? { x: M.x + (M.w - cs) / 2, y: bottom + TK + GAP + TT, w: cs, h: cs } : null;
+    if (hint) {
+      ctx.font = uf(500, 11); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText(`Close the explanation to see ${!showF && !cr ? 'the frequency and the I/Q plane' : !showF ? 'the frequency' : 'the I/Q plane'}.`, M.x, M.y + M.h);
+    }
     const X = (t) => top.x + (t / (N - 1)) * top.w, lim = Math.max(1.5, maxAbs(iq) * 1.06), Y = (v) => top.y + top.h / 2 - (v / lim) * (top.h / 2);
-    this.lay = { time: { x: top.x, w: top.w, t0: 0, span: N - 1 }, top: top.y, bottom: fr.y + fr.h };
+    this.lay = { time: { x: top.x, w: top.w, t0: 0, span: N - 1 }, top: top.y, bottom };
     // I and Q
-    title(ctx, top, cls ? `I/Q samples · ${CL[cls]} at ${dB(g.snr)}` : 'I/Q samples · receiver noise only');
+    title(ctx, top, cls ? [`I/Q samples · ${CL[cls]} at ${dB(g.snr)}`, `I/Q · ${SHORT[cls]} at ${dB(g.snr)}`] : ['I/Q samples · receiver noise only', 'I/Q · noise only']);
     if (cls) shadePulse(ctx, top, X, p, 'pulse');
     const tick = lim > 3 ? 2 : 1;
     yTicks(ctx, top, Y, [-tick, 0, tick], (v) => fmt(v, 0));
@@ -386,34 +430,37 @@
     if (this.show.clean && cls) { line(s.clean, 0, theme.c('s1'), 1.8); line(s.clean, N, theme.c('s2'), 1.8); }
     ctx.restore();
     timeTicks(ctx, top, X);
+    if (this.hoverT !== null && this.hoverT !== undefined) cursor(ctx, top, X(this.hoverT));
     // instantaneous frequency
-    const FY = (v) => fr.y + fr.h / 2 - (clamp(v, -0.5, 0.5) / 0.5) * (fr.h / 2);
-    title(ctx, fr, 'Instantaneous frequency (MHz)');
-    if (cls) shadePulse(ctx, fr, X, p);
-    yTicks(ctx, fr, FY, [-0.25, 0, 0.25], (v) => (v ? `${v > 0 ? '+' : '−'}${Math.abs(v * 20)}` : '0'));
-    frame(ctx, fr);
-    ctx.save(); ctx.beginPath(); ctx.rect(fr.x, fr.y, fr.w, fr.h); ctx.clip();
-    ctx.fillStyle = theme.c('muted', 0.4);
-    for (let t = 1; t < N; t++) ctx.fillRect(X(t) - 0.8, FY(f.raw[t]) - 0.8, 1.6, 1.6);
-    ctx.strokeStyle = theme.c('s7'); ctx.lineWidth = 1.6; ctx.beginPath();
-    for (let t = 1; t < N; t++) { const x = X(t), y = FY(f.sm[t]); t > 1 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
-    ctx.stroke();
-    if (this.show.law && cls) {
-      ctx.strokeStyle = theme.c('ink', 0.9); ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.beginPath();
-      let on = false;
-      for (let t = 0; t < N; t++) { if (!isFinite(s.freq[t])) { on = false; continue; } const x = X(t), y = FY(s.freq[t]); on ? ctx.lineTo(x, y) : ctx.moveTo(x, y); on = true; }
-      ctx.stroke(); ctx.setLineDash([]);
+    if (fr) {
+      const FY = (v) => fr.y + fr.h / 2 - (clamp(v, -0.5, 0.5) / 0.5) * (fr.h / 2);
+      title(ctx, fr, ['Instantaneous frequency (MHz)', 'Frequency (MHz)']);
+      if (cls) shadePulse(ctx, fr, X, p);
+      yTicks(ctx, fr, FY, [-0.25, 0, 0.25], (v) => (v ? `${v > 0 ? '+' : '−'}${Math.abs(v * 20)}` : '0'));
+      frame(ctx, fr);
+      ctx.save(); ctx.beginPath(); ctx.rect(fr.x, fr.y, fr.w, fr.h); ctx.clip();
+      ctx.fillStyle = theme.c('muted', 0.4);
+      for (let t = 1; t < N; t++) ctx.fillRect(X(t) - 0.8, FY(f.raw[t]) - 0.8, 1.6, 1.6);
+      ctx.strokeStyle = theme.c('s7'); ctx.lineWidth = 1.6; ctx.beginPath();
+      for (let t = 1; t < N; t++) { const x = X(t), y = FY(f.sm[t]); t > 1 ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+      ctx.stroke();
+      if (this.show.law && cls) {
+        ctx.strokeStyle = theme.c('ink', 0.9); ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.beginPath();
+        let on = false;
+        for (let t = 0; t < N; t++) { if (!isFinite(s.freq[t])) { on = false; continue; } const x = X(t), y = FY(s.freq[t]); on ? ctx.lineTo(x, y) : ctx.moveTo(x, y); on = true; }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.restore();
+      timeTicks(ctx, fr, X);
+      if (this.hoverT !== null && this.hoverT !== undefined) cursor(ctx, fr, X(this.hoverT));
     }
-    ctx.restore();
-    timeTicks(ctx, fr, X);
-    if (this.hoverT !== null && this.hoverT !== undefined) { cursor(ctx, top, X(this.hoverT)); cursor(ctx, fr, X(this.hoverT)); }
     // the I/Q plane
     if (cr) this.drawConstellation(ctx, cr, lim);
   };
   RL.drawConstellation = function (ctx, r, lim) {
     const g = this.sig, s = g.s, p = s.p, iq = s.iq, cls = g.cls, der = this.show.derot && cls;
     const P = (v) => (v / lim) * (r.w / 2), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-    title(ctx, r, der ? 'I/Q plane · carrier removed' : 'I/Q plane');
+    title(ctx, r, der ? ['I/Q plane · carrier removed', 'I/Q, no carrier', 'I/Q'] : ['I/Q plane', 'I/Q']);
     frame(ctx, r);
     ctx.strokeStyle = theme.c('line'); ctx.beginPath(); ctx.moveTo(r.x, cy + 0.5); ctx.lineTo(r.x + r.w, cy + 0.5); ctx.moveTo(cx + 0.5, r.y); ctx.lineTo(cx + 0.5, r.y + r.h); ctx.stroke();
     ctx.save(); ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
@@ -476,18 +523,25 @@
     title(ctx, r5, `Layer 5: ${c5} channels × ${n5} steps${r5.w >= 520 ? ' (each sees 50 samples)' : ''}`);
     NA.archRadar.heat(ctx, c5, n5, (i, j) => a5[i * n5 + j], r5, 0, maxAbs(a5));
     // class activation map of the answer, one bar per step of layer 5 (8 samples each)
-    const cam = this.cam(), m = Math.max(1e-6, maxAbs(cam)), zero = rc.y + rc.h * 0.62, up = rc.h * 0.58, down = rc.h * 0.36;
-    title(ctx, rc, rc.w < 520 ? `Evidence for ${SHORT[pred]}` : `Evidence for ${SHORT[pred]} (class activation map)`);
+    const cam = this.cam(), m = Math.max(1e-6, maxAbs(cam)), avg = cam.reduce((a, b) => a + b, 0) / cam.length;
+    const ttl = rc.w < 520 ? `Evidence for ${SHORT[pred]}` : `Evidence for ${SHORT[pred]} (class activation map)`;
+    // the sum that makes the score (dashed: the average): on the title line when it fits there, else in a band at
+    // the top of the plot that the bars stay under
+    const sum = `${fmt(avg, 2)} + bias ${fmt(this.net.fc.b[pred], 2)} = score ${fmt(F.logits[pred], 2)}`;
+    ctx.font = uf(600, 10.5);
+    const ttlW = ctx.measureText(caps(ttl)).width;
+    ctx.font = mf(500, 10);
+    const onTitle = ['average ' + sum, sum].find((t) => ttlW + 16 + ctx.measureText(t).width <= rc.w), band = onTitle ? 0 : 17;
+    const zero = rc.y + band + (rc.h - band) * 0.62, up = (rc.h - band) * 0.58, down = (rc.h - band) * 0.36;
+    title(ctx, rc, ttl);
     frame(ctx, rc);
     if (cls) shadePulse(ctx, rc, (t) => X(t + 0.5), p);
     ctx.strokeStyle = theme.c('line-2'); ctx.beginPath(); ctx.moveTo(rc.x, zero + 0.5); ctx.lineTo(rc.x + rc.w, zero + 0.5); ctx.stroke();
     cam.forEach((v, t) => { const hh = (Math.abs(v) / m) * (v > 0 ? up : down); ctx.fillStyle = v > 0 ? ccol(pred, 0.85) : theme.c('muted', 0.55); ctx.fillRect(X(t * 8) + 1, v > 0 ? zero - hh : zero, (w / n5) - 2, hh); });
-    const avg = cam.reduce((a, b) => a + b, 0) / cam.length, ya = zero - (Math.max(0, avg) / m) * up + (Math.max(0, -avg) / m) * down;
+    const ya = zero - (Math.max(0, avg) / m) * up + (Math.max(0, -avg) / m) * down;
     ctx.strokeStyle = theme.c('ink', 0.7); ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(rc.x, ya); ctx.lineTo(rc.x + rc.w, ya); ctx.stroke(); ctx.setLineDash([]);
-    // the sum that makes the score (dashed: the average): on the title line, or inside the plot when narrow
-    const narrow = rc.w < 520;
-    ctx.font = mf(500, 10); ctx.fillStyle = theme.c('ink-2'); ctx.textAlign = 'right'; ctx.textBaseline = narrow ? 'top' : 'alphabetic';
-    ctx.fillText(`${narrow ? '' : 'average '}${fmt(avg, 2)} + bias ${fmt(this.net.fc.b[pred], 2)} = score ${fmt(F.logits[pred], 2)}`, rc.x + rc.w - (narrow ? 4 : 0), narrow ? rc.y + 4 : rc.y - 7);
+    ctx.font = mf(500, 10); ctx.fillStyle = theme.c('ink-2'); ctx.textAlign = 'right'; ctx.textBaseline = onTitle ? 'alphabetic' : 'top';
+    ctx.fillText(onTitle || sum, rc.x + rc.w - (onTitle ? 0 : 4), onTitle ? rc.y - 7 : rc.y + 4);
     for (const r of [ri, r1, r5]) { if (cls) { ctx.fillStyle = ccol(cls); ctx.fillRect(Math.max(r.x, X(p.n0)), r.y + r.h + 1, Math.min(r.x + r.w, X(p.n0 + p.L)) - Math.max(r.x, X(p.n0)), 2.5); } }
     timeTicks(ctx, rc, (t) => X(t));
     if (this.hoverT !== null && this.hoverT !== undefined) for (const r of rows) cursor(ctx, r, X(this.hoverT + 0.5));
@@ -510,10 +564,10 @@
     let y = V.y + NC * rowH + 16;
     ctx.font = uf(650, 13); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillStyle = ok ? theme.c('good') : theme.c('critical');
-    ctx.fillText(ok ? `✓ Right: ${CL[pred]}` : `✗ Wrong: it was ${cls ? 'a ' + CL[cls] : 'noise only'}`, V.x, y);
+    ctx.fillText(ok ? `✓ Right: ${CL[pred]}` : `✗ Wrong: it was ${cls ? aName(cls) : 'noise only'}`, V.x, y);
     y += 20;
     ctx.font = uf(500, 11.5); ctx.fillStyle = theme.c('ink-2');
-    const sent = cls ? `▸ marks what was sent: a ${CL[cls]} at ${dB(g.snr)}.` : '▸ marks what was sent: receiver noise, no pulse.';
+    const sent = cls ? `▸ marks what was sent: ${aName(cls)} at ${dB(g.snr)}.` : '▸ marks what was sent: receiver noise, no pulse.';
     for (const l of wrap(ctx, sent, V.w)) { ctx.fillText(l, V.x, y); y += 15; }
     if (this.live.total) {
       y += 10;
@@ -527,22 +581,55 @@
     }
   };
 
+  // room the confusion matrix needs around itself: its title and the column names (leaning when the columns are
+  // narrow) above it, the row names on its left, the last leaning name on its right, and its notes (the share
+  // right, how to read it) below it, or beside it
+  const MAT = { min: 150, top: 46, below: 40, left: 44, right: 20, notes: 104 };
   RL.drawAcc = function (ctx, M) {
-    // the chart and the matrix side by side, or (on a phone) one above the other
-    const W = NA.radarWeights, snrs = W.snrs, A = W.acc, wide = M.w >= 480;
-    const pr = wide ? { x: M.x + 40, y: M.y + 18, w: M.w * 0.58 - 40, h: M.h - 18 - 40 } : { x: M.x + 40, y: M.y + 18, w: M.w - 44, h: Math.max(110, M.h * 0.42) };
+    /* The chart and the matrix side by side when the stage is about as wide as it is tall or wider; one above the
+       other when it is taller (a phone), with the matrix's notes beside it if they fit there. Either way the matrix
+       keeps at least 150 px, enough for its counts and its column names; only when that would leave the chart no
+       room is the chart drawn alone. */
+    const W = NA.radarWeights, snrs = W.snrs, A = W.acc, CT = 18, CL = 40, gap = 14;
+    let pr, mr = null, notesRight = false, CB = 34;
+    const sideMs = Math.min(clamp(M.w * 0.42 - MAT.left - MAT.right, MAT.min, 260), M.h - MAT.top - MAT.below);
+    const sideW = M.w - (sideMs + MAT.left + MAT.right) - CL - gap;
+    if (M.w >= M.h * 0.9 && sideMs >= MAT.min - 10 && sideW >= 160) {
+      pr = { x: M.x + CL, y: M.y + CT, w: sideW, h: M.h - CT - CB };
+      mr = { x: M.x + M.w - MAT.right - sideMs, y: M.y + MAT.top - 1, w: sideMs, h: sideMs };
+    } else {
+      // one above the other: the axis's unit moves onto its last tick, to save a line
+      CB = 18;
+      notesRight = M.w - MAT.left - MAT.min - MAT.notes >= 0;
+      const below = notesRight ? 0 : MAT.below, ms = clamp(Math.min(M.w - MAT.left - (notesRight ? MAT.notes : MAT.right), (M.h - CT - CB - gap - MAT.top - below) * 0.6), MAT.min, 240);
+      const ph = M.h - CT - CB - gap - MAT.top - ms - below;
+      if (ph >= 72) {
+        pr = { x: M.x + CL, y: M.y + CT, w: M.w - CL - 4, h: ph };
+        const bw = MAT.left + ms + (notesRight ? MAT.notes : MAT.right);
+        mr = { x: M.x + Math.max(0, (M.w - bw) / 2) + MAT.left, y: pr.y + ph + CB + gap + MAT.top, w: ms, h: ms };
+      } else pr = { x: M.x + CL, y: M.y + CT, w: M.w - CL - 4, h: M.h - CT - CB - (this.info.open ? 18 : 0) };
+    }
     const s0 = snrs[0], s1 = snrs[snrs.length - 1], X = (s) => pr.x + ((s - s0) / (s1 - s0)) * pr.w, Y = (v) => pr.y + (1 - v) * pr.h;
     this.lay = { acc: { x: pr.x, y: pr.y, w: pr.w, h: pr.h, s0, s1 } };
     title(ctx, pr, 'Accuracy by SNR');
-    // the SNRs seen in training, shaded and named on the title line
+    // the SNRs seen in training, shaded and named on the title line (in fewer words when the chart is narrow)
     ctx.fillStyle = theme.c('ink', theme.dark ? 0.05 : 0.035); ctx.fillRect(X(RD.SNR[0]), pr.y, X(RD.SNR[1]) - X(RD.SNR[0]), pr.h);
+    ctx.font = uf(600, 10.5);
+    const tw = ctx.measureText(caps('Accuracy by SNR')).width;
     ctx.font = uf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText('shaded: trained on −12 to +20 dB', pr.x + pr.w, pr.y - 7);
+    const note = ['shaded: trained on −12 to +20 dB', 'shaded: training SNRs'].find((t) => tw + 14 + ctx.measureText(t).width <= pr.w);
+    if (note) ctx.fillText(note, pr.x + pr.w, pr.y - 7);
     yTicks(ctx, pr, Y, [0, 0.25, 0.5, 0.75, 1], (v) => fmtPct(v, 0));
     frame(ctx, pr);
-    ctx.font = mf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    for (let s = -16; s <= 20; s += 4) ctx.fillText(s > 0 ? `+${s}` : s < 0 ? `−${-s}` : '0', X(s), pr.y + pr.h + 4);
-    ctx.fillText('SNR (dB)', pr.x + pr.w / 2, pr.y + pr.h + 18);
+    ctx.font = mf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textBaseline = 'top';
+    const step = pr.w >= 300 ? 4 : 8;
+    for (let s = -16; s <= 20; s += step) {
+      const t = `${s > 0 ? `+${s}` : s < 0 ? `−${-s}` : '0'}${CB < 34 && s + step > 20 ? ' dB' : ''}`, half = ctx.measureText(t).width / 2;
+      ctx.textAlign = X(s) + half > pr.x + pr.w + 6 ? 'right' : 'center';
+      ctx.fillText(t, ctx.textAlign === 'right' ? pr.x + pr.w + 6 : X(s), pr.y + pr.h + 4);
+    }
+    ctx.textAlign = 'center';
+    if (CB >= 34) ctx.fillText('SNR (dB)', pr.x + pr.w / 2, pr.y + pr.h + 18);
     const chance = Y(1 / NC);
     ctx.strokeStyle = theme.c('muted', 0.7); ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(pr.x, chance); ctx.lineTo(pr.x + pr.w, chance); ctx.stroke(); ctx.setLineDash([]);
     ctx.textBaseline = 'bottom'; ctx.textAlign = 'right'; ctx.fillText('chance, 1 in 6', pr.x + pr.w - 4, chance - 2);
@@ -550,19 +637,50 @@
     for (let k = 0; k < NC; k++) curve(A.map((row) => row[k]), ccol(k, 0.9), 1.5);
     const mean = A.map((row) => row.reduce((a, b) => a + b, 0) / NC);
     curve(mean, theme.c('ink'), 2.6);
-    // the slider's SNR
-    const sv = clamp(this.snr, s0, s1), xs = X(sv), i0 = Math.max(0, Math.min(snrs.length - 2, Math.floor((sv - s0) / 2))), f = (sv - snrs[i0]) / 2, mv = mean[i0] + (mean[i0 + 1] - mean[i0]) * f;
+    // the slider's SNR: a dot on the average
+    const sv = clamp(this.snr, s0, s1), xs = X(sv), i0 = Math.max(0, Math.min(snrs.length - 2, Math.floor((sv - s0) / 2))), f = (sv - snrs[i0]) / 2;
+    const at = (vals) => vals[i0] + (vals[i0 + 1] - vals[i0]) * f, ym = Y(at(mean));
     cursor(ctx, pr, xs);
-    ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(xs, Y(mv), 4.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = theme.c('panel'); ctx.lineWidth = 2; ctx.stroke();
-    // the label goes above the point, or below it when the point is near the top
-    const below = Y(mv) - 22 < pr.y;
-    ctx.font = uf(650, 11.5); ctx.textAlign = xs > pr.x + pr.w * 0.7 ? 'right' : 'left'; ctx.textBaseline = below ? 'top' : 'bottom'; ctx.fillStyle = theme.c('ink');
-    ctx.fillText(`${fmtPct(mv, 0)} at ${dB(this.snr)}`, xs + (ctx.textAlign === 'left' ? 8 : -8), Y(mv) + (below ? 8 : -6));
+    ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(xs, ym, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = theme.c('panel'); ctx.lineWidth = 2; ctx.stroke();
+    // and its value beside the cursor (on whichever side lets it sit nearer the dot), clear of every line: each
+    // curve's extent over the width of the label, and the chance line with its name, are out of bounds for it
+    ctx.font = mf(500, 10);
+    const cw = ctx.measureText('chance, 1 in 6').width;
+    ctx.font = uf(650, 11.5);
+    const snrAt = (x) => clamp(s0 + ((x - pr.x) / pr.w) * (s1 - s0), s0, s1);
+    const valAt = (vals, s) => { const i = clamp(Math.floor((s - s0) / 2), 0, snrs.length - 2); return vals[i] + ((vals[i + 1] - vals[i]) * (s - snrs[i])) / 2; };
+    const place = (txt, right) => {
+      const lw = ctx.measureText(txt).width, xa = right ? xs + 8 : xs - 8 - lw;
+      if (xa < pr.x + 2 || xa + lw > pr.x + pr.w - 2) return null;
+      const xb = xa + lw, sa = snrAt(xa - 5), sb = snrAt(xb + 5);
+      const extent = (vals) => {
+        let lo = Math.min(valAt(vals, sa), valAt(vals, sb)), hi = Math.max(valAt(vals, sa), valAt(vals, sb));
+        snrs.forEach((s, i) => { if (s > sa && s < sb) { lo = Math.min(lo, vals[i]); hi = Math.max(hi, vals[i]); } });
+        return [Y(hi) - 11, Y(lo) + 11]; // the label's centre keeps half its height and 5 px more away
+      };
+      const blocked = [...Array.from({ length: NC }, (_, k) => extent(A.map((row) => row[k]))), extent(mean),
+        xb > pr.x + pr.w - 8 - cw ? [chance - 22, chance + 9] : [chance - 9, chance + 9]].sort((p, q) => p[0] - q[0]);
+      let y = null, from = pr.y + 9;
+      const consider = (a, b) => { if (b < a) return; const c = clamp(ym, a, b); if (y === null || Math.abs(c - ym) < Math.abs(y - ym)) y = c; };
+      for (const [a, b] of blocked) { consider(from, Math.min(a, pr.y + pr.h - 9)); from = Math.max(from, b); }
+      consider(from, pr.y + pr.h - 9);
+      return y === null ? null : { txt, x: xa, w: lw, y, d: Math.abs(y - ym) };
+    };
+    // "99% at +8 dB" on either side, or just "99%" (the cursor shows where) when that sits much nearer the dot
+    const full = `${fmtPct(at(mean), 0)} at ${dB(this.snr)}`, short = fmtPct(at(mean), 0);
+    const spots = [place(full, true), place(full, false), place(short, true), place(short, false)].filter(Boolean).map((s) => ({ ...s, cost: s.d + (s.txt === short ? 30 : 0) }));
+    const lwF = ctx.measureText(full).width;
+    const spot = spots.sort((p, q) => p.cost - q.cost)[0] || { txt: full, w: lwF, x: xs + 8 + lwF <= pr.x + pr.w ? xs + 8 : xs - 8 - lwF, y: ym - 22 < pr.y ? ym + 14 : ym - 12 };
+    // on a patch of the panel's colour, so that it reads even where it cannot avoid a line
+    ctx.fillStyle = theme.c('panel', 0.82); NA.rr(ctx, spot.x - 3, spot.y - 8, spot.w + 6, 16, 4); ctx.fill();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = theme.c('ink');
+    ctx.fillText(spot.txt, spot.x, spot.y);
     // where the mistakes go
-    // (the matrix leaves room on its right for the last column's leaning name)
-    const mr = wide ? { x: M.x + M.w * 0.58 + 62, y: M.y + 60, w: M.w * 0.42 - 84 } : { x: M.x + 58, y: pr.y + pr.h + 90, w: M.w - 84 };
-    const side = Math.max(60, Math.min(mr.w, (wide ? M.y + M.h - mr.y : M.y + M.h - mr.y) - 40));
-    this.drawConfusion(ctx, { x: mr.x, y: mr.y, w: side, h: side });
+    if (mr) this.drawConfusion(ctx, mr, { titleY: mr.y < pr.y + pr.h ? pr.y - 7 : undefined, notesRight });
+    else if (this.info.open) {
+      ctx.font = uf(500, 11); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText('Close the explanation to see where the answers go.', M.x, M.y + M.h);
+    }
   };
   RL.matrix = function () {
     const W = NA.radarWeights;
@@ -571,11 +689,13 @@
     W.snrs.forEach((s, i) => { if (Math.abs(s - this.snr) < Math.abs(W.snrs[best] - this.snr)) best = i; });
     return { conf: W.conf[best], snr: W.snrs[best], per: W.per, n: W.per * NC, live: false };
   };
-  RL.drawConfusion = function (ctx, r) {
+  // o.titleY: the title's baseline (on the chart's title line when the two sit side by side), else just above the
+  // column names; o.notesRight: the share right and how to read it beside the matrix rather than under it
+  RL.drawConfusion = function (ctx, r, o = {}) {
     const m = this.matrix(), cw = r.w / NC, ch = r.h / NC;
     ctx.font = uf(500, 10);
     const tilt = ctx.measureText('Costas').width > cw - 4; // narrow columns: the names lean, so they do not collide
-    title(ctx, { x: r.x - 54, y: r.y - (tilt ? 40 : 16) }, m.live ? `Your test at ${dB(m.snr)} · ${m.n} of ${m.per * NC}` : `Where the answers go at ${dB(m.snr)}`);
+    title(ctx, { x: r.x - MAT.left + 4, y: (o.titleY ?? r.y - (tilt ? 34 : 20)) + 7 }, m.live ? `Your test at ${dB(m.snr)} · ${m.n} of ${m.per * NC}` : `Where the answers go at ${dB(m.snr)}`);
     ctx.font = uf(500, 10); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
     for (let j = 0; j < NC; j++) {
       if (!tilt) { ctx.fillText(SHORT[j], r.x + (j + 0.5) * cw, r.y - 3); continue; }
@@ -591,21 +711,29 @@
         if (i === j) right += v; all += v;
         ctx.fillStyle = i === j ? theme.seqColor(Math.sqrt(q)) : theme.gradColor(Math.sqrt(q));
         ctx.fillRect(r.x + j * cw + 0.5, r.y + i * ch + 0.5, cw - 1, ch - 1);
-        if (cw > 22 && v) { ctx.font = mf(500, Math.min(11, cw * 0.3)); ctx.textAlign = 'center'; ctx.fillStyle = q > 0.55 ? theme.c('panel') : theme.c('ink-2'); ctx.fillText(String(v), r.x + (j + 0.5) * cw, r.y + (i + 0.5) * ch); }
+        if (cw > 22 && v) { ctx.font = mf(500, Math.min(11, cw * 0.36)); ctx.textAlign = 'center'; ctx.fillStyle = q > 0.55 ? theme.c('panel') : theme.c('ink-2'); ctx.fillText(String(v), r.x + (j + 0.5) * cw, r.y + (i + 0.5) * ch); }
       }
     }
     ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-    // under the matrix: how to read it and the share on the diagonal (short enough for a narrow matrix)
+    // the share on the diagonal and how to read the matrix, under it or beside it
+    const nx = o.notesRight ? r.x + r.w + 12 : r.x, ny = o.notesRight ? r.y + 2 : r.y + r.h + 6;
     ctx.font = uf(650, 12); ctx.fillStyle = theme.c('ink'); ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    if (all) ctx.fillText(`${fmtPct(right / all, 1)} right`, r.x, r.y + r.h + 6);
+    if (all) ctx.fillText(`${fmtPct(right / all, 1)} right`, nx, ny);
     ctx.font = uf(500, 10.5); ctx.fillStyle = theme.c('muted');
-    ctx.fillText(r.w >= 250 ? 'rows: sent · columns: answered' : 'rows: sent', r.x, r.y + r.h + 23);
+    if (o.notesRight) { ctx.fillText('rows: sent', nx, ny + 19); ctx.fillText('columns: answered', nx, ny + 34); }
+    else ctx.fillText(ctx.measureText('rows: sent · columns: answered').width <= r.w + MAT.right ? 'rows: sent · columns: answered' : 'rows: sent', nx, ny + 17);
   };
 
   // ------------------------------------------------------------------ test in the browser
+  RL.syncLive = function () {
+    if (!this.liveBtn) return;
+    this.liveBtn.disabled = !this.test;
+    this.liveBtn.title = this.test ? 'Your test in this browser' : 'Press Test now first: it runs 600 fresh signals and fills in a matrix of your own';
+  };
   RL.runTest = function () {
     if (this.view !== 'acc') this.setView('acc');
     this.test = { snr: this.snr, per: 100, n: 0, conf: Array.from({ length: NC }, () => new Array(NC).fill(0)), rng: new NA.RNG((Math.random() * 1e9) | 0), done: false };
+    this.syncLive();
     this.accSrc = 'live'; this.srcSeg.set('live');
     this.dirty = true; this.infoStale = true;
   };
@@ -616,7 +744,8 @@
       T.conf[c][argmax(F.probs)]++; T.n++;
     }
     if (T.n >= total) { T.done = true; this.infoStale = true; this.inspDirty = true; }
-    this.testBtn.textContent = T.done ? 'Test again' : `Testing… ${T.n} / ${total}`;
+    // the count is padded with figure spaces (as wide as a digit), so the label keeps one width as it counts
+    this.testBtn.textContent = T.done ? 'Test again' : `Testing… ${String(T.n).padStart(String(total).length, ' ')} / ${total}`;
     if (this.view === 'acc') this.dirty = true;
   };
 
@@ -632,11 +761,11 @@
     return {
       kicker: 'Signal view', title: cls ? `${CL[cls]} at ${dB(g.snr)}: the raw I/Q samples` : 'Receiver noise only: the raw I/Q samples',
       about: [
-        `A receiver shifts the radio signal down to frequencies around zero and samples it as I and Q, the real and imaginary parts of one complex number: together they record the signal's amplitude and phase. These are 256 samples, 50 ns apart, 12.8 µs in all. ${cls ? `This window holds a ${CL[cls]}: ${RD.describe(s)}.` : 'This window holds no pulse, only the receiver’s own noise.'}`,
+        `A receiver shifts the radio signal down to frequencies around zero and samples it as I and Q, the real and imaginary parts of one complex number: together they record the signal's amplitude and phase. These are 256 samples, 50 ns apart, 12.8 µs in all. ${cls ? `This window holds ${aName(cls)}: ${RD.describe(s)}.` : 'This window holds no pulse, only the receiver’s own noise.'}`,
         cls
           ? `At ${dB(g.snr)} the pulse has ${ratio >= 1 ? fmt(ratio, ratio < 10 ? 1 : 0) + ' times' : fmt(ratio, 2) + ' of'} the noise's power in each sample (in decibels, 10·log₁₀ of that ratio). ${g.snr < 0 ? `Every single sample is more noise than pulse, so the traces barely change where the pulse is. What gives it away is its length: added up coherently over its ${p.L} samples, the pulse grows ${p.L} times in power against the noise, a gain of ${fmt(gain, 1)} dB.` : 'The pulse stands out of the noise: the envelope steps up where it starts and drops where it ends.'} The whole window is then scaled to an average power of 1, so loudness alone tells the network nothing.`
           : 'Without a pulse every sample is Gaussian noise: I and Q are independent, the envelope wanders at random, and the points in the I/Q plane form a round cloud.',
-        `Below, the instantaneous frequency: how far the phase turns from one sample to the next, smoothed over 9 samples, in MHz. Inside the pulse it follows the waveform's frequency law (dashed: flat for a plain pulse and for the phase codes, a ramp for a chirp, six steps for a Costas code); outside, the noise makes it jump at random. On the right, every sample as a point in the I/Q plane: noise is a round cloud, the pulse a ring whose radius is its amplitude.${cls === 3 || cls === 4 ? ` Switch on Remove carrier to undo the carrier offset (with the true offset, which the network is never given): ${cls === 3 ? 'the Barker code’s two phases, 180° apart, separate into two clusters' : `the Frank code’s ${p.M} phases separate into ${p.M} clusters`}.` : ''}`,
+        `Below, the instantaneous frequency: how far the phase turns from one sample to the next, smoothed over 9 samples, in MHz. Inside the pulse it follows the waveform's frequency law (dashed: flat for a plain pulse and for the phase codes, a ramp for a chirp, six steps for a Costas code); outside, the noise makes it jump at random. In the I/Q plane every sample is a point: noise makes a round cloud, the pulse a ring whose radius is its amplitude.${cls === 3 || cls === 4 ? ` Switch on Remove carrier to undo the carrier offset (with the true offset, which the network is never given): ${cls === 3 ? 'the Barker code’s two phases, 180° apart, separate into two clusters' : `the Frank code’s ${p.M} phases separate into ${p.M} clusters`}.` : ''}`,
       ],
       code: `import matplotlib.pyplot as plt
 ${PRE}
@@ -675,7 +804,7 @@ plt.show()`,
       about: [
         'A spectrogram cuts the window into short overlapping pieces, 32 samples (1.6 µs) long and 4 samples apart, takes the Fourier transform of each, and plots its power: time across, frequency up, brighter for more power, over the top 30 dB. A 32-sample piece separates frequencies 0.625 MHz apart; longer pieces would sharpen frequency but blur time.',
         fp,
-        'The network never sees this picture: it reads the raw I/Q samples. But its first layer’s 16 filters are 7 samples long, like tiny Fourier analysers tuned by training, and each deeper layer looks at a longer stretch, so it can learn the same kind of features. Hover over the picture to read the samples at any moment.',
+        `The network never sees this picture: it reads the raw I/Q samples. But its first layer’s 16 filters are 7 samples long, like tiny Fourier analysers tuned by training, and each deeper layer looks at a longer stretch, so it can learn the same kind of features. ${touchUI() ? 'Slide a finger along' : 'Hover over'} the picture to read the samples at any moment.`,
       ],
       code: `import matplotlib.pyplot as plt
 ${PRE}
@@ -785,10 +914,11 @@ print(conf[snrs.index(${sEval})])               # the matrix at ${sEval} dB`,
         UI.section('Accuracy during training', el('div', { class: 'chart-box' }, c2), el('div', { class: 'mini-legend' },
           ...[['s1', '+10 dB'], ['s3', '0 dB'], ['s2', '−10 dB'], ['muted', 'training batches, all SNRs']].map(([c, t]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: `var(--${c})` } }), t))),
         UI.note('Measured on fresh signals after every epoch. At +10 dB the network goes from 66% after the first epoch to 97% after the third; at 0 dB it climbs more slowly, past 90% by epoch 9 and to 97% by the end. At −10 dB it never gets far past guessing (about 29%): most of those pulses are too weak to read.')),
-        UI.section('How it was trained', el('div', { class: 'kv-grid' }, ...[
+        // sentences, so set as text beside their names (kv-prose), like the YOLO lab's recipe
+        UI.section('How it was trained', el('div', { class: 'kv-grid kv-prose' }, ...[
           ['Data', 'generated afresh for every batch: no signal is seen twice'], ['Optimiser', 'AdamW, learning rate up to 0.003 (one-cycle schedule)'],
           ['Loss', 'cross-entropy over the 6 classes'], ['SNR range', '−12 to +20 dB, uniform'], ['Script', 'tools/train-radar.py (PyTorch)'],
-        ].map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v, style: { fontFamily: 'var(--font-ui)', fontWeight: 500, fontSize: '12px', textAlign: 'right' } }))))));
+        ].map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
     } else if (id === 'waves') {
       P.cards = [];
       const ABOUT = [
@@ -818,8 +948,8 @@ print(conf[snrs.index(${sEval})])               # the matrix at ${sEval} dB`,
       const items = [], F = g.F, cls = g.cls, pred = g.pred, ok = pred === cls, p = g.s.p;
       const f = (level, ttl, text) => items.push(el('div', { class: 'diag diag-' + level }, el('div', { class: 'diag-head' }, UI.pill(level, { good: 'Right', critical: 'Wrong', info: 'Note', warn: 'Unsure' }[level]), el('h4', { class: 'diag-title', text: ttl })), el('p', { class: 'diag-body', text })));
       const i0 = W.snrs.reduce((b, s, i) => (Math.abs(s - g.snr) < Math.abs(W.snrs[b] - g.snr) ? i : b), 0), expect = W.acc[i0][cls];
-      f(ok ? (F.probs[pred] < 0.6 ? 'warn' : 'good') : 'critical', ok ? `${CL[pred]}, ${fmtPct(F.probs[pred], 0)}` : `Said ${CL[pred]} (${fmtPct(F.probs[pred], 0)}); it was ${cls ? 'a ' + CL[cls] : 'noise only'}`,
-        `${ok ? (F.probs[pred] < 0.6 ? 'Right, but only just: the runner-up is close.' : 'Right, and confident.') : `The right answer got ${fmtPct(F.probs[cls], 0)}.`} At ${dB(W.snrs[i0])} the network names ${cls ? `a ${CL[cls]}` : 'noise'} correctly ${fmtPct(expect, 0)} of the time (400 fresh signals after training).`);
+      f(ok ? (F.probs[pred] < 0.6 ? 'warn' : 'good') : 'critical', ok ? `${CL[pred]}, ${fmtPct(F.probs[pred], 0)}` : `Said ${CL[pred]} (${fmtPct(F.probs[pred], 0)}); it was ${cls ? aName(cls) : 'noise only'}`,
+        `${ok ? (F.probs[pred] < 0.6 ? 'Right, but only just: the runner-up is close.' : 'Right, and confident.') : `The right answer got ${fmtPct(F.probs[cls], 0)}.`} At ${dB(W.snrs[i0])} the network names ${cls ? aName(cls) : 'noise'} correctly ${fmtPct(expect, 0)} of the time (400 fresh signals after training).`);
       if (cls) f('info', `SNR ${dB(g.snr)}, pulse of ${p.L} samples`, g.snr < 0 ? `Each sample holds ${fmt(Math.pow(10, g.snr / 10), 2)} of the noise's power in pulse power, but over its ${p.L} samples the pulse adds up coherently: ${fmt(10 * Math.log10(p.L), 1)} dB of gain for anything that integrates it, as the network's filters do.` : `The pulse is ${fmt(Math.pow(10, g.snr / 10), 1)} times stronger than the noise in each sample: easy to see in the traces, and the network is nearly always right at this level.`);
       if (this.live.total) f('info', `Live stream: ${this.live.right} of ${this.live.total} right`, `${fmtPct(this.live.right / this.live.total, 0)} so far, at random SNRs from −12 to +20 dB. The average over that range, measured after training, is about 83%.`);
       clear(P.findings).append(...items);

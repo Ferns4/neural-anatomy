@@ -1,7 +1,7 @@
 /* inspector.js — the right-hand panel: model notes and diagnostics, neuron, layer and training views. */
 (function (NA) {
   'use strict';
-  const { theme, clamp, fmt, fmtPct, fmtInt, el, rr } = NA;
+  const { theme, clamp, fmtSci: fmt, fmtPct, fmtInt, el, rr } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const C = NA.charts;
 
@@ -114,7 +114,7 @@
     key: () => { const s = App.selected; return s ? `${s.l}:${s.j}:${App.net.sizes.join('-')}:${App.ds.id}` : 'none'; },
     build(root) {
       const s = App.selected, net = App.net, L = net.L, ds = App.ds;
-      if (!s) { root.append(el('p', { class: 'empty-note', text: 'Click any neuron in the network to inspect it.' })); this.none = true; return; }
+      if (!s) { root.append(el('p', { class: 'empty-note', text: `${NA.tapWord()} any neuron in the network to inspect it.` })); this.none = true; return; }
       this.none = false;
       const { l, j } = s;
       const kind = l === 0 ? 'Input' : l === L ? 'Output' : `Hidden ${l}`;
@@ -238,7 +238,7 @@
       // ---- sliders
       for (const sl of this.sliders) if (document.activeElement !== sl.input) { const v = sl.get(); if (Math.abs(+sl.input.value - v) > 1e-3) { sl.input.max = Math.max(+sl.input.max, Math.ceil(Math.abs(v))); sl.input.min = -sl.input.max; sl.input.value = v; } sl.out.textContent = fmt(v, 2); }
       // ---- stats
-      const st = App.stats()[l][j], items = [];
+      const st = (l === 0 ? App.inputStats() : App.stats()[l])[j], items = [];
       items.push(kv('Mean output', fmt(st.mean, 3)), kv('Spread (std)', fmt(st.std, 3)));
       if (l > 0 && l < L) {
         const act = net.actOf(l, j);
@@ -253,7 +253,7 @@
       NA.clear(this.statsEl).append(...items);
     },
   };
-  const fmtSigned = (v, d = 3) => NA.fmtSigned(v, d);
+  const fmtSigned = (v, d = 3) => NA.fmtSignedSci(v, d);
 
   function contribTable(rows, bias, z, outgoing) {
     const MAX = 8;
@@ -378,7 +378,7 @@
       this.wCanvas = el('canvas', { class: 'hinton' });
       this.wBox = el('div', { class: 'chart-box chart-scroll' }, this.wCanvas);
       root.append(section(this.img ? 'Weight templates' : `Weights into ${App.layerName(l)} (${nOut} × ${nIn})`, this.wBox,
-        el('p', { class: 'sec-note', text: this.img ? 'One 14×14 template per hidden neuron. Click a template to inspect that neuron.' : 'Rows are this layer’s neurons, columns are their inputs. Square area ∝ |w|, colour = sign. Click a row to inspect that neuron.' })));
+        el('p', { class: 'sec-note', text: this.img ? `One 14×14 template per hidden neuron. ${NA.tapWord()} a template to inspect that neuron.` : `Rows are this layer’s neurons, columns are their inputs. Square area ∝ |w|, colour = sign. ${NA.tapWord()} a row to inspect that neuron.` })));
       this.wCanvas.addEventListener('click', (e) => {
         const r = this.wCanvas.getBoundingClientRect(), y = e.clientY - r.top, x = e.clientX - r.left;
         if (this.img) { const k = this.tpl; const col = Math.floor(x / k.step), row = Math.floor(y / k.step), j = row * k.cols + col; if (j >= 0 && j < nOut) App.select({ l, j }, { fromGraph: true }); }
@@ -431,7 +431,8 @@
           if (!net.mask[l][j]) { ctx.fillStyle = theme.c('panel', 0.7); ctx.fillRect(ox, oy, size, size); }
         }
       } else {
-        this.hin = C.hinton(this.wCanvas, Wt, nOut, nIn, { selected: sel, colLabel: nIn <= 16 ? (i) => App.neuronName(l - 1, i, true).replace(/^H\d+·/, '') : null });
+        // columns of a hidden layer's inputs are labelled by number only ("3" for "H1 · 3")
+        this.hin = C.hinton(this.wCanvas, Wt, nOut, nIn, { selected: sel, colLabel: nIn <= 16 ? (i) => (l > 1 ? String(i + 1) : App.neuronName(0, i, true)) : null });
       }
       C.histogram(this.histCanvas, Wt, { bins: 32, colorFn: (v) => theme.divColor(v / (NA.maxAbs(Wt) || 1) * 0.8 + Math.sign(v) * 0.2), markers: Array.from(b).slice(0, 40).map((x) => ({ x, color: theme.c('ink', 0.5) })) });
       C.rangeStrips(this.rangeCanvas, stats, { selected: sel, label: (j) => (l === L ? App.neuronName(l, j, true) : String(j + 1)), isDead: (j) => l < L && !!NA.engine.deadKind(net, all, l, j) });
@@ -490,9 +491,10 @@
     update() {
       const pts = App.history.points, m = App.metrics(), cls = App.ds.task !== 'regression', step = App.displayStep();
       const accLabel = cls ? 'accuracy' : 'R²', fa = (v) => (cls ? fmtPct(v, 1) : fmt(v, 3));
+      // named as in the control bar ("Val." keeps "Val. accuracy" on one line in a tile)
       NA.clear(this.tiles).append(
         tile('Train loss', fmt(m.trainLoss, 4), App.hyper.reg !== 'none' && m.reg ? `+ ${fmt(m.reg, 4)} penalty` : null),
-        tile('Validation loss', fmt(m.valLoss, 4), `gap ${fmtSigned(m.valLoss - m.trainLoss)}`),
+        tile('Val. loss', fmt(m.valLoss, 4), `gap ${fmtSigned(m.valLoss - m.trainLoss)}`),
         tile('Train ' + accLabel, fa(m.trainAcc)),
         tile('Val. ' + accLabel, fa(m.valAcc)),
         tile('Step', fmtInt(step), `epoch ${fmt(App.epoch(step), 1)}`));
@@ -534,8 +536,9 @@
       const sig = [res ? res.version : '-', stale, App.training, App.displayStep() === 0, !!App.overlays.test].join('|');
       if (sig === this.testSig) return;
       this.testSig = sig;
+      // one name for the action everywhere: "Run held-out test" (the control bar's "Held-out test · Run ›")
       const run = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { if (App.training) App.pause(); App.runTest(); } },
-        res ? (stale ? 'Re-run the test' : 'Run the test again') : `Run test on ${fmtInt(n)} samples`);
+        res ? 'Run held-out test again' : 'Run held-out test');
       const showPts = ds.kind !== 'image' ? el('button', { class: 'chip', type: 'button', 'aria-pressed': String(!!App.overlays.test), onclick: () => App.setOverlay('test', !App.overlays.test) }, 'Show test points on the plot') : null;
       const kids = [];
       if (!res) {
@@ -609,7 +612,7 @@
     if (!shown.length) return el('p', { class: 'sec-note', text: 'No mistakes on the test set.' });
     const pick = (k) => () => { App.setProbeSample(k); if (document.body.dataset.layout === 'mobile') App.toast('Probe moved to this test sample. Open Network or Data to trace it.'); };
     const head = el('div', { class: 'eyebrow', text: (cls ? 'Most confident mistakes' : 'Largest misses') + (cls && res.errors.length > shown.length ? ` · ${shown.length} of ${res.errors.length}` : '') });
-    const note = el('p', { class: 'sec-note', text: 'Click one to make it the probe and trace it through the network.' });
+    const note = el('p', { class: 'sec-note', text: `${NA.tapWord()} one to make it the probe and trace it through the network.` });
     if (ds.kind === 'image') {
       return el('div', { class: 'test-errs' }, head, el('div', { class: 'top-imgs' }, ...shown.map((e) => el('button', { class: 'g-item is-wrong', type: 'button', title: `True ${e.truth}, predicted ${e.pred} (${fmtPct(e.conf, e.conf > 0.99 ? 1 : 0)} sure)`, onclick: pick(e.k) },
         NA.ui.digitCanvas(e.k), el('span', { class: 'g-lab', text: `${e.truth}→${e.pred}` })))), note);

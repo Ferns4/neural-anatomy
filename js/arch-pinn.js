@@ -5,7 +5,7 @@
   'use strict';
   const { fmt, fmtInt, theme, clamp } = NA;
   const PN = NA.pinn;
-  const num = (v, d) => fmt(v, d).replace('−', '-');
+  const num = (v, d) => NA.fmtCode(v, d); // numbers inside code
 
   // ------------------------------------------------------------------ PyTorch versions
   const py = {};
@@ -102,10 +102,43 @@ loss = w_data * loss_data + lam * loss_phys + w_ic * loss_ic
 
 loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
 
+  /* Splits a height of H px into rows, top to bottom. rows: [{ min, grow, gap }] in px (gap: the space above
+     the row). Every row gets its min (all shrink alike if even that does not fit), and the rest is shared by
+     grow. Returns [y, h] pairs as fractions of H. */
+  function stack(H, rows) {
+    const gaps = rows.reduce((s, r) => s + (r.gap || 0), 0), mins = rows.reduce((s, r) => s + r.min, 0), k = Math.min(1, (H - gaps) / mins);
+    const free = H - gaps - mins * k, g = rows.reduce((s, r) => s + (r.grow || 0), 0);
+    let y = 0;
+    return rows.map((r) => { y += r.gap || 0; const h = r.min * k + (g ? (free * (r.grow || 0)) / g : 0), out = [y / H, h / H]; y += h; return out; });
+  }
+
   // ------------------------------------------------------------------ the tree
   function build(L, size) {
     const wide = size.w / size.h >= 1.05, W2 = (w, t) => (wide ? w : t);
     const net = L.pinn, P = L.prob, t = L.probeT, sizes = net.sizes, depth = net.L - 1, k = P.omega ** 2, c = 2 * P.zeta * P.omega;
+    /* The root's arrangement. A box's title, subtitle and the ⤢ that opens it need about IO px of width (the
+       input and output) or BOX px (a hidden layer). 'side': the chain of layers on the left and the physics
+       (residual, loss) in a column on the right, on stages wide enough for roomy hidden layers there; 'rows':
+       otherwise on a landscape stage, the chain across the whole width with the physics under it; 'tall': on a
+       portrait stage, everything in one column. */
+    const IO = 84, BOX = 74, gx = 0.02, io = Math.max(IO / size.w, 0.11), hwSide = (0.68 - 2 * io - (depth + 1) * gx) / depth;
+    const arr = !wide ? 'tall' : hwSide * size.w >= 96 ? 'side' : 'rows';
+    let R, hwPx = size.w;
+    if (arr === 'side') {
+      const x = (l) => io + gx + l * (hwSide + gx);
+      R = { input: [0, 0.35, io, 0.3], layer: (l) => [x(l), 0.1, hwSide, 0.8], out: [x(depth), 0.35, io, 0.3], res: [0.74, 0.04, 0.26, 0.42], loss: [0.74, 0.54, 0.26, 0.42] };
+      hwPx = hwSide * size.w;
+    } else if (arr === 'rows') {
+      const g = 0.025, io2 = Math.max(IO / size.w, 0.12), hw = (1 - 2 * io2 - (depth + 1) * g) / depth, x = (l) => io2 + g + l * (hw + g);
+      // the residual sits under the output it is computed from, the loss beside it on the left
+      R = { input: [0, 0.1, io2, 0.3], layer: (l) => [x(l), 0, hw, 0.5], out: [x(depth), 0.1, io2, 0.3], res: [0.54, 0.64, 0.46, 0.36], loss: [0, 0.64, 0.46, 0.36] };
+      hwPx = hw * size.w;
+    } else {
+      // every box at least tall enough for its title and subtitle; the residual and loss, which hold the most, grow most
+      const rows = stack(size.h, [{ min: 42, grow: 0.5 }, ...Array.from({ length: depth }, (_, l) => ({ min: 40, grow: 1, gap: l ? 10 : 16 })), { min: 42, grow: 0.5, gap: 16 }, { min: 76, grow: 1.6, gap: 30 }]);
+      const ph = rows[depth + 2];
+      R = { input: [0.2, rows[0][0], 0.6, rows[0][1]], layer: (l) => [0.03, rows[l + 1][0], 0.94, rows[l + 1][1]], out: [0.2, rows[depth + 1][0], 0.6, rows[depth + 1][1]], res: [0, ph[0], 0.48, ph[1]], loss: [0.52, ph[0], 0.48, ph[1]] };
+    }
     const w = L.weights();
     let ld = 0, lp = 0;
     for (const d of P.data) { const e = net.forward(d.t, 0)[0] - d.u; ld += e * e; }
@@ -129,7 +162,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     }, o));
 
     const inputNode = {
-      id: 'input', title: 'Input t', sub: 'scaled to [−1, 1]', rect: W2([0, 0.38, 0.11, 0.24], [0.25, 0, 0.5, 0.09]),
+      id: 'input', title: 'Input t', sub: 'x = 2t − 1', rect: R.input,
       summary: (ctx, rr, S) => S.text(ctx, fmt(t, 3), rr.x + rr.w / 2, rr.y + rr.h * 0.4, { size: clamp(rr.w / 5, 7, 12), mono: true, align: 'center', maxW: rr.w }),
       children: [Object.assign(Dp.fmul(X, 2, t), { id: 'scale', rect: side, title: '2 × t', sub: 'the first multiplication' })],
       inner: (ctx, rr, S) => {
@@ -184,10 +217,10 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
       const s = streams[l + 1], width = sizes[l + 1];
       // the neuron that changes most at the probe opens one level deeper
       let jm = 0; for (let j = 1; j < width; j++) if (Math.abs(s[1][j]) > Math.abs(s[1][jm])) jm = j;
-      const rect = W2([0.15 + l * (0.4 / depth), 0.1, 0.4 / depth - 0.03, 0.8], [0.03, 0.12 + l * (0.42 / depth), 0.94, 0.42 / depth - 0.025]);
+      const rect = R.layer(l);
       const rows = W2([[0, 0.08, 0.66, 0.14], [0, 0.32, 0.66, 0.14], [0, 0.56, 0.66, 0.14]], [[0, 0.06, 1, 0.11], [0, 0.25, 1, 0.11], [0, 0.44, 1, 0.11]]);
       return {
-        id: 'l' + l, title: `Hidden ${l + 1}`, sub: `${width} tanh`, rect, tone: 's1',
+        id: 'l' + l, title: hwPx < BOX ? `H${l + 1}` : `Hidden ${l + 1}`, sub: hwPx < BOX ? null : `${width} tanh`, rect, tone: 's1',
         summary: (ctx, rr, S) => { if (wide) { const n = width, h = rr.h / n; for (let j = 0; j < n; j++) { ctx.fillStyle = theme.divColor(s[0][j]); ctx.fillRect(rr.x + rr.w * 0.3, rr.y + j * h, rr.w * 0.4, h * 0.8); } } else S.bars(ctx, s[0], rr, { max: 1 }); },
         // any bar opens its neuron; any weight opens the number stored in memory
         grids: [
@@ -215,7 +248,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     };
 
     const outputNode = {
-      id: 'out', title: 'Output u', sub: 'with u′ and u″', rect: W2([0.555, 0.38, 0.11, 0.24], [0.25, 0.56, 0.5, 0.09]),
+      id: 'out', title: 'Output u', sub: 'with u′, u″', rect: R.out,
       summary: (ctx, rr, S) => S.text(ctx, fmt(u, 3), rr.x + rr.w / 2, rr.y + rr.h * 0.4, { size: clamp(rr.w / 5, 7, 12), mono: true, align: 'center', maxW: rr.w }),
       children: [Object.assign(sumOf(depth, 0, 0, { title: 'Output u: weighted sum', sub: 'u = W·a + b (linear)', bias: net.b[depth][0], act: null, zName: 'u', outName: 'u', about: ['The output neuron: the last hidden layer’s values times the output weights, plus a bias, with no activation.'] }), { id: 'sum', rect: side })],
       inner: (ctx, rr, S) => {
@@ -233,7 +266,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     };
 
     const residualNode = {
-      id: 'res', title: 'ODE residual', sub: 'how far from the physics', rect: W2([0.72, 0.04, 0.28, 0.42], [0, 0.7, 0.48, 0.3]), tone: 's7',
+      id: 'res', title: 'ODE residual', sub: 'how far from the physics', rect: R.res, tone: 's7',
       summary: (ctx, rr, S) => S.text(ctx, 'u″ + 2ζω·u′ + ω²·u', rr.x + rr.w / 2, rr.y + rr.h * 0.35, { size: clamp(rr.w / 14, 6, 12), mono: true, align: 'center', maxW: rr.w }),
       inner: (ctx, rr, S) => {
         const uu = S.u(rr, 9, 15);
@@ -254,7 +287,7 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
     };
 
     const lossNode = {
-      id: 'loss', title: 'Loss', sub: 'data + λ·physics', rect: W2([0.72, 0.54, 0.28, 0.42], [0.52, 0.7, 0.48, 0.3]), tone: 's4',
+      id: 'loss', title: 'Loss', sub: 'data + λ·physics', rect: R.loss, tone: 's4',
       summary: (ctx, rr, S) => S.text(ctx, `${fmt(last.total, 5)}`, rr.x + rr.w / 2, rr.y + rr.h * 0.35, { size: clamp(rr.w / 10, 7, 12), mono: true, align: 'center', maxW: rr.w }),
       inner: (ctx, rr, S) => {
         const uu = S.u(rr, 9, 15);
@@ -290,11 +323,19 @@ loss.backward()   # gradients flow back through u, u' and u'' to every weight`;
           else S.arrow(ctx, a.x + a.w / 2, a.y + a.h + 2, a.x + a.w / 2, b.y - 3, { lw: 1.2, head: 5 });
         }
         const out = rs[depth + 1], res = rs[depth + 2], loss = rs[depth + 3], uu = S.u(rr, 8, 12);
-        if (wide) {
+        if (arr === 'side') {
           S.arrow(ctx, out.x + out.w + 2, out.y + out.h * 0.3, res.x - 3, res.y + res.h / 2, { lw: 1.2, head: 5, bend: [0, -12] });
           S.arrow(ctx, out.x + out.w + 2, out.y + out.h * 0.7, loss.x - 3, loss.y + loss.h * 0.3, { lw: 1.2, head: 5, bend: [0, 12] });
           S.arrow(ctx, res.x + res.w / 2, res.y + res.h + 2, loss.x + loss.w / 2, loss.y - 3, { lw: 1.2, head: 5 });
-          S.text(ctx, 'u, u′, u″', out.x + out.w / 2, out.y - uu, { size: uu, mono: true, color: theme.c('muted'), align: 'center' });
+        } else if (arr === 'rows') {
+          // u, u′ and u″ go down into the residual, which feeds the loss (the loss's own level shows its data term)
+          S.arrow(ctx, out.x + out.w / 2, out.y + out.h + 2, out.x + out.w / 2, res.y - 3, { lw: 1.2, head: 5 });
+          S.arrow(ctx, res.x - 2, res.y + res.h / 2, loss.x + loss.w + 3, loss.y + loss.h / 2, { lw: 1.2, head: 5 });
+        }
+        if (wide) {
+          // what flows to the physics: over the output's arrows on the side, beside the arrow down in rows
+          if (arr === 'side') S.text(ctx, 'u, u′, u″', out.x + out.w / 2, out.y - uu, { size: uu, mono: true, color: theme.c('muted'), align: 'center' });
+          else S.text(ctx, 'u, u′, u″', out.x + out.w / 2 - 6, (out.y + out.h + res.y) / 2, { size: uu, mono: true, color: theme.c('muted'), align: 'right' });
           S.text(ctx, '3 streams: value, d/dt, d²/dt²', chain[1].x, chain[1].y + chain[1].h + uu * 1.2, { size: uu * 0.9, color: theme.c('muted'), maxW: rr.w * 0.5 });
         } else {
           S.arrow(ctx, out.x + out.w * 0.3, out.y + out.h + 2, res.x + res.w / 2, res.y - 3, { lw: 1.2, head: 5 });

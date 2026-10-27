@@ -9,6 +9,8 @@
   const dB = (v) => `${v > 0.05 ? '+' : v < -0.05 ? '−' : ''}${fmt(Math.abs(v), Math.abs(v - Math.round(v)) < 0.05 ? 0 : 1)} dB`;
   const SHORT = ['Noise', 'Pulse', 'LFM', 'Barker', 'Frank', 'Costas'];
   const CCOL = ['muted', 's3', 's7', 's4', 's5', 's8'];
+  // 'a Barker-13', 'an LFM chirp' (said el-ef-em), or no pulse at all
+  const aClass = (k) => (k ? `${/^(LFM|[AEIOU])/.test(RD.CLASSES[k]) ? 'an' : 'a'} ${RD.CLASSES[k]}` : 'receiver noise only');
 
   // ------------------------------------------------------------------ PyTorch versions
   const py = {};
@@ -98,7 +100,7 @@ for step in range(6000):                        # 6,000 batches of 512 fresh sig
     sched.step()
 model.eval()                                    # BatchNorm uses its running averages from here on
 
-x, y, snr = generate(1, cls=${cls}, snr=${snr})            # one intercept: a ${RD.CLASSES[cls]}
+x, y, snr = generate(1, cls=${cls}, snr=${snr})            # one intercept: ${aClass(cls)}
 with torch.no_grad():
     p = model(x).softmax(-1)[0]
 print(CLASSES[int(p.argmax())], round(float(p.max()), 3))`;
@@ -196,11 +198,23 @@ pooled = F.max_pool1d(a, 2)                     # (1, ${o.co}, ${o.n / 2}): the 
       return Object.assign(neuronOf(l - 1, q.ic, tw), { sub: `max-pool: the larger of t = ${2 * q.s} and ${2 * q.s + 1}` });
     };
 
-    // ---- layout: two rows when wide (the line wraps after conv 3), one column when tall
+    /* ---- layout, for the shape and the size of the stage, so that every box keeps its title readable (about
+       100 px for "Average over time" beside the ⤢). Wide and large: two rows, the line wrapping after conv 3. Most
+       screens: a snake through three rows of three, every arrow short and straight. A phone: the same through
+       two columns, the softmax across the bottom. Very narrow: one centred column, its gaps tall enough for the
+       sizes written beside the arrows. */
+    const aspect = size.w / size.h, MODE = aspect >= 1.6 && size.w >= 640 ? 'wide' : aspect >= 0.75 && size.w >= 400 ? 'grid' : aspect >= 0.45 ? 'snake' : 'column';
     const IDS = ['input', 'c0', 'c1', 'c2', 'c3', 'c4', 'gap', 'fc', 'sm'];
     const WIDE = { input: [0, 0.03, 0.19, 0.4], c0: [0.27, 0.03, 0.19, 0.4], c1: [0.54, 0.03, 0.19, 0.4], c2: [0.81, 0.03, 0.19, 0.4],
       c3: [0, 0.57, 0.15, 0.4], c4: [0.2125, 0.57, 0.15, 0.4], gap: [0.425, 0.57, 0.15, 0.4], fc: [0.6375, 0.57, 0.15, 0.4], sm: [0.85, 0.57, 0.15, 0.4] };
-    const rectOf = (id) => (wide ? WIDE[id] : [0.04, 0.004 + IDS.indexOf(id) * 0.1105, 0.74, 0.094]);
+    // columns 0.28 wide (130 px at 1280 × 720), with gaps of 0.08 (37 px) that hold a size such as 16×256
+    const col3 = [0, 0.36, 0.72], row3 = [0, 0.37, 0.74], g3 = (c, r) => [col3[c], row3[r], 0.28, 0.26];
+    const GRID = { input: g3(0, 0), c0: g3(1, 0), c1: g3(2, 0), c2: g3(2, 1), c3: g3(1, 1), c4: g3(0, 1), gap: g3(0, 2), fc: g3(1, 2), sm: g3(2, 2) };
+    const row = (k) => k * 0.212, L2 = 0.43, R2 = 0.57; // five rows 0.152 high; the gap between the columns holds a size
+    const SNAKE = { input: [0, row(0), L2, 0.152], c0: [R2, row(0), L2, 0.152], c1: [R2, row(1), L2, 0.152], c2: [0, row(1), L2, 0.152], c3: [0, row(2), L2, 0.152],
+      c4: [R2, row(2), L2, 0.152], gap: [R2, row(3), L2, 0.152], fc: [0, row(3), L2, 0.152], sm: [0, row(4), 1, 0.152] };
+    const cg = clamp(15 / size.h, 0.02, 0.04), cb = (1 - 8 * cg) / 9;
+    const rectOf = (id) => ({ wide: WIDE, grid: GRID, snake: SNAKE }[MODE] || { [id]: [0.03, IDS.indexOf(id) * (cb + cg), 0.94, cb] })[id];
     const SHAPES = ['2×256', ...F.rec.map((r) => `${r.L.co}×${r.out.n}`), '64', '6'];
 
     // ---- input
@@ -223,7 +237,7 @@ pooled = F.max_pool1d(a, 2)                     # (1, ${o.co}, ${o.n / 2}): the 
         S.text(ctx, cls ? `shaded: the pulse, samples ${p.n0} to ${p.n0 + p.L - 1}` : 'no pulse: every sample is noise', r.x, r.y + r.h * 0.86, { size: uu * 0.85, color: theme.c('muted'), maxW: r.w });
       },
       about: [
-        `What the network reads: 256 complex samples, I (the real part) and Q (the imaginary part), taken 50 ns apart by a receiver sampling at 20 MHz. ${cls ? `This window holds a ${CL[cls]}: ${RD.describe(s)}, at ${dB(snr)} per sample.` : 'This window holds receiver noise only.'}`,
+        `What the network reads: 256 complex samples, I (the real part) and Q (the imaginary part), taken 50 ns apart by a receiver sampling at 20 MHz. ${cls ? `This window holds ${aClass(cls)}: ${RD.describe(s)}, at ${dB(snr)} per sample.` : 'This window holds receiver noise only.'}`,
         'The window is scaled to an average power of 1 before the network sees it (automatic gain control), so how loud the signal is says nothing by itself; the network has to find the pattern in the shape of the samples. Zoom into any bar to see the number as the 32 bits stored in memory.',
       ],
       code: `import matplotlib.pyplot as plt
@@ -361,7 +375,7 @@ print([round(float(v), 2) for v in scores[0]])`,
         S.lines(ctx, [`p[k] = exp(score[k]) / Σⱼ exp(score[j])`, `sent: ${CL[cls]}.  The network: ${verdict}`], S.place(r, [0, 0.84, 1, 0.15]), { mono: true, size: uu * 0.88, strong: (i) => i === 1 });
       },
       about: [
-        `Softmax turns the six scores into probabilities that are positive and add up to 1: exponentiate each, divide by the total. The answer is the class with the largest one: ${CL[pred]}, ${fmtPct(F.probs[pred], 1)}. ${pred === cls ? 'That is what was sent.' : `What was sent was a ${CL[cls]}, at ${dB(snr)}.`}`,
+        `Softmax turns the six scores into probabilities that are positive and add up to 1: exponentiate each, divide by the total. The answer is the class with the largest one: ${CL[pred]}, ${fmtPct(F.probs[pred], 1)}. ${pred === cls ? 'That is what was sent.' : `What was sent was ${cls ? `${aClass(cls)}, at ${dB(snr)}` : 'receiver noise only'}.`}`,
         'Training pushed the probability of the right class up on 3 million signals (cross-entropy loss: minus the log of that probability), and the probabilities stay meaningful: at +10 dB the network is right 99% of the time, and when it is unsure the bars show it.',
       ],
       code: `x, y, snr = generate(1, cls=${cls}, snr=${pyS})
@@ -373,13 +387,25 @@ for name, v in zip(CLASSES, p):
     return {
       id: 'radar', title: 'Radar classifier', sub: `${fmtInt(net.params)} parameters · 6 classes`,
       inner: (ctx, r, S) => {
-        const at = (id) => S.place(r, rectOf(id)), uu = S.u(r, 8, 12);
-        const lab = (t, x, y, align = 'center', maxW) => S.text(ctx, t, x, y, { size: uu * 0.82, mono: true, color: theme.c('muted'), align, maxW });
-        // each arrow carries the tensor that leaves the box it starts from
+        const at = (id) => S.place(r, rectOf(id)), uu = S.u(r, 8, 12), ls = wide ? uu * 0.82 : Math.max(8.5, uu * 0.82);
+        const lab = (t, x, y, align = 'center', maxW) => S.text(ctx, t, x, y, { size: ls, mono: true, color: theme.c('muted'), align, maxW });
+        // each arrow carries the tensor that leaves the box it starts from: written above an arrow that runs across,
+        // beside one that runs down
         for (let i = 0; i + 1 < IDS.length; i++) {
           const a = at(IDS[i]), b = at(IDS[i + 1]);
-          if (!wide) { S.arrow(ctx, a.x + a.w / 2, a.y + a.h + 1, a.x + a.w / 2, b.y - 2, { lw: 1.1, head: 4 }); lab(SHAPES[i], a.x + a.w / 2 + 8, (a.y + a.h + b.y) / 2, 'left'); continue; }
-          if (Math.abs(a.y - b.y) < 1) { S.arrow(ctx, a.x + a.w + 2, a.y + a.h / 2, b.x - 3, b.y + b.h / 2, { lw: 1.2, head: 5 }); lab(SHAPES[i], (a.x + a.w + b.x) / 2, a.y + a.h / 2 - uu * 1.05, 'center', b.x - a.x - a.w + 6); continue; }
+          const y0 = Math.max(a.y, b.y), y1 = Math.min(a.y + a.h, b.y + b.h), x0 = Math.max(a.x, b.x), x1 = Math.min(a.x + a.w, b.x + b.w);
+          if (y1 - y0 > 4) {
+            const y = (y0 + y1) / 2, right = b.x >= a.x + a.w, xa = right ? a.x + a.w + 2 : a.x - 2, xb = right ? b.x - 3 : b.x + b.w + 3;
+            S.arrow(ctx, xa, y, xb, y, { lw: 1.2, head: 5 });
+            lab(SHAPES[i], (xa + xb) / 2, y - ls * 1.25, 'center', Math.abs(xb - xa) + 6);
+            continue;
+          }
+          if (x1 - x0 > 4) {
+            const x = (x0 + x1) / 2;
+            S.arrow(ctx, x, a.y + a.h + 1, x, b.y - 2, { lw: 1.1, head: 4 });
+            lab(SHAPES[i], x + 7, (a.y + a.h + b.y) / 2, 'left');
+            continue;
+          }
           // the line wraps: down from conv 3, back to the left, into conv 4
           const ym = (a.y + a.h + b.y) / 2;
           ctx.strokeStyle = theme.c('ink-2'); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(a.x + a.w / 2, a.y + a.h + 2); ctx.lineTo(a.x + a.w / 2, ym); ctx.lineTo(b.x + b.w / 2, ym); ctx.stroke();
@@ -390,8 +416,8 @@ for name, v in zip(CLASSES, p):
       children: kids,
       about: [
         `A one-dimensional convolutional network with ${fmtInt(net.params)} parameters. Five convolution layers slide short filters along the 256 I/Q samples, each seeing a longer stretch of signal than the one before (7 samples in the first layer, 50 in the last); max-pooling halves the length three times. Then every channel is averaged over time, and a linear layer turns the 64 averages into six scores, one per waveform, which softmax makes into probabilities.`,
-        `On screen: a ${CL[cls]} at ${dB(snr)}. The network's answer: ${CL[pred]}, ${fmtPct(F.probs[pred], 1)}${pred === cls ? ', right' : ', wrong'}.`,
-        'Click or zoom into a layer, then into any number of its feature map: that opens the neuron that computed it, whose inputs open the neurons below it, all the way down to the raw samples. Below every number are the arithmetic and the circuits that compute it. The Python tab has each part, and at this top level the whole model with its training.',
+        `On screen: ${cls ? `${aClass(cls)} at ${dB(snr)}` : 'receiver noise only'}. The network's answer: ${CL[pred]}, ${fmtPct(F.probs[pred], 1)}${pred === cls ? ', right' : ', wrong'}.`,
+        `${NA.tapWord ? NA.tapWord() : 'Click'} or zoom into a layer, then into any number of its feature map: that opens the neuron that computed it, whose inputs open the neurons below it, all the way down to the raw samples. Below every number are the arithmetic and the circuits that compute it. The Python tab has each part, and at this top level the whole model with its training.`,
       ],
       code: py.script(cls, pyS),
       codeLabel: 'Python · PyTorch · the generator, the model and its training',

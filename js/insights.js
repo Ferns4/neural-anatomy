@@ -2,7 +2,7 @@
    and explains what is going on, with one-click experiments. */
 (function (NA) {
   'use strict';
-  const { fmt, fmtPct } = NA;
+  const { fmtSci: fmt, fmtPct } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const ORDER = { critical: 0, warn: 1, info: 2, good: 3 };
 
@@ -171,7 +171,11 @@
   function runAction(a) {
     if (a.patch) App.applyPatch(a.patch);
     if (a.run) a.run();
-    if (a.highlight) { App.highlight = { list: a.highlight, until: performance.now() + 3600 }; App.emit('highlight'); }
+    if (a.highlight) {
+      // a phone shows one screen at a time: the pulse plays on the diagram, so go there first
+      if (NA.mobile && NA.mobile.mobile && NA.mobile.screen !== 'network') NA.mobile.go('network');
+      App.highlight = { list: a.highlight, until: performance.now() + 3600 }; App.emit('highlight');
+    }
   }
 
   NA.insights = { diagnose, runAction };

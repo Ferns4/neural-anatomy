@@ -260,7 +260,7 @@ def story():
         let z = `self.dense${n}(x)`;
         if (b.acts) { helpers.add('mixed'); init.push(`self.act${n} = MixedActivation(${JSON.stringify(b.acts)})`); z = `self.act${n}(${z})`; }
         else z = ACT_PY[b.act](z);
-        put(b.residual ? `x = x + ${z}` : `x = ${z}`);
+        put(b.residual && last === b.units ? `x = x + ${z}` : `x = ${z}`); // the engine adds the input back only when the width is kept
       } else if (b.type === 'activation') put(`x = ${ACT_PY[b.act]('x')}`);
       else if (b.type === 'dropout') { init.push(`self.drop${n} = nn.Dropout(${num(b.p)})`); put(`x = self.drop${n}(x)`); }
       else if (b.type === 'layernorm') { init.push(`self.norm${n} = nn.LayerNorm(${last})`); put(`x = self.norm${n}(x)`); }

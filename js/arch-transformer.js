@@ -224,12 +224,33 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
   }
   const topk = (P, o, V, k) => Array.from({ length: V }, (_, c) => c).sort((a, b) => P[o + b] - P[o + a]).slice(0, k).map((id) => ({ id, p: P[o + id] }));
 
+  /* Splits a height of H px into rows, top to bottom. rows: [{ min, want, pri, grow, gap }] in px (gap: the space
+     above the row). Every row gets its min (all shrink alike if even that does not fit). Then, by pri, a row is
+     raised to want if the whole raise fits: want is the height at which the box has room for its small
+     picture under the title, so a partial raise would buy nothing. What is left is shared by grow.
+     Returns [y, h] pairs as fractions of H. */
+  function stack(H, rows) {
+    const gaps = rows.reduce((s, r) => s + (r.gap || 0), 0), mins = rows.reduce((s, r) => s + r.min, 0), k = Math.min(1, (H - gaps) / mins);
+    const h = rows.map((r) => r.min * k);
+    let free = H - gaps - mins * k;
+    rows.map((r, i) => i).filter((i) => rows[i].want).sort((a, b) => rows[a].pri - rows[b].pri).forEach((i) => { const add = rows[i].want - h[i]; if (add > 0 && add <= free) { h[i] += add; free -= add; } });
+    const g = rows.reduce((s, r) => s + (r.grow || 0), 0);
+    let y = 0;
+    return rows.map((r, i) => { y += r.gap || 0; const hh = h[i] + (g ? (free * (r.grow || 0)) / g : 0), out = [y / H, hh / H]; y += hh; return out; });
+  }
+
   // ------------------------------------------------------------------ the tree
   /* size: the level's content box. Every level fills the screen, so each one chooses a wide (landscape) or
      tall (portrait) arrangement from it. */
   function build(TL, size) {
     const wide = size.w / size.h >= 1.05, W2 = (w, t) => (wide ? w : t);
     const m = TL.model, c = Object.assign({ paramCount: m.paramCount }, m.cfg), tr = TL.trace(), pos = TL.selPos(tr), n = tr.n, d = c.d, dh = d / c.H, V = c.V, sel = `"${word(tr.ids[pos])}" (position ${pos})`;
+    /* The top level is one column: tokens, embedding, the blocks, the output, with 14 px between them for the
+       arrows. Each row is at least tall enough for its title and subtitle; the tokens and the output, whose
+       small pictures (the prompt's words, the prediction) say the most, are the first raised to the height
+       that leaves room for them; the blocks take most of what remains. */
+    const ROWS = stack(size.h, [{ min: 46, want: 86, pri: 1 }, { min: 46, grow: 0.3, gap: 14 }, ...Array.from({ length: c.L }, () => ({ min: 50, grow: 1, gap: 14 })), { min: 46, want: 86, pri: 2, gap: 14 }]);
+    const rowRect = (i) => [0, ROWS[i][0], 1, ROWS[i][1]];
     const A = TL.analysis && TL.analysis.version === TL.version ? TL.analysis : null;
     // every number on these levels opens into how it was computed: NA.deep supplies the levels below
     const X = { wide }, Dp = NA.deep, GELU = { id: 'gelu', label: 'GELU', f: (z) => NA.tf.gelu(z) }, tok = (i) => `"${word(tr.ids[i])}"`;
@@ -247,10 +268,11 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
     };
 
     const tokens = {
-      id: 'tokens', title: 'Tokens', sub: `${n} of ${c.T}`, rect: [0, 0, 1, 0.08],
+      id: 'tokens', title: 'Tokens', sub: `${n} of ${c.T}`, rect: rowRect(0),
       summary: (ctx, r, S) => {
-        const w = r.w / n;
-        for (let i = 0; i < n; i++) S.text(ctx, word(tr.ids[i]), r.x + w * (i + 0.5), r.y + r.h / 2, { size: Math.min(11, w / 3.2), mono: true, align: 'center', color: i === pos ? theme.c('ink') : theme.c('ink-2'), w: i === pos ? 700 : 500, maxW: w - 2 });
+        // one line of words, or two when one line would squeeze them under about 34 px each
+        const lines = r.w / n < 34 && r.h >= 24 ? 2 : 1, per = Math.ceil(n / lines), w = r.w / per, lh = r.h / lines;
+        for (let i = 0; i < n; i++) S.text(ctx, word(tr.ids[i]), r.x + w * ((i % per) + 0.5), r.y + lh * (Math.floor(i / per) + 0.5), { size: Math.min(11, w / 3.2, lh * 0.8), mono: true, align: 'center', color: i === pos ? theme.c('ink') : theme.c('ink-2'), w: i === pos ? 700 : 500, maxW: w - 2 });
       },
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 14), per = wide ? n : Math.ceil(n / 2), rowsN = Math.ceil(n / per), w = r.w / per, bh = Math.min(r.h / (rowsN * 3.2), u * 4);
@@ -295,7 +317,7 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
     };
     const EMB = W2({ e: [0, 0.06, 0.3, 0.88], p: [0.36, 0.06, 0.26, 0.5], x: [0.74, 0.06, 0.26, 0.5] }, { e: [0, 0.05, 0.46, 0.4], p: [0.54, 0.05, 0.46, 0.26], x: [0.22, 0.5, 0.78, 0.18] });
     const embed = {
-      id: 'embed', title: 'Embedding', sub: `token + position → ${d} numbers each`, rect: [0, 0.1, 1, 0.12], tone: 's3',
+      id: 'embed', title: 'Embedding', sub: `token + position → ${d} numbers each`, rect: rowRect(1), tone: 's3',
       summary: (ctx, r, S) => { S.heat(ctx, (i, j) => tr.resid[0][i * d + j], n, d, { x: r.x + r.w * 0.15, y: r.y, w: r.w * 0.7, h: Math.max(4, r.h) }); },
       grids: [
         { id: 'E', rect: EMB.e, rows: V, cols: d, make: (i, j) => Dp.stored(X, m.E.w[i * d + j], `E[${word(i)}][${j}]`) },
@@ -590,7 +612,7 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
         children: top.map((t, i) => Object.assign(Dp.lib(X, 'softmax', { scores: Array.from(logits), j: t.id, label: `p("${word(t.id)}")` }), { id: 'p' + t.id, shape: 'zone', rect: [0, 0.17 + i * (0.78 / top.length), 1, 0.78 / top.length], title: `p("${word(t.id)}") = ${fmtPct(t.p, 1)}` })),
       };
       return {
-        id: 'out', title: 'Output', sub: 'LayerNorm → unembedding → softmax', rect: [0, 0.83, 1, 0.17], tone: 's7',
+        id: 'out', title: 'Output', sub: 'LayerNorm → unembedding → softmax', rect: rowRect(c.L + 2), tone: 's7',
         summary: (ctx, r, S) => { S.text(ctx, `after ${sel}: ${word(top[0].id)} (${fmtPct(top[0].p)})`, r.x + r.w / 2, r.y + r.h * 0.35, { size: clamp(r.h * 0.3, 7, 12), mono: true, align: 'center', maxW: r.w }); },
         inner: (ctx, r, S) => {
           const a = S.place(r, R.lnf), b = S.place(r, R.un), cc = S.place(r, R.sm);
@@ -606,8 +628,8 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       };
     })();
 
-    const blocks = [], top0 = 0.25, span = 0.56;
-    for (let l = 0; l < c.L; l++) blocks.push(blockNode(l, [0, top0 + (span / c.L) * l, 1, span / c.L - 0.025]));
+    const blocks = [];
+    for (let l = 0; l < c.L; l++) blocks.push(blockNode(l, rowRect(l + 2)));
     const kids = [tokens, embed, ...blocks, outNode];
     return {
       id: 'model', title: 'Tiny Transformer', sub: `${fmtInt(m.paramCount)} parameters`,
@@ -619,7 +641,7 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       about: [
         `A GPT-style language model: it reads a sequence of token numbers and, at every position, predicts the next token. Each token becomes a vector of ${d} numbers; every block then reads from that "residual stream" and adds its result back, so the stream accumulates everything the model has worked out about each token.`,
         `This one is tiny: ${V} words, ${d} numbers per token, ${c.L} block${c.L > 1 ? 's' : ''} of ${c.H}-head attention and ${c.F}-neuron MLPs, ${fmtInt(m.paramCount)} parameters. GPT-2 small uses the same recipe with 50,257 tokens, 768 numbers per token and 12 blocks of 12 heads (124 million parameters); the arithmetic per token is the same.`,
-        'Click a part or zoom in to open it, and keep going: a block opens into LayerNorm, attention and the MLP; attention opens into its heads; a head shows its queries, keys, scores and weights for your prompt. Zoom out or use the path at the top to come back. The Python tab shows the part you are looking at in PyTorch, and here, the whole model.',
+        `${NA.tapWord()} a part or zoom in to open it, and keep going: a block opens into LayerNorm, attention and the MLP; attention opens into its heads; a head shows its queries, keys, scores and weights for your prompt. Zoom out or use the path at the top to come back. The Python tab shows the part you are looking at in PyTorch, and here, the whole model.`,
       ],
       code: py.model(c),
       codeLabel: 'Python · PyTorch · the whole model',

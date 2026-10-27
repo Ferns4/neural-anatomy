@@ -53,8 +53,8 @@
   // ------------------------------------------------------------------ templates
   const D = (units, act = 'relu') => ({ type: 'dense', units, act });
   BT.TEMPLATES = [
-    { id: 'empty', label: 'Empty', hint: 'Just the input and the output: build it all yourself.', families: ['plane', 'curve', 'digits', 'sequence'], blocks: () => [] },
-    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output. Straight boundaries only.', families: ['plane', 'curve', 'digits'], blocks: () => [] },
+    { id: 'empty', label: 'Empty', hint: 'Just the embedding and the output: build the rest yourself.', families: ['sequence'], blocks: () => [] },
+    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'digits'], blocks: () => [] },
     { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(16), D(16)] },
     { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
     { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'digits'], blocks: () => [D(64)] },
@@ -98,17 +98,27 @@
       Xtr: gather(X, 2, tr, Float32Array), Ytr: Int32Array.from(tr.map((k) => Y[k])), nTr: tr.length,
       Xva: gather(X, 2, va, Float32Array), Yva: Int32Array.from(va.map((k) => Y[k])), nVa: va.length, tooFew: points.length < 8 || used.length < 2 };
   }
+  // a formula as the data uses it: it must parse, and have a finite value everywhere on [−1, 1]
+  BT.checkFormula = function (src) {
+    const c = BT.compile(src);
+    if (c.error) return c;
+    for (let i = 0; i <= 400; i++) {
+      const x = -1 + i / 200, y = c.f(x);
+      if (!Number.isFinite(y)) return { error: `The formula has no finite value at x = ${NA.fmt(x, 2)}, for example a division by zero or the log of a negative number.` };
+    }
+    return c;
+  };
   function curveData(p, s, seed) {
     const rng = new NA.RNG(seed * 13 + 5);
     let xs, ys, f = null;
     if (p.custom) {
-      const c = BT.compile(s.formula);
+      const c = BT.checkFormula(s.formula);
       if (c.error) return { family: 'curve', error: c.error, input: { kind: 'vector', dim: 1 }, output: { kind: 'value', k: 1 } };
       f = c.f;
       xs = NA.range(s.n).map(() => rng.uniform(-1, 1));
       ys = xs.map((x) => f(x));
       const bad = ys.findIndex((v) => !Number.isFinite(v));
-      if (bad >= 0) return { family: 'curve', error: `The formula has no finite value at x = ${NA.fmt(xs[bad], 2)} (for example, a division by zero or the log of a negative number).`, input: { kind: 'vector', dim: 1 }, output: { kind: 'value', k: 1 } };
+      if (bad >= 0) return { family: 'curve', error: `The formula has no finite value at x = ${NA.fmt(xs[bad], 2)}, for example a division by zero or the log of a negative number.`, input: { kind: 'vector', dim: 1 }, output: { kind: 'value', k: 1 } };
     } else {
       const ds = NA.data.buildDataset({ dataset: p.dataset, n: s.n, noise: 0, trainRatio: 0.75, seed });
       xs = Array.from(ds.raw); ys = Array.from(ds.y);

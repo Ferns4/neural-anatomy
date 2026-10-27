@@ -153,19 +153,24 @@
     levelRect() { const [W, H] = this.size(); return { x: 10, y: 46, w: W - 20, h: H - 56 }; }
     content(node, r) { const hy = node.header ?? (this.hy || 0.07); return { x: r.x + r.w * 0.02, y: r.y + r.h * hy, w: r.w * 0.96, h: r.h * (1 - hy - 0.02) }; }
     node() { let n = this.root; for (const id of this.path.slice(1)) n = this.childOf(n, id) || n; return n; }
-    // a part of a level by id: a listed child, or a cell of one of its grids ("grid:i:j"), made on demand
+    /* A part of a level by id: a listed child, or a cell of one of its grids, made on demand: "grid:i:j", or
+       "grid:k" for a grid with index set, which numbers its cells row by row so that a cell keeps its id when
+       the grid's layout follows the stage size (tiles of channels). */
     childOf(parent, id) {
       if (!parent) return null;
       const ch = (parent.children || []).find((c) => c.id === id);
       if (ch || !parent.grids) return ch || null;
-      const m = /^(.+):(\d+):(\d+)$/.exec(id), g = m && parent.grids.find((q) => q.id === m[1]);
-      return g && +m[2] < g.rows && +m[3] < g.cols ? this.cellNode(parent, g, +m[2], +m[3]) : null;
+      let m = /^(.+):(\d+):(\d+)$/.exec(id), g = m && parent.grids.find((q) => q.id === m[1] && !q.index), i, j;
+      if (g) { i = +m[2]; j = +m[3]; }
+      else if ((m = /^(.+):(\d+)$/.exec(id)) && (g = parent.grids.find((q) => q.id === m[1] && q.index))) { i = Math.floor(+m[2] / g.cols); j = +m[2] % g.cols; }
+      else return null;
+      return i < g.rows && j < g.cols ? this.cellNode(parent, g, i, j) : null;
     }
     cellNode(parent, g, i, j) {
       const node = g.make(i, j);
       if (!node) return null;
       const c = this.content(parent, this.levelRect()), gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
-      return Object.assign(node, { id: `${g.id}:${i}:${j}`, rect: [(gr.x + j * cw - c.x) / c.w, (gr.y + i * ch - c.y) / c.h, cw / c.w, ch / c.h] });
+      return Object.assign(node, { id: g.index ? `${g.id}:${i * g.cols + j}` : `${g.id}:${i}:${j}`, rect: [(gr.x + j * cw - c.x) / c.w, (gr.y + i * ch - c.y) / c.h, cw / c.w, ch / c.h] });
     }
     cellSize(g, gr) { let cw = gr.w / g.cols, ch = gr.h / g.rows; if (g.square) cw = ch = Math.min(cw, ch); return { cw, ch }; }
     // the open level (or the part it shows small) moves: keep redrawing
@@ -264,13 +269,24 @@
       }
       S.box(ctx, r, { fill: theme.c('panel'), stroke: hov ? theme.c('focus') : node.tone ? theme.c(node.tone, 0.7) : theme.c('line-2'), lw: hov ? 2 : 1.1 });
       if (node.tone) { ctx.fillStyle = theme.c(node.tone, theme.dark ? 0.1 : 0.07); ctx.beginPath(); NA.rr(ctx, r.x, r.y, r.w, r.h, Math.min(10, r.w * 0.05, r.h * 0.2)); ctx.fill(); }
-      const ts = clamp(Math.min(r.h * 0.2, r.w * 0.085), 7, 16), hasSum = !!node.summary && r.h > ts * 3.4;
-      const ty = hasSum ? r.y + ts * 1.1 : r.y + r.h / 2 - (node.sub && r.h > ts * 2.6 ? ts * 0.45 : 0);
-      S.text(ctx, node.title, r.x + r.w / 2, ty, { size: ts, w: 650, align: 'center', maxW: r.w - 8 });
+      /* Title, subtitle and a small picture, each only where it fits at a readable size: a subtitle under 8.5 px
+         or a picture squeezed into a few pixels is dropped rather than drawn over the rest. The title keeps
+         clear of the ⤢ that marks a part you can open. */
+      const icon = this.canEnter(node) && r.w > 46 && r.h > 30, maxW = r.w - (icon ? 34 : 8);
+      const ts = clamp(Math.min(r.h * 0.17, r.w * 0.085), 8, 16), ss = Math.max(8.5, ts * 0.74);
+      const subFits = !!node.sub && r.h >= ts * 1.4 + ss * 1.5 + 6;
+      const top = r.y + ts * 1.1, below = top + ts * 0.85 + (subFits ? ss * 1.45 : 0), room = r.y + r.h - below - Math.min(8, r.h * 0.08);
+      const hasSum = !!node.summary && room >= Math.max(14, ts * 1.3);
+      const ty = hasSum ? top : r.y + r.h / 2 - (subFits ? ss * 0.62 : 0);
+      // only text in the top band shares a line with the ⤢; text lower down may use the full width
+      const wAt = (yy, size) => (icon && yy - size * 0.6 < r.y + 17 ? maxW : r.w - 8);
+      // a line slightly too long first shrinks (to 85%), and only then is shortened with an ellipsis
+      const shrink = (s, size, w, weight) => { ctx.font = `${weight} ${size}px ${NA.getFont('ui')}`; const tw = ctx.measureText(s).width; return tw > w ? Math.max(size * 0.85, (size * w) / tw) : size; };
+      S.text(ctx, node.title, r.x + r.w / 2, ty, { size: shrink(node.title, ts, wAt(ty, ts), 650), w: 650, align: 'center', maxW: wAt(ty, ts) });
       let y = ty + ts * 0.85;
-      if (node.sub && r.h > ts * 2.6) { S.text(ctx, node.sub, r.x + r.w / 2, ty + ts * 1.1, { size: ts * 0.72, color: theme.c('muted'), align: 'center', maxW: r.w - 8 }); y = ty + ts * 1.75; }
+      if (subFits) { const sy = ty + ts * 0.55 + ss * 0.95; S.text(ctx, node.sub, r.x + r.w / 2, sy, { size: shrink(node.sub, ss, wAt(sy, ss), 500), color: theme.c('muted'), align: 'center', maxW: wAt(sy, ss) }); y = ty + ts * 0.85 + ss * 1.45; }
       if (hasSum) { ctx.save(); ctx.globalAlpha = alpha; node.summary(ctx, { x: r.x + r.w * 0.06, y, w: r.w * 0.88, h: r.y + r.h - y - Math.min(8, r.h * 0.08) }, S); ctx.restore(); }
-      if (this.canEnter(node) && r.w > 46 && r.h > 30) S.text(ctx, '⤢', r.x + r.w - 6, r.y + 9, { size: 10, align: 'right', color: theme.c('muted') });
+      if (icon) S.text(ctx, '⤢', r.x + r.w - 6, r.y + 9, { size: 10, align: 'right', color: theme.c('muted') });
     }
 
     // children of the current level under a screen point
@@ -409,6 +425,7 @@
         this.crumbs.append(el('button', { type: 'button', class: 'arch-crumb' + (here ? ' is-here' : ''), 'aria-current': here ? 'location' : null, onclick: () => { if (!here) this.exit(i); } }, n.title));
       });
       this.crumbs.scrollLeft = this.crumbs.scrollWidth; // keep the current level in view
+      this.crumbs.classList.toggle('is-cut', this.crumbs.scrollWidth > this.crumbs.clientWidth + 1); // and fade what scrolled out
       if (!this.anim) this.notify();
     }
     goRoot() { if (this.path.length > 1) this.exit(0); }

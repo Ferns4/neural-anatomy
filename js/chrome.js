@@ -2,7 +2,7 @@
    keyboard shortcuts and start-up. */
 (function (NA) {
   'use strict';
-  const { theme, clamp, fmt, fmtPct, fmtInt, el, $, $$ } = NA;
+  const { theme, clamp, fmtSci: fmt, fmtPct, fmtInt, el, $, $$ } = NA; // fmtSci: tiny losses as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const E = NA.engine;
 
@@ -53,6 +53,8 @@
     const actSel = $('#hpAct');
     for (const id of E.ACTIVATION_ORDER) actSel.appendChild(el('option', { value: id }, E.ACTIVATIONS[id].label));
     actSel.appendChild(el('option', { value: 'mixed', disabled: true }, 'Mixed (per neuron)'));
+    // shown (disabled) for a network with no hidden layer, whose only neuron is the output
+    actSel.appendChild(el('option', { value: 'none', disabled: true }, 'No hidden layer'));
     const on = (id, fn) => $(id).addEventListener('change', (e) => fn(e.target.value));
     on('#hpLr', (v) => App.applyPatch({ lr: +v }));
     on('#hpOpt', (v) => App.applyPatch({ optimizer: v }));
@@ -86,23 +88,38 @@
 
     // timeline
     CH.tl = $('#tlCanvas');
+    CH.tlRoot = CH.tl.closest('.timeline');
+    // a quiet hint shares the action buttons' slot while the live network shows, so the slot never changes width
+    CH.tlHint = el('span', { class: 'tl-hint', text: 'Drag to view an earlier step' });
+    $('.tl-actions').prepend(CH.tlHint);
+    // A drag maps the pointer against the canvas as it was when the drag began: the strip may be redrawn at
+    // another width while it runs, and the step under the finger must not jump.
     const scrub = (e) => {
-      const r = CH.tl.getBoundingClientRect(), H = App.history, snaps = H.snaps, f = CH.tlFrame;
-      if (!snaps.length || !f) return;
-      const step = f.xmin + clamp((e.clientX - r.left - f.padL) / f.w, 0, 1) * (f.xmax - f.xmin);
+      const d = CH.tlDrag, snaps = App.history.snaps;
+      if (!d || !snaps.length) return;
+      const f = d.frame, step = f.xmin + clamp((e.clientX - d.left - f.padL) / f.w, 0, 1) * (f.xmax - f.xmin);
       let bi = 0;
       for (let i = 0; i < snaps.length; i++) if (Math.abs(snaps[i].step - step) < Math.abs(snaps[bi].step - step)) bi = i;
-      if (bi === snaps.length - 1 && App.viewing === null) return;
-      App.viewSnapshot(bi);
+      // the newest snapshot (pausing can store a second one at the same step) stands for the live network:
+      // dragging back onto it leaves history
+      if (snaps[bi].step === snaps[snaps.length - 1].step) App.backToLive(); else App.viewSnapshot(bi);
     };
-    let dragging = false;
-    CH.tl.addEventListener('pointerdown', (e) => { dragging = true; CH.tl.setPointerCapture(e.pointerId); scrub(e); });
-    CH.tl.addEventListener('pointermove', (e) => { if (dragging) scrub(e); });
-    CH.tl.addEventListener('pointerup', () => { dragging = false; });
+    const endDrag = () => { if (!CH.tlDrag) return; CH.tlDrag = null; syncTimelineActions(); };
+    CH.tl.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || !CH.tlFrame) return;
+      CH.tlDrag = { left: CH.tl.getBoundingClientRect().left, frame: Object.assign({}, CH.tlFrame) };
+      CH.tl.setPointerCapture(e.pointerId);
+      scrub(e);
+    });
+    CH.tl.addEventListener('pointermove', (e) => { if (CH.tlDrag) scrub(e); });
+    CH.tl.addEventListener('pointerup', endDrag);
+    CH.tl.addEventListener('pointercancel', endDrag);
+    CH.tl.addEventListener('lostpointercapture', endDrag);
     CH.tl.addEventListener('keydown', (e) => {
       const H = App.history, cur = App.viewing === null ? H.snaps.length - 1 : App.viewing;
-      if (e.key === 'ArrowLeft') { e.preventDefault(); App.viewSnapshot(cur - 1); }
-      if (e.key === 'ArrowRight') { e.preventDefault(); if (cur + 1 >= H.snaps.length - 1 && App.viewing !== null) App.backToLive(); else App.viewSnapshot(cur + 1); }
+      // back to the previous snapshot of an earlier step (skipping a duplicate of the one shown)
+      if (e.key === 'ArrowLeft') { e.preventDefault(); const s = App.displayStep(); let i = cur - 1; while (i > 0 && H.snaps[i].step >= s) i--; App.viewSnapshot(i); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); const last = H.snaps.length - 1; if (cur + 1 >= last || H.snaps[cur + 1].step === H.snaps[last].step) App.backToLive(); else App.viewSnapshot(cur + 1); }
       if (e.key === 'End') App.backToLive();
     });
     $('#btnLive').addEventListener('click', () => App.backToLive());
@@ -131,10 +148,11 @@
     setSelect($('#hpLr'), h.lr, OPTIONS.lr);
     $('#hpOpt').value = h.optimizer;
     setSelect($('#hpBatch'), h.batch, OPTIONS.batch);
-    // one activation everywhere selects it; otherwise the "mixed" entry
+    // one activation everywhere selects it; otherwise the "mixed" entry, or "No hidden layer" (the preset's
+    // default activation would name a function no neuron uses)
     const net = App.net, ids = new Set();
     for (let l = 1; l < net.L; l++) for (const id of net.actIds[l]) ids.add(id);
-    $('#hpAct').value = ids.size === 1 ? [...ids][0] : ids.size ? 'mixed' : App.arch.act;
+    $('#hpAct').value = ids.size === 1 ? [...ids][0] : ids.size ? 'mixed' : 'none';
     const lossSel = $('#hpLoss');
     fillSelect(lossSel, E.LOSS_FOR[net.out], (id) => E.LOSSES[id].label);
     lossSel.value = net.lossId;
@@ -197,12 +215,12 @@
     $('#roVal').textContent = fmt(m.valLoss, 3);
     $('#roAccLabel').textContent = document.body.dataset.layout === 'mobile' ? (cls ? 'Val. acc.' : 'Val. R²') : (cls ? 'Val. accuracy' : 'Val. R²');
     $('#roAcc').textContent = cls ? fmtPct(m.valAcc, 1) : fmt(m.valAcc, 3);
-    // the held-out test button doubles as its last result
+    // the held-out test button doubles as its last result ("Held-out test · Run ›" before the first run)
     const tr = App.testResult, stale = !!tr && tr.version !== App.version, tb = $('#btnTest');
     $('#roTestRun').textContent = tr ? (cls ? fmtPct(tr.acc, 1) : fmt(tr.acc, 3)) + (stale ? ' ↻' : '') : 'Run ›';
     tb.classList.toggle('has-result', !!tr);
     tb.classList.toggle('is-stale', stale);
-    tb.title = !tr ? 'Score the model on the held-out test set (T)' : stale ? `Test ${cls ? 'accuracy' : 'R²'} at step ${fmtInt(tr.step)}; the model has changed since. Click to run it again (T)` : `Test ${cls ? 'accuracy' : 'R²'} on ${tr.n} held-out samples. Click to run it again (T)`;
+    tb.title = !tr ? 'Run the held-out test: score the model on data it never trained on (T)' : stale ? `Test ${cls ? 'accuracy' : 'R²'} at step ${fmtInt(tr.step)}; the model has changed since. Click to run the held-out test again (T)` : `Test ${cls ? 'accuracy' : 'R²'} on ${tr.n} held-out samples. Click to run the held-out test again (T)`;
     const state = $('#roState');
     if (App.diverged) { state.textContent = 'Diverged'; state.className = 'state-pill pill-critical'; }
     else if (App.viewing !== null) { state.textContent = 'History'; state.className = 'state-pill pill-info'; }
@@ -210,8 +228,21 @@
     else { state.textContent = step === 0 ? 'Untrained' : 'Paused'; state.className = 'state-pill pill-quiet'; }
   }
 
+  // "Train from here" and "Back to latest" appear when a drag ends, never under the pointer. The page keeps
+  // their slot while they are hidden (on a phone they float above the strip), so the canvas keeps its width.
+  // The hint gives way to them only then, and a phone, with no room beside its strip, never shows it.
+  function syncTimelineActions() {
+    const viewing = App.viewing !== null, show = viewing && !CH.tlDrag;
+    $('#btnLive').hidden = !show;
+    $('#btnResume').hidden = !show;
+    CH.tlHint.hidden = show || document.body.dataset.layout === 'mobile';
+    CH.tlRoot.classList.toggle('is-viewing', viewing);
+    CH.tlRoot.classList.toggle('has-actions', show);
+  }
+
   function drawTimeline() {
-    const c = CH.tl, wrap = c.parentElement, W = Math.max(120, wrap.clientWidth), H = 46;
+    // a little shorter on a phone, where a label row sits above it
+    const c = CH.tl, wrap = c.parentElement, W = Math.max(120, wrap.clientWidth), H = document.body.dataset.layout === 'mobile' ? 40 : 46;
     const ctx = NA.fitCanvas(c, W, H), pts = App.history.points, snaps = App.history.snaps;
     ctx.clearRect(0, 0, W, H);
     const padL = 4, padR = 4, w = W - padL - padR, h = H - 10;
@@ -238,8 +269,7 @@
     }
     const viewing = App.viewing !== null;
     $('#tlStatus').textContent = viewing ? `Viewing step ${fmtInt(App.displayStep())} of ${fmtInt(App.step)}` : `${fmtInt(App.step)} steps · ${snaps.length} snapshots`;
-    $('#btnLive').hidden = !viewing;
-    $('#btnResume').hidden = !viewing;
+    syncTimelineActions();
     c.setAttribute('aria-valuenow', String(App.displayStep()));
     c.setAttribute('aria-valuemax', String(App.step));
     c.setAttribute('aria-valuetext', `Step ${App.displayStep()}`);

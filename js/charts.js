@@ -12,7 +12,9 @@
     for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) { const v = Math.pow(10, e); if (v >= lo * 0.999 && v <= hi * 1.001) out.push(v); }
     return out;
   }
-  const expLabel = (v) => { const e = Math.round(Math.log10(v)); return e === 0 ? '1' : e === 1 ? '10' : e === -1 ? '0.1' : '1e' + (e < 0 ? NA.MINUS + Math.abs(e) : e); };
+  // powers of ten as people write them: 0.01 to 100 plainly, beyond that 10⁻⁴ or 10⁵
+  const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+  const expLabel = (v) => { const e = Math.round(Math.log10(v)); return e >= -2 && e <= 2 ? String(+Math.pow(10, e).toFixed(Math.max(0, -e))) : '10' + (e < 0 ? '⁻' : '') + String(Math.abs(e)).split('').map((c) => SUP[c]).join(''); };
 
   /* Line chart with hover crosshair. series: [{name, color, points:[[x,y]], width}] */
   class LineChart {
@@ -54,14 +56,19 @@
       ctx.clearRect(0, 0, this.W, this.H);
       ctx.font = `500 10px ${mono()}`;
       // gridlines + y ticks
-      const ticks = o.logY ? niceLogTicks(sc.ymin, sc.ymax) : NA.niceTicks(sc.ymin, sc.ymax, 4);
+      let ticks = o.logY ? niceLogTicks(sc.ymin, sc.ymax) : NA.niceTicks(sc.ymin, sc.ymax, 4);
+      // no more labels than fit (a log axis over many decades): keep every k-th
+      const room = Math.max(2, Math.floor(sc.h / 15));
+      if (ticks.length > room) { const k = Math.ceil(ticks.length / room); ticks = ticks.filter((t, i) => i % k === 0); }
+      // the same number of decimals on every label of an axis (0.0, 0.2 … 1.0, not 1.0 and 0.80)
+      const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : 1, dec = clamp(-Math.floor(Math.log10(step + 1e-12)), 0, 4);
       ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.fillStyle = theme.c('muted');
       ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
       for (const t of ticks) {
         const y = Math.round(sc.Y(t)) + 0.5;
         if (y < sc.padT - 1 || y > sc.padT + sc.h + 1) continue;
         ctx.beginPath(); ctx.moveTo(sc.padL, y); ctx.lineTo(sc.padL + sc.w, y); ctx.stroke();
-        ctx.fillText(o.logY ? expLabel(t) : o.yFormat ? o.yFormat(t) : fmt(t, Math.abs(t) < 1 && t !== 0 ? 2 : 1), sc.padL - 6, y);
+        ctx.fillText(o.yFormat ? o.yFormat(t) : o.logY ? expLabel(t) : t.toFixed(dec).replace('-', NA.MINUS), sc.padL - 6, y);
       }
       // x ticks
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
@@ -85,11 +92,17 @@
         }
         ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
         ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(sc.X(p[0]), sc.Y(p[1])) : ctx.moveTo(sc.X(p[0]), sc.Y(p[1])))); ctx.stroke();
-        const last = pts[pts.length - 1];
-        ctx.beginPath(); ctx.arc(sc.X(last[0]), sc.Y(last[1]), 3.5, 0, Math.PI * 2); ctx.fillStyle = s.color; ctx.fill();
-        ctx.lineWidth = 2; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
       }
       ctx.restore();
+      // each series' latest value as a dot, drawn outside the clip so the edge does not cut it
+      for (const s of d.series) {
+        const pts = s.points.filter((p) => isFinite(p[1]) && (!o.logY || p[1] > 0)), last = pts[pts.length - 1];
+        if (!last) continue;
+        const y = sc.Y(last[1]);
+        if (y < sc.padT - 4 || y > sc.padT + sc.h + 4) continue;
+        ctx.beginPath(); ctx.arc(sc.X(last[0]), y, 3.5, 0, Math.PI * 2); ctx.fillStyle = s.color; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = theme.c('panel'); ctx.stroke();
+      }
       if (d.marker !== undefined && d.marker !== null) {
         const x = Math.round(sc.X(d.marker)) + 0.5;
         ctx.strokeStyle = theme.c('ink', 0.5); ctx.lineWidth = 1;

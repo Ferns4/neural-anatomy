@@ -1,7 +1,7 @@
 /* arch-diffusion.js — the diffusion model as a zoomable architecture: the training path (data → add noise →
    denoiser → loss) and the generating path (noise → the same denoiser → update step, repeated). The denoiser
    opens into its layers. One training point is followed through every part at the slider's noise step t, so
-   each box shows that point's live numbers: its noise ε, the network's guess ε̂, its loss and its update. */
+   each box shows that point's live numbers: its noise ε, the network's guess ε_θ, its loss and its update. */
 (function (NA) {
   'use strict';
   const { fmt, fmtInt, theme, clamp } = NA;
@@ -64,7 +64,7 @@ class Denoiser(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
 ${hidden.map((h, i) => `            nn.Linear(${i ? hidden[i - 1] : '2 + 9'}, ${h}), nn.SiLU(),${i ? '' : '        # x, y and 9 time features'}`).join('\n')}
-            nn.Linear(${hidden[hidden.length - 1]}, 2))                        # ε̂ for x and y
+            nn.Linear(${hidden[hidden.length - 1]}, 2))                        # ε_θ for x and y
 
     def forward(self, xt, t):
         return self.net(torch.cat([xt, time_features(t)], dim=1))`;
@@ -174,7 +174,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
     // neuron j of weight layer l, for the followed point
     const neuronOf = (l, j) => {
       const nIn = net.sizes[l], nOut = net.sizes[l + 1], last = l === net.L - 1;
-      return Dp.neuron(X, { title: last ? `Output ε̂[${j}]` : `Neuron ${j + 1} of layer ${l + 1}`, sub: last ? 'linear' : `${nIn} inputs, SiLU`,
+      return Dp.neuron(X, { title: last ? `Output ε_θ[${j}]` : `Neuron ${j + 1} of layer ${l + 1}`, sub: last ? 'linear' : `${nIn} inputs, SiLU`,
         terms: Array.from({ length: nIn }, (_, i) => ({ a: acts[l][i], w: net.W[l][i * nOut + j] })), bias: net.b[l][j], act: last ? null : SILU,
         inLabel: (i) => (l === 0 ? FEAT[i] : `neuron ${i + 1} of layer ${l}`), wLabel: (i) => `W${l + 1}[${i}, ${j}]`,
         inputNode: (i) => (l === 0 ? featNode(i) : neuronOf(l - 1, i)),
@@ -196,7 +196,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
     const tMark = (ctx, r) => { const x = r.x + (t / T) * r.w; ctx.strokeStyle = theme.c('ink', 0.55); ctx.setLineDash([2, 3]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, r.y); ctx.lineTo(x, r.y + r.h); ctx.stroke(); ctx.setLineDash([]); };
 
     const dataNode = {
-      id: 'data', title: 'Data x₀', sub: `${fmtInt(D.n)} points`, rect: W2([0, 0.02, 0.15, 0.3], [0, 0, 0.3, 0.16]),
+      id: 'data', title: 'Data x₀', sub: size.w * W2(0.17, 0.3) < 96 ? `n = ${fmtInt(D.n)}` : `${fmtInt(D.n)} points`, rect: W2([0, 0.02, 0.17, 0.3], [0, 0, 0.3, 0.16]),
       summary: (ctx, r) => { const P = scatter(ctx, D.pts, D.n, r, theme.c('ink-2'), 4, 1); dot(ctx, P, x0, theme.c('s7'), 2.5); },
       inner: (ctx, r, S) => {
         const q = S.place(r, [0, 0.02, 0.72, 0.86]), uu = S.u(r, 8, 13);
@@ -214,7 +214,7 @@ samples = sample(model, steps=${L.steps}, ddim=${L.sampler === 'ddim' ? 'True' :
     };
 
     const fwdNode = {
-      id: 'forward', title: 'Add noise', sub: 'x_t = √ᾱ·x₀ + √(1 − ᾱ)·ε', rect: W2([0.19, 0.02, 0.2, 0.3], [0.35, 0, 0.3, 0.16]), tone: 's2',
+      id: 'forward', title: 'Add noise', sub: 'x₀ → x_t', rect: W2([0.205, 0.02, 0.2, 0.3], [0.35, 0, 0.3, 0.16]), tone: 's2',
       summary: (ctx, r, S) => {
         S.curve(ctx, (v) => Math.sqrt(S0.abar[Math.round(v)]), r, 0, T, 0, 1, { color: theme.c('pos'), lw: 1.4 });
         S.curve(ctx, (v) => Math.sqrt(1 - S0.abar[Math.round(v)]), r, 0, T, 0, 1, { color: theme.c('neg'), lw: 1.4 });
@@ -259,7 +259,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
     };
 
     const timeNode = {
-      id: 'time', title: 'Time features', sub: '9 numbers from t', rect: W2([0.19, 0.36, 0.2, 0.28], [0.7, 0, 0.3, 0.16]), tone: 's3',
+      id: 'time', title: 'Time features', sub: 't → 9 numbers', rect: W2([0.205, 0.36, 0.2, 0.28], [0.7, 0, 0.3, 0.16]), tone: 's3',
       summary: (ctx, r, S) => S.bars(ctx, feats, r, { max: 1 }),
       grids: [{ id: 'f', rect: [0, 0.8, 1, 0.18], rows: 1, cols: 9, make: (i, j) => featNode(j + 2) }],
       inner: (ctx, r, S) => {
@@ -288,7 +288,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
       const nIn = net.sizes[l], nOut = net.sizes[l + 1], last = l === net.L - 1, a = acts[l + 1], z = zs[l + 1];
       const LR = { a: W2([0, 0.08, 0.62, 0.3], [0, 0.06, 1, 0.22]), z: W2([0, 0.52, 0.62, 0.3], [0, 0.36, 1, 0.22]), w: last ? W2([0, 0.52, 0.62, 0.2], [0, 0.4, 1, 0.2]) : W2([0.7, 0.56, 0.3, 0.4], [0.52, 0.66, 0.48, 0.3]) };
       return {
-        id: 'l' + l, title: last ? 'Output ε̂' : `Layer ${l + 1}`, sub: `${nIn} → ${nOut}${last ? '' : ' SiLU'}`, tone: last ? 's7' : null, rect: layerRect(l),
+        id: 'l' + l, title: last ? 'Output ε_θ' : `Layer ${l + 1}`, sub: `${nIn} → ${nOut}${last ? '' : ' SiLU'}`, tone: last ? 's7' : null, rect: layerRect(l),
         summary: (ctx, r, S) => S.bars(ctx, a, r),
         grids: [
           { id: 'a', rect: LR.a, rows: 1, cols: nOut, make: (i, j) => neuronOf(l, j) },
@@ -298,7 +298,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
         inner: (ctx, r, S) => {
           const uu = S.u(r, 9, 14);
           const ar = S.place(r, LR.a), zr = S.place(r, LR.z);
-          S.caption(ctx, last ? `ε̂ = W·a + b: the predicted noise ${pair(a)}; the true ε was ${pair(e)}` : `a = SiLU(z) = z·σ(z): the ${nOut} outputs`, ar, { size: uu * 0.85, minW: 220 });
+          S.caption(ctx, last ? `ε_θ = W·a + b: the predicted noise ${pair(a)}; the true ε was ${pair(e)}` : `a = SiLU(z) = z·σ(z): the ${nOut} outputs`, ar, { size: uu * 0.85, minW: 220 });
           S.bars(ctx, a, ar);
           if (!last) {
             S.caption(ctx, `z = W·a + b: the ${nOut} pre-activations`, zr, { size: uu * 0.85, minW: 200 });
@@ -313,7 +313,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
           S.heat(ctx, (i, j) => net.W[l][j * nOut + i], nOut, nIn, wr);
         },
         about: last
-          ? [`The last layer is linear, so its two outputs can be any size: the network’s guess ε̂ = ${pair(a)} of the noise mixed into the followed point (the true noise was ${pair(e)}). Everything else, the loss and the sampler, is built from this guess.`]
+          ? [`The last layer is linear, so its two outputs can be any size: the network’s guess ε_θ = ${pair(a)} of the noise mixed into the followed point (the true noise was ${pair(e)}). Everything else, the loss and the sampler, is built from this guess.`]
           : [
             `Hidden layer ${l + 1}: ${nOut} neurons, each computing z = w·a + b from the ${nIn} numbers below it and passing it through SiLU(z) = z·σ(z), a smooth cousin of ReLU that lets small negative values through. The bars show both for the followed point at t = ${t}.`,
             'The weight matrix W is drawn with one row per neuron and one column per input; blue weights are positive and orange ones negative.',
@@ -323,7 +323,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
     };
 
     const netNode = {
-      id: 'net', title: 'Denoiser network', sub: net.sizes.join(' → '), rect: W2([0.44, 0.02, 0.24, 0.96], [0, 0.22, 1, 0.4]), tone: 's1',
+      id: 'net', title: 'Denoiser', sub: `${net.L - 1} × ${net.sizes[1]} SiLU`, rect: W2([0.45, 0.02, 0.21, 0.96], [0, 0.22, 1, 0.4]), tone: 's1',
       summary: (ctx, r) => {
         const cols = net.sizes.length, w = r.w / cols;
         net.sizes.forEach((n, i) => { const hh = Math.min(r.h, 6 + n * 1.1); ctx.fillStyle = theme.c(i === 0 || i === cols - 1 ? 'ink-2' : 's1', 0.7); ctx.fillRect(r.x + w * i + w * 0.3, r.y + (r.h - hh) / 2, w * 0.4, hh); });
@@ -346,7 +346,7 @@ xt, eps = add_noise(data, torch.full((len(data),), ${t}))   # the whole dataset 
       children: net.W.map((_, l) => layerNode(l)),
       about: [
         `The denoiser is a plain MLP, ${net.sizes.join(' → ')}, with ${fmtInt(net.paramCount)} parameters. Its input is a noisy point (2 numbers) and the step t (as 9 time features); its output is its guess of the noise ε that was added. That one guess is all the model ever produces.`,
-        `Here it sees the followed point x_t = ${pair(xt, 2)} at t = ${t} and answers ε̂ = ${pair(eh)} (the true noise was ${pair(e)}). Knowing the noise is the same as knowing which way to move a point to make it look more like the data: the arrows in the Denoiser view are this network’s answers across the whole plane.`,
+        `Here it sees the followed point x_t = ${pair(xt, 2)} at t = ${t} and answers ε_θ = ${pair(eh)} (the true noise was ${pair(e)}). Knowing the noise is the same as knowing which way to move a point to make it look more like the data: the arrows in the Denoiser view are this network’s answers across the whole plane.`,
         'Image generators do the same job with a U-Net or a transformer of hundreds of millions of parameters, but the training and sampling around the network are unchanged.',
       ],
       code: `${py.time(T)}
@@ -356,13 +356,13 @@ ${py.net(m.o.hidden)}`,
     };
 
     const lossNode = {
-      id: 'loss', title: 'Training loss', sub: 'training: ‖ε − ε̂‖²', rect: W2([0.73, 0.02, 0.27, 0.44], [0, 0.68, 0.48, 0.32]), tone: 's4',
+      id: 'loss', title: 'Training loss', sub: '‖ε − ε_θ‖²', rect: W2([0.735, 0.02, 0.265, 0.44], [0, 0.68, 0.48, 0.32]), tone: 's4',
       summary: (ctx, r) => { const b = L.lossBands(), mx = Math.max(...b, 1e-6), bw = r.w / 10; b.forEach((v, i) => { const h = (v / mx) * r.h; ctx.fillStyle = theme.c('s4', 0.75); ctx.fillRect(r.x + i * bw + 1, r.y + r.h - h, bw - 2, h); }); },
       inner: (ctx, r, S) => {
         const uu = S.u(r, 9, 14), b = L.lossBands(), mx = Math.max(...b, 1e-6), band = Math.min(9, Math.floor(((t - 1) / T) * 10));
         S.lines(ctx, [
-          'loss = mean of (ε − ε̂)² over x and y, and over a batch',
-          `followed point, t = ${t}:  ε = ${pair(e)}   ε̂ = ${pair(eh)}`,
+          'loss = mean of (ε − ε_θ)² over x and y, and over a batch',
+          `followed point, t = ${t}:  ε = ${pair(e)}   ε_θ = ${pair(eh)}`,
           `its loss = ((${fmt(eh[0] - e[0], 3)})² + (${fmt(eh[1] - e[1], 3)})²) / 2 = ${fmt(lossPt, 4)}`,
         ], S.place(r, [0, 0.02, 0.7, 0.22]), { mono: true, size: uu * 0.92, strong: (i) => i === 0 });
         const br = S.place(r, [0.04, 0.36, 0.92, 0.5]), bw = br.w / 10;
@@ -371,35 +371,35 @@ ${py.net(m.o.hidden)}`,
         S.text(ctx, `t = 1 … ${T} →`, br.x, br.y + br.h + uu * 0.9, { size: uu * 0.8, color: theme.c('muted') });
       },
       about: [
-        'Training is plain regression: take a real point, add a known amount of known noise, and penalise the squared difference between the true noise ε and the network’s guess ε̂. Every step uses fresh random points, noise levels and noise, so the network sees every noise level of every part of the shape.',
+        'Training is plain regression: take a real point, add a known amount of known noise, and penalise the squared difference between the true noise ε and the network’s guess ε_θ. Every step uses fresh random points, noise levels and noise, so the network sees every noise level of every part of the shape.',
         'The bars show the loss at each noise level. At high noise a point is almost all noise, so ε ≈ x_t is easy to guess and the loss is near zero. It peaks at low-to-middle noise, where data and noise are mixed about evenly. It never reaches zero: when little noise was added, nobody can tell exactly which part of a point is noise.',
       ],
       code: `${py.forward()}
 
 
 ${py.loss(L.batch)}`,
-      children: [Object.assign(Dp.fmul(X, eh[0] - e[0], eh[0] - e[0]), { id: 'sq', rect: side, title: '(ε̂ − ε)² for x', sub: `${fmt(eh[0] - e[0], 3)} squared` })],
+      children: [Object.assign(Dp.fmul(X, eh[0] - e[0], eh[0] - e[0]), { id: 'sq', rect: side, title: '(ε_θ − ε)² for x', sub: `${fmt(eh[0] - e[0], 3)} squared` })],
     };
 
     const sampNode = {
-      id: 'sampler', title: 'Sampler step', sub: `generating: ${L.sampler === 'ddim' ? 'DDIM' : 'DDPM'} × ${g.ts.length - 1}`, rect: W2([0.73, 0.54, 0.27, 0.44], [0.52, 0.68, 0.48, 0.32]), tone: 's7',
+      id: 'sampler', title: 'Sampler step', sub: `${L.sampler === 'ddim' ? 'DDIM' : 'DDPM'}, ${L.steps} steps`, rect: W2([0.735, 0.54, 0.265, 0.44], [0.52, 0.68, 0.48, 0.32]), tone: 's7',
       summary: (ctx, r, S) => S.text(ctx, `t → t − ${stride}`, r.x + r.w / 2, r.y + r.h * 0.35, { size: clamp(r.w / 9, 7, 13), mono: true, align: 'center', maxW: r.w }),
       inner: (ctx, r, S) => {
         const uu = S.u(r, 9, 14);
         S.lines(ctx, [
           `following x_t = ${pair(xt)} from t = ${t} to ${tPrev}`,
-          `ε̂ = ${pair(eh)}                 the network’s guess`,
-          `x̂₀ = (x_t − √(1 − ᾱ_t)·ε̂) / √ᾱ_t = ${pair(x0h)}   (true x₀ ${pair(x0, 2)})`,
+          `ε_θ = ${pair(eh)}                 the network’s guess`,
+          `x̂₀ = (x_t − √(1 − ᾱ_t)·ε_θ) / √ᾱ_t = ${pair(x0h)}   (true x₀ ${pair(x0, 2)})`,
           '',
           `DDPM:  x_${tPrev} = c₀·x̂₀ + c_t·x_t + σ·z,   z ~ N(0, I)`,
           `       c₀ = ${fmt(c0, 3)}   c_t = ${fmt(ct, 3)}   σ = ${fmt(sd, 3)}`,
           `       mean ${pair(mean)}, then add σ·z`,
-          `DDIM:  x_${tPrev} = √ᾱ_${tPrev}·x̂₀ + √(1 − ᾱ_${tPrev})·ε̂   (no new noise)`,
-          `       = ${fmt(Math.sqrt(abPrev), 3)}·x̂₀ + ${fmt(Math.sqrt(1 - abPrev), 3)}·ε̂ = ${pair(ddimNext)}`,
+          `DDIM:  x_${tPrev} = √ᾱ_${tPrev}·x̂₀ + √(1 − ᾱ_${tPrev})·ε_θ   (no new noise)`,
+          `       = ${fmt(Math.sqrt(abPrev), 3)}·x̂₀ + ${fmt(Math.sqrt(1 - abPrev), 3)}·ε_θ = ${pair(ddimNext)}`,
         ], S.place(r, [0, 0.02, 0.7, 0.96]), { mono: true, size: uu * 0.92, strong: (i) => i === 2 || i === 4 || i === 7 });
       },
       about: [
-        `Generating runs the process backwards. Start from pure noise; at each step ask the network for ε̂, turn it into an estimate x̂₀ of the clean point, and move to an earlier step. With ${L.steps} steps each one goes from t to t − ${stride}.`,
+        `Generating runs the process backwards. Start from pure noise; at each step ask the network for ε_θ, turn it into an estimate x̂₀ of the clean point, and move to an earlier step. With ${L.steps} steps each one goes from t to t − ${stride}.`,
         'DDPM draws the earlier point from a Gaussian whose mean is a blend of x̂₀ and the current point, then adds fresh noise σ·z; DDIM takes the deterministic step with no new noise, so the same start always lands in the same place.',
         `The numbers follow the ringed training point at t = ${t}. At high t, c₀ is small and the step mostly keeps the current point; near t = 0, c₀ grows and the point moves onto its estimate. The Generate view shows the whole journey for ${g.n} points at once.`,
       ],
@@ -408,14 +408,14 @@ ${py.loss(L.batch)}`,
 
 ${py.sampler()}`,
       children: [
-        Object.assign(Dp.fmul(X, sn, eh[0]), { id: 'x0', rect: [0.74, 0.02, 0.26, 0.29], title: '√(1 − ᾱ) × ε̂', sub: 'for x̂₀' }),
+        Object.assign(Dp.fmul(X, sn, eh[0]), { id: 'x0', rect: [0.74, 0.02, 0.26, 0.29], title: '√(1 − ᾱ) × ε_θ', sub: 'for x̂₀' }),
         Object.assign(Dp.fmul(X, c0, x0h[0]), { id: 'ddpm', rect: [0.74, 0.36, 0.26, 0.29], title: 'c₀ × x̂₀', sub: 'DDPM mean' }),
         Object.assign(Dp.fmul(X, Math.sqrt(abPrev), x0h[0]), { id: 'ddim', rect: [0.74, 0.7, 0.26, 0.28], title: '√ᾱ × x̂₀', sub: 'DDIM step' }),
       ],
     };
 
     const noiseNode = {
-      id: 'noise', title: 'Noise x_T', sub: 'N(0, I)', rect: [0, 0.68, 0.15, 0.3],
+      id: 'noise', title: 'Noise x_T', sub: 'N(0, I)', rect: [0, 0.68, 0.17, 0.3],
       summary: (ctx, r) => { const rng = new NA.RNG(4), pts = new Float32Array(400); for (let i = 0; i < 400; i++) pts[i] = rng.gauss(); scatter(ctx, pts, 200, r, theme.c('ink-2'), 1, 1); },
       inner: (ctx, r) => { const rng = new NA.RNG(4), pts = new Float32Array(1200); for (let i = 0; i < 1200; i++) pts[i] = rng.gauss(); scatter(ctx, pts, 600, { x: r.x, y: r.y, w: r.w * 0.7, h: r.h }, theme.c('ink-2'), 1, 2); },
       children: [Object.assign(Dp.stored(X, e[0], 'one noise number, ε for x'), { id: 'e', rect: [0.74, 0.3, 0.26, 0.3] })],
@@ -437,11 +437,11 @@ ${py.sampler()}`,
           S.arrow(ctx, tm.x + tm.w + 2, my(tm), nt.x - 3, my(tm), { lw: 1.2, head: 5 });
           lab('t', (tm.x + tm.w + nt.x) / 2, my(tm) - uu);
           S.arrow(ctx, nz.x + nz.w + 2, my(nz), nt.x - 3, my(nz), { lw: 1.2, head: 5, color: theme.c('s7') });
-          lab('x_T', (nz.x + nz.w + tm.x) / 2, my(nz) - uu);
+          lab('x_T', (nz.x + nz.w + nt.x) / 2, my(nz) - uu);
           S.arrow(ctx, nt.x + nt.w + 2, my(ls), ls.x - 3, my(ls), { lw: 1.2, head: 5 });
-          lab('ε̂', (nt.x + nt.w + ls.x) / 2, my(ls) - uu);
+          lab('ε_θ', (nt.x + nt.w + ls.x) / 2, my(ls) - uu);
           S.arrow(ctx, nt.x + nt.w + 2, sp.y + sp.h * 0.3, sp.x - 3, sp.y + sp.h * 0.3, { lw: 1.2, head: 5, color: theme.c('s7') });
-          lab('ε̂', (nt.x + nt.w + sp.x) / 2, sp.y + sp.h * 0.3 - uu);
+          lab('ε_θ', (nt.x + nt.w + sp.x) / 2, sp.y + sp.h * 0.3 - uu);
           S.arrow(ctx, sp.x - 3, sp.y + sp.h * 0.78, nt.x + nt.w + 3, sp.y + sp.h * 0.78, { lw: 1.2, head: 5, bend: [0, 14], color: theme.c('s7') });
           lab('x_t−1', (nt.x + nt.w + sp.x) / 2, sp.y + sp.h * 0.78 + uu * 2.1);
         } else {
@@ -450,14 +450,14 @@ ${py.sampler()}`,
           S.arrow(ctx, tm.x + tm.w / 2, tm.y + tm.h + 2, tm.x + tm.w / 2, nt.y - 3, { lw: 1.2, head: 5 });
           S.arrow(ctx, ls.x + ls.w / 2, nt.y + nt.h + 2, ls.x + ls.w / 2, ls.y - 3, { lw: 1.2, head: 5 });
           S.arrow(ctx, sp.x + sp.w / 2, nt.y + nt.h + 2, sp.x + sp.w / 2, sp.y - 3, { lw: 1.2, head: 5, color: theme.c('s7') });
-          lab('ε̂', ls.x + ls.w / 2 + uu, (nt.y + nt.h + ls.y) / 2, 'left'); lab('ε̂', sp.x + sp.w / 2 + uu, (nt.y + nt.h + sp.y) / 2, 'left');
+          lab('ε_θ', ls.x + ls.w / 2 + uu, (nt.y + nt.h + ls.y) / 2, 'left'); lab('ε_θ', sp.x + sp.w / 2 + uu, (nt.y + nt.h + sp.y) / 2, 'left');
         }
       },
       children: kids,
       about: [
-        `A denoising diffusion model learns to undo noise. Training takes a real point, adds a random amount of noise with the forward process, and teaches the denoiser network to predict exactly which noise was added. Generating (violet arrows) starts from pure noise and applies the same network over and over, removing a little predicted noise at each of the ${g.ts.length - 1} steps, until a new point that looks like the data comes out.`,
+        `A denoising diffusion model learns to undo noise. Training takes a real point, adds a random amount of noise with the forward process, and teaches the denoiser network to predict exactly which noise was added. Generating (violet arrows) starts from pure noise and applies the same network over and over, removing a little predicted noise at each of the ${L.steps} steps, until a new point that looks like the data comes out.`,
         'The network never outputs a data point directly; it only ever answers "which noise is in this point at this noise level?". Image generators such as Stable Diffusion run the same two loops, with a far bigger network and images in place of 2-D points.',
-        `One training point is followed through every box at noise step t = ${t}; move the slider below the diagram to change t. Click or zoom into a box for its maths with that point’s numbers, and switch to the Python tab for its code.`,
+        `One training point is followed through every box at noise step t = ${t}; move the slider below the diagram to change t. ${NA.tapWord()} or zoom into a box for its maths with that point’s numbers, and switch to the Python tab for its code.`,
       ],
       code: py.model(L),
       codeLabel: 'Python · PyTorch · the whole model, training and sampling',

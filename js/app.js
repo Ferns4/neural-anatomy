@@ -46,6 +46,8 @@
     if (this.ds.classes === 2) return k ? 'Blue (class 1)' : 'Orange (class 0)';
     return ['Orange', 'Blue', 'Green'][k] + ' (class ' + k + ')';
   };
+  // the dot in "H1 · 12" gets (non-breaking) spaces: on its own it all but vanishes in the UI font, so "H1·12" read as "H112"
+  const SEP = '\u00a0·\u00a0';
   App.neuronName = function (l, j, short) {
     const ds = this.ds;
     if (l === 0) {
@@ -57,9 +59,22 @@
       if (ds.task === 'binary') return short ? 'Out' : 'Output';
       return this.isImage() ? (short ? String(j) : 'Digit ' + j) : (short ? 'C' + j : 'Class ' + j);
     }
-    return short ? `H${l}·${j + 1}` : `Hidden ${l} · neuron ${j + 1}`;
+    return short ? `H${l}${SEP}${j + 1}` : `Hidden ${l} · neuron ${j + 1}`;
   };
   App.validNeuron = function (s) { return s && this.net && s.l >= 0 && s.l <= this.net.L && s.j >= 0 && s.j < this.net.sizes[s.l]; };
+
+  // ------------------------------------------------------------------ wording and number helpers
+  // fmt() and fmtSigned(), but a value too small or large for its decimals reads "4.1×10⁻⁴" instead of
+  // e-notation ("4.1e−4"), which looks like a typo to anyone who has not met it. The MLP views use these.
+  const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
+  const sci = (s) => s.replace(/e([−+-]?)(\d+)$/, (m, sign, d) => '×10' + (sign === '−' || sign === '-' ? '⁻' : '') + d.split('').map((c) => SUP[c]).join(''));
+  NA.fmtSci = (v, digits = 2) => sci(NA.fmt(v, digits));
+  NA.fmtSignedSci = (v, digits = 2) => sci(NA.fmtSigned(v, digits));
+  // "Tap" on a touch screen, "Click" with a mouse, for instructions shown on the page (tooltips need a mouse)
+  NA.tapWord = function (lower) {
+    const w = window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click';
+    return lower ? w.toLowerCase() : w;
+  };
   App.defaultSelection = function () { return { l: 1, j: 0 }; };
   App.epoch = function (step) { return ((step === undefined ? this.step : step) * Math.min(this.hyper.batch, this.ds.trainIdx.length)) / this.ds.trainIdx.length; };
 
@@ -528,9 +543,22 @@
   App.dataPass = function () {
     return this.cached('dataPass', 220, (prev) => this.net.forwardMany(this.ds.X, this.ds.n, prev));
   };
+  // Per-neuron statistics over the training set. An image's 196 input pixels took most of the time (about
+  // 50 ms, again every 400 ms while training) and only the Neuron tab reads them, for a selected pixel: here
+  // they are left empty, and inputStats() computes them on request.
   App.stats = function () {
-    return this.cached('stats', 400, () => NA.engine.neuronStats(this.net, this.dataPass(), this.ds.trainIdx));
+    return this.cached('stats', 400, () => NA.engine.neuronStats(this.isImage() ? layersOnly(this.net, (l) => l > 0) : this.net, this.dataPass(), this.ds.trainIdx));
   };
+  App.inputStats = function () {
+    if (!this.isImage()) return this.stats()[0];
+    return this.cached('inputStats', 400, () => NA.engine.neuronStats(layersOnly(this.net, (l) => l === 0), this.dataPass(), this.ds.trainIdx)[0]);
+  };
+  // the network as neuronStats sees it, with the other layers' sizes set to 0 so they are skipped
+  function layersOnly(net, keep) {
+    const v = Object.create(net);
+    v.sizes = net.sizes.map((m, l) => (keep(l) ? m : 0));
+    return v;
+  }
   App.gradReport = function () {
     return this.cached('grad', 160, () => this.net.gradientReport(this.ds.X, this.ds.y, this.evalTrain, this.hyper.reg, this.hyper.regRate));
   };

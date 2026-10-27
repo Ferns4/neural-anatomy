@@ -278,19 +278,27 @@
     digits: { kind: 'image', task: 'multiclass', classes: 10, label: 'Handwritten digits', hint: '14×14 synthetic strokes' },
   };
 
+  // Drawing a few thousand digits takes about 50 ms, and they depend only on their count and seed, so the last
+  // set is kept: loading the preset again (or the model builder's digit task) reuses it. The arrays are only
+  // ever read. The shuffle that splits them is kept too, since it continues the same random sequence.
+  let digitCache = null;
+
   /* spec: { dataset, n, noise, trainRatio, seed, features } */
   function buildDataset(spec) {
     const def = DATASETS[spec.dataset];
     const rng = new RNG(((spec.seed || 1) * 2654435761) >>> 0);
     const n = spec.n;
-    let made, rawDim, classes;
+    let made, rawDim, classes, idx;
     if (def.kind === 'plane') { made = def.make(n, spec.noise, rng); rawDim = 2; classes = def.classes; }
     else if (def.kind === 'line') { made = makeCurve(spec.dataset, n, spec.noise, rng); rawDim = 1; classes = 0; }
-    else { made = makeDigits(n, rng, true); rawDim = IMG * IMG; classes = 10; }
+    else {
+      const key = n + ':' + (spec.seed || 1);
+      if (!digitCache || digitCache.key !== key) { const m = makeDigits(n, rng, true), order = NA.range(n); rng.shuffle(order); digitCache = { key, made: m, order }; }
+      made = digitCache.made; idx = digitCache.order.slice(); rawDim = IMG * IMG; classes = 10;
+    }
     // Three-way split: training data the model learns from, validation data tracked live while it
     // trains, and a held-out test set that is only touched when you run the final test.
-    const idx = NA.range(n);
-    rng.shuffle(idx);
+    if (!idx) { idx = NA.range(n); rng.shuffle(idx); }
     const nTrain = Math.min(n - 2, Math.max(2, Math.round(n * spec.trainRatio)));
     const nVal = Math.ceil((n - nTrain) / 2);
     const ds = {

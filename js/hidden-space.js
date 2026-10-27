@@ -2,7 +2,7 @@
    PCA projections for wider layers, with animated morphs between layers. */
 (function (NA) {
   'use strict';
-  const { theme, clamp, fmt, fmtPct, el, rr } = NA;
+  const { theme, clamp, fmtSci: fmt, fmtPct, el, rr } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
   const E = NA.engine;
 
@@ -265,15 +265,18 @@
     }
     ctx.restore();
     ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; rr(ctx, 0.5, 0.5, S - 1, S - 1, 8); ctx.stroke();
-    // axis captions
-    ctx.font = `500 10px ${NA.getFont('mono')}`; ctx.fillStyle = theme.c('ink-2');
+    // axis captions, on a small backing so they read over the points. The x-axis name sits bottom left, clear of
+    // the zoom control in the bottom-right corner; during a morph between layers that corner names the two
+    // layers instead.
     const [ax, ay] = axisNames(st);
-    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillText(ax + ' →', S - 8, S - 6);
-    if (ay) { ctx.save(); ctx.translate(14, 10); ctx.rotate(Math.PI / 2); ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText('← ' + ay, 0, 0); ctx.restore(); }
-    if (from) {
-      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.font = `600 11px ${NA.getFont('ui')}`; ctx.fillStyle = theme.c('ink');
-      ctx.fillText(`${stageName(HS.anim ? HS.anim.from : 0)} → ${stageName(HS.stage)}`, 10, S - 7);
-    }
+    const caption = (text, font, color, x, y) => {
+      ctx.font = font; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = theme.c('panel-2', 0.85); rr(ctx, x - 4, y - 8, ctx.measureText(text).width + 8, 16, 4); ctx.fill();
+      ctx.fillStyle = color; ctx.fillText(text, x, y);
+    };
+    if (from) caption(`${stageName(HS.anim ? HS.anim.from : 0)} → ${stageName(HS.stage)}`, `600 11px ${NA.getFont('ui')}`, theme.c('ink'), 10, S - 14);
+    else caption(ax + ' →', `500 10px ${NA.getFont('mono')}`, theme.c('ink-2'), 10, S - 13);
+    if (ay) { ctx.save(); ctx.translate(14, 10); ctx.rotate(Math.PI / 2); caption('← ' + ay, `500 10px ${NA.getFont('mono')}`, theme.c('ink-2'), 4, 0); ctx.restore(); }
     HS.info.textContent = describe(st);
   }
 

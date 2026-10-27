@@ -1,6 +1,6 @@
 /* diffusion.js — a denoising diffusion model (DDPM) for 2-D point clouds.
    Forward process: x_t = √ᾱ_t · x₀ + √(1 − ᾱ_t) · ε, with a cosine noise schedule over T steps.
-   A small SiLU MLP sees (x_t, features of t) and predicts ε; training minimises ‖ε − ε̂‖².
+   A small SiLU MLP sees (x_t, features of t) and predicts ε; training minimises ‖ε − ε_θ‖².
    Sampling runs the process backwards from pure noise, either stochastically (DDPM) or
    deterministically (DDIM). Gradients are checked in tools/diffusion-gradcheck.js. */
 (function (NA) {
@@ -166,7 +166,7 @@
       return { ts, per };
     }
 
-    // ε̂ for n points (xy: 2n) at step t. Returns a Float32Array of 2n.
+    // ε_θ for n points (xy: 2n) at step t. Returns a Float32Array of 2n.
     predict(xy, n, t) {
       this.buf(n);
       for (let p = 0; p < n; p++) writeInput(this.X, p * IN_DIM, xy[2 * p], xy[2 * p + 1], t, this.o.T);

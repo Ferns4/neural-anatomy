@@ -60,8 +60,8 @@
       this.runLoss = this.runLoss === null ? r.loss : 0.98 * this.runLoss + 0.02 * r.loss;
       this.step++; k++;
       if (this.step % 50 === 0) { this.history.push({ step: this.step, loss: this.runLoss }); if (this.history.length > 500) this.history = this.history.filter((q, i) => i % 2 === 0); }
-      // refresh the samples now and then so progress is visible
-      if (this.step % 600 === 0) this.generate(true, 25);
+      // refresh the samples now and then so progress is visible: a quick 25-step preview, labelled as one
+      if (this.step % 600 === 0) this.generate(true, 25, true);
     } while (performance.now() - t0 < budget && k < maxSteps);
     this.quality = null; this.lossByT = null;
     this.inspDirty = true; this.leftDirty = true; this.archStale = true;
@@ -75,12 +75,13 @@
   DF.schedule = function (steps) { const T = this.model.T, ts = []; for (let k = steps; k >= 0; k--) ts.push(Math.round((k * T) / steps)); return ts; };
   /* Starts a reverse process from fresh noise and keeps every intermediate state, so the slider can scrub
      through it. The steps are computed a few per frame (advanceGen) so the page never stalls.
-     instant: jump to the result once it is ready; otherwise animate from noise. */
-  DF.generate = function (instant, steps) {
+     instant: jump to the result once it is ready; otherwise animate from noise. preview: a quick run while
+     training, with fewer steps than the setting (the picture and the Overview say so). */
+  DF.generate = function (instant, steps, preview) {
     const n = this.nSamples, rng = new NA.RNG((Math.random() * 1e9) | 0), xy = new Float32Array(2 * n);
     for (let i = 0; i < 2 * n; i++) xy[i] = rng.gauss();
     const ts = this.schedule(steps || this.steps);
-    this.gen = { ts, xs: [Float32Array.from(xy)], x0s: [null], n, xy, rng, ddim: this.sampler === 'ddim', done: false, instant };
+    this.gen = { ts, xs: [Float32Array.from(xy)], x0s: [null], n, xy, rng, ddim: this.sampler === 'ddim', done: false, instant, preview: !!preview };
     this.k = 0;
     this.animating = !instant;
     this.quality = null;
@@ -132,7 +133,9 @@
     this.bump();
   };
   DF.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); };
-  DF.archText = function () { return `(x, y, t) → 3 × 64 SiLU → predicted noise ε̂ · ${this.model.T} noise steps`; };
+  /* The network's guess of the noise is written ε_θ (θ: its weights), never ε with a combining hat: the hat is
+     drawn from another font than the ε it should sit on and lands beside it. */
+  DF.archText = function () { return `(x, y, t) → 3 × 64 SiLU → predicted noise ε_θ · ${this.model.T} noise steps`; };
 
   DF.frame = function (now) {
     this.runFrame();
@@ -142,6 +145,15 @@
       this.k = Math.min(this.gen.xs.length - 1, this.k + 1);
       if (this.k >= this.gen.ts.length - 1) { this.animating = false; this.inspDirty = true; }
       this.dirty = true; this.syncSlider();
+    }
+    // ▶ in the Add noise and Denoiser views sweeps the noise level instead (see playScrub)
+    if (this.sweep && now - (this.lastSweep || 0) > 40) {
+      this.lastSweep = now;
+      const T = this.model.T, end = this.sweep > 0 ? T : 1;
+      this.tView = clamp(this.tView + this.sweep, 1, T);
+      if (this.view === 'field') this.probes = this.probes.map((p) => this.followProbe(p.x, p.y));
+      if (this.tView === end) this.sweep = 0;
+      this.dirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true; this.syncSlider();
     }
     if (now - (this.lastRo || 0) > 120) {
       this.lastRo = now;
@@ -156,7 +168,8 @@
       if (this.archStale && (!this.training || now - (this.lastArch || 0) > 400)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; }
       this.arch.frame(now);
     }
-    if (this.infoStale && !this.training && !this.arch.anim) { this.infoStale = false; this.showInfo(); }
+    // (a training preview is a new set of samples too: the explanation then gives its step count)
+    if (this.infoStale && (!this.training || this.gen.preview) && !this.arch.anim) { this.infoStale = false; this.showInfo(); }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 500)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
     if (this.inspDirty && this.tabs.body.offsetParent && !this.animating && (!this.training || now - (this.lastInsp || 0) > 600)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
   };
@@ -181,19 +194,21 @@
       b._c = c; b._id = d.id;
       this.dsTiles.append(b);
     }
-    this.samplerSeg = UI.seg([{ value: 'ddpm', label: 'DDPM (random)', title: 'Adds fresh noise at every step' }, { value: 'ddim', label: 'DDIM (deterministic)', title: 'No added noise: the same start always lands in the same place' }], this.sampler, (v) => { this.sampler = v; this.generate(false); }, 'Sampler');
-    const steps = UI.select([100, 50, 25, 10].map((v) => ({ value: v, label: `${v} steps` })), this.steps, (v) => { this.steps = +v; this.setView('generate'); this.generate(false); }, { 'aria-label': 'Sampling steps' });
-    const count = UI.select([300, 600, 1000].map((v) => ({ value: v, label: `${v} points` })), this.nSamples, (v) => { this.nSamples = +v; this.generate(false); }, { 'aria-label': 'Number of samples' });
+    this.samplerSeg = UI.seg([{ value: 'ddpm', label: 'DDPM (random)', title: 'Adds fresh noise at every step' }, { value: 'ddim', label: 'DDIM (deterministic)', title: 'No added noise: the same start always lands in the same place' }], this.sampler, (v) => { this.sampler = v; this.generate(false); this.renderFoot(); }, 'Sampler');
+    // labelled settings fields, styled like the rest of the page's dropdowns (and tall enough to tap on a phone)
+    this.stepsSel = UI.select([100, 50, 25, 10].map((v) => ({ value: v, label: String(v) })), this.steps, (v) => { this.steps = +v; this.setView('generate'); this.generate(false); });
+    const count = UI.select([300, 600, 1000].map((v) => ({ value: v, label: String(v) })), this.nSamples, (v) => { this.nSamples = +v; this.generate(false); });
     this.schedCanvas = el('canvas');
     body.append(
       UI.section('Training data', UI.note('The model learns this distribution of 2-D points, then has to produce new points that look like it.'), this.dsTiles),
-      UI.section('Generate', el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { this.setView('generate'); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.generate(false); } }, 'Generate new points'), steps, count), this.samplerSeg),
+      UI.section('Generate', el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { this.setView('generate'); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.generate(false); } }, 'Generate new points')),
+        el('div', { class: 'btn-row' }, UI.field('Sampling steps', this.stepsSel, 'How many steps the reverse process takes from pure noise to t = 0'), UI.field('Points', count, 'How many points to generate')), this.samplerSeg),
       UI.section('How it works',
         el('div', { class: 'fx' },
           el('div', { class: 'fx-line fx-strong', text: 'Forward:  x_t = √ᾱ_t · x₀ + √(1 − ᾱ_t) · ε' }),
-          el('div', { class: 'fx-line', text: 'Train:  loss = ‖ε − ε̂(x_t, t)‖²' }),
-          el('div', { class: 'fx-line', text: 'Reverse:  x̂₀ = (x_t − √(1 − ᾱ_t) · ε̂) / √ᾱ_t, then step to t − 1' })),
-        UI.note('Adding noise is easy and needs no learning. The network learns the reverse: given a noisy point and how noisy it is (t), guess the noise ε that was added. Subtracting a little of that guess at a time walks pure noise back to data.')),
+          el('div', { class: 'fx-line', text: 'Train:  loss = ‖ε − ε_θ(x_t, t)‖²' }),
+          el('div', { class: 'fx-line', text: 'Reverse:  x̂₀ = (x_t − √(1 − ᾱ_t) · ε_θ) / √ᾱ_t, then step to t − 1' })),
+        UI.note('Adding noise is easy and needs no learning. The network learns the reverse: given a noisy point and how noisy it is (t), guess the noise ε that was added. That guess is written ε_θ (θ stands for the network’s weights). Subtracting a little of it at a time walks pure noise back to data.')),
       UI.section('Noise schedule', el('div', { class: 'chart-box' }, this.schedCanvas), el('div', { class: 'mini-legend' },
         el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'signal kept √ᾱ_t'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--neg)' } }), 'noise √(1 − ᾱ_t)'))));
   };
@@ -219,15 +234,19 @@
   // ------------------------------------------------------------------ centre: samples
   DF.buildCenter = function (root) {
     this.viewSeg = UI.seg([{ value: 'generate', label: 'Generate', title: 'Noise turning into data' }, { value: 'forward', label: 'Add noise', title: 'The forward process on the training data' }, { value: 'field', label: 'Denoiser', title: 'Where the network thinks each point’s clean version is' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }], this.view, (v) => this.setView(v), 'View');
-    this.chips = el('div', { class: 'chip-row' },
-      UI.chip('Data', this.show.data, (on) => { this.show.data = on; this.dirty = true; }, 'Show the training data faintly'),
-      UI.chip('Trails', this.show.trails, (on) => { this.show.trails = on; this.dirty = true; }, 'Paths of 40 points: the last 10 steps with DDPM, the whole path with DDIM'),
-      UI.chip('Predicted x̂₀', this.show.x0, (on) => { this.show.x0 = on; this.dirty = true; }, 'At each step, where the network thinks each point will end up'));
+    // each view shows only the switches that change it (setView): trails and x̂₀ exist only while generating
+    const toggle = (key) => (on) => { this.show[key] = on; this.dirty = true; this.renderFoot(); };
+    this.chipOf = {
+      data: UI.chip('Data', this.show.data, toggle('data'), 'Show the clean training data faintly underneath'),
+      trails: UI.chip('Trails', this.show.trails, toggle('trails'), 'Paths of 40 points: the last 10 steps with DDPM, the whole path with DDIM'),
+      x0: UI.chip('Predicted x̂₀', this.show.x0, toggle('x0'), 'At each step, where the network thinks each point will end up'),
+    };
+    this.chips = el('div', { class: 'chip-row' }, this.chipOf.data, this.chipOf.trails, this.chipOf.x0);
     root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.chips));
     this.stage = el('div', { class: 'lab-stage' });
     this.canvas = el('canvas', { 'aria-label': 'Points in the plane: generated samples, the noising process or the denoising field' });
     this.stage.append(this.canvas);
-    this.playBtn = el('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Play the reverse process', onclick: () => this.playScrub() }, '▶');
+    this.playBtn = el('button', { class: 'icon-btn', type: 'button', 'aria-label': PLAY_LABEL.generate, onclick: () => this.playScrub() }, '▶');
     this.slider = el('input', { type: 'range', min: 0, max: 100, step: 1, value: 100, 'aria-label': 'Noise step' });
     this.slider.addEventListener('input', () => this.onSlider());
     this.sliderLab = el('span', { class: 'mono df-t' });
@@ -235,32 +254,42 @@
     this.arch = new NA.ArchView(this.archStage, { label: 'Diffusion model architecture: click a part or zoom in to open it', build: (size) => NA.archDiffusion.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab));
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
-    root.append(this.foot = el('div', { class: 'lab-foot' },
-      el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--pos)' } }), 'sample'),
-      el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: 'var(--muted)' } }), 'training data'),
-      el('span', { class: 'lg-item', text: 'Denoiser view: click to drop a point and follow it to the data' })));
+    root.append(this.foot = el('div', { class: 'lab-foot' })); // the key for the view on show (renderFoot)
     this.canvas.addEventListener('click', (e) => this.click(e));
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
     this.resizeObs.observe(this.stage);
     this.setView(this.view);
   };
+  const PLAY_LABEL = { generate: 'Play the reverse process: noise turning into data', forward: 'Play the forward process: add noise from t = 0 to the end', field: 'Sweep the noise level down: watch the field change as t falls' };
   DF.syncSlider = function () {
-    const T = this.model.T;
-    if (this.view === 'generate') { this.slider.max = this.gen.ts.length - 1; this.slider.value = this.k; this.sliderLab.textContent = `step ${this.k}/${this.gen.ts.length - 1} · t = ${this.gen.ts[this.k]}`; }
+    const T = this.model.T, g = this.gen;
+    if (this.view === 'generate') { this.slider.max = g.ts.length - 1; this.slider.value = this.k; this.sliderLab.textContent = `${g.preview ? 'preview · ' : ''}step ${this.k}/${g.ts.length - 1} · t = ${g.ts[this.k]}`; }
     else { this.slider.max = T; this.slider.value = T - this.tView; this.sliderLab.textContent = `t = ${this.tView} · noise ${fmt(Math.sqrt(1 - this.model.sched.abar[this.tView]), 2)}`; }
-    this.playBtn.textContent = this.animating ? '❚❚' : '▶';
+    const playing = this.view === 'generate' ? this.animating : !!this.sweep;
+    this.playBtn.textContent = playing ? '❚❚' : '▶';
+    this.playBtn.setAttribute('aria-label', playing ? 'Pause' : PLAY_LABEL[this.view]);
+    this.playBtn.title = playing ? 'Pause' : PLAY_LABEL[this.view];
   };
   DF.onSlider = function () {
     const v = +this.slider.value;
-    this.animating = false;
+    this.animating = false; this.sweep = 0;
     if (this.view === 'generate') this.k = Math.min(v, this.gen.xs.length - 1); else { this.tView = this.model.T - v; this.probes = this.probes.map((p) => this.followProbe(p.x, p.y)); }
     this.syncSlider(); this.dirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true;
   };
+  /* ▶ plays what the current view shows: the reverse process in Generate; the forward process (t rising to the
+     end) in Add noise; the field as the noise falls (t sinking to 1) in Denoiser and the architecture. */
   DF.playScrub = function () {
-    if (this.view !== 'generate') { this.setView('generate'); }
-    if (this.animating) { this.animating = false; this.syncSlider(); return; }
-    if (this.k >= this.gen.ts.length - 1) this.k = 0;
-    this.animating = true; this.syncSlider();
+    if (this.view === 'generate') {
+      if (this.animating) { this.animating = false; this.syncSlider(); return; }
+      if (this.k >= this.gen.ts.length - 1) this.k = 0;
+      this.animating = true; this.syncSlider();
+      return;
+    }
+    if (this.sweep) { this.sweep = 0; this.syncSlider(); return; }
+    const T = this.model.T, dir = this.view === 'forward' ? 1 : -1;
+    if (dir > 0 && this.tView >= T) this.tView = 0;
+    if (dir < 0 && this.tView <= 1) this.tView = T;
+    this.sweep = dir; this.syncSlider();
   };
   // A point dropped in the denoiser view follows deterministic (DDIM) steps from the shown t down to 0.
   DF.followProbe = function (x, y) {
@@ -284,8 +313,33 @@
     this.viewSeg.set(v);
     const arch = v === 'arch';
     this.stage.hidden = arch; this.chips.hidden = arch; this.foot.hidden = arch; this.playBtn.hidden = arch; this.archStage.hidden = !arch;
+    this.chipOf.trails.hidden = this.chipOf.x0.hidden = v !== 'generate';
+    this.sweep = 0;
+    this.renderFoot();
     this.syncSlider(); this.dirty = true; this.leftDirty = true; this.archStale = true;
     this.showInfo();
+  };
+  // The key under the picture describes what the current view draws, and follows its switches
+  DF.renderFoot = function () {
+    const dot = (tok, text) => el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { background: `var(--${tok})` } }), text);
+    const line = (bg, text) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: bg } }), text);
+    const s = this.show, items = [];
+    if (this.view === 'generate') {
+      items.push(dot('pos', 'generated point'));
+      if (s.data) items.push(dot('muted', 'training data'));
+      if (s.trails) items.push(line('linear-gradient(90deg, var(--s1), var(--s3), var(--s7))', this.sampler === 'ddim' ? 'trail: the whole path of 40 points' : 'trail: the last 10 steps of 40 points'));
+      if (s.x0) items.push(dot('grad', 'predicted x̂₀'));
+    } else if (this.view === 'forward') {
+      items.push(dot('pos', 'training point with noise, x_t'));
+      if (s.data) items.push(dot('muted', 'the same data without noise, x₀'));
+      items.push(el('span', { class: 'lg-item', text: '▶ adds the noise step by step' }));
+    } else {
+      items.push(line('var(--grad)', 'arrow: toward the network’s guess x̂₀ (fainter = shorter move)'));
+      if (s.data) items.push(dot('muted', 'training data'));
+      items.push(dot('ink', 'dropped point'), dot('pos', 'where it lands'));
+      items.push(el('span', { class: 'lg-item', text: `${NA.tapWord()} the plot to drop a point` }));
+    }
+    clear(this.foot).append(...items);
   };
   // The explanation under the picture follows the view (and, in the architecture, the part being looked at).
   DF.showInfo = function () {
@@ -298,7 +352,7 @@
     return {
       kicker: 'Generate view', title: ddim ? 'Noise turning into data, deterministically (DDIM)' : 'Noise turning into data (DDPM)',
       about: [
-        `${g.n} points start as pure Gaussian noise at t = ${T} and are denoised in ${steps} steps down to t = 0. At every step the network looks at each point and the noise level, predicts the noise ε̂ in it, and the sampler moves the point part of the way toward its estimate of the clean point, x̂₀. No point is copied from the training data: the shape appears because every point follows the learned field. The slider scrubs through every saved step and ▶ replays them.`,
+        `${g.n} points start as pure Gaussian noise at t = ${T} and are denoised in ${steps} steps down to t = 0${g.preview ? ` (a quick preview while the model trains; pausing generates them again with the ${L.steps} steps set in the Process panel)` : ''}. At every step the network looks at each point and the noise level, predicts the noise in it (ε_θ), and the sampler moves the point part of the way toward its estimate of the clean point, x̂₀. No point is copied from the training data: the shape appears because every point follows the learned field. The slider scrubs through every saved step and ▶ replays them.`,
         ddim
           ? 'Trails follow 40 of the points, one colour each. With DDIM nothing random is added after the start, so each path is a smooth curve, only about 1.6 times as long as the straight line from its start to its end (the median, measured on the pinwheel with 100 steps), and the whole trail is drawn. The destination is fixed from the first step: on the pinwheel, 86% of the points end on the arm nearest to where they started.'
           : 'Trails follow 40 of the points, one colour each, and show only their last 10 steps, like a comet’s tail. With DDPM fresh random noise is added at every step, so a point jitters, and its whole path is typically more than ten times as long as the straight line from its start to its end (16 times for the median point on the pinwheel with 100 steps); drawn whole, it would be a scribble. The jitter shrinks as t falls, because each step adds less noise: the last 10 steps make up only about 2% of a path’s length, so the tails shorten and settle at the end.',
@@ -369,9 +423,9 @@ plt.show()`,
     return {
       kicker: 'Denoiser view', title: `The learned denoising field at t = ${t}`,
       about: [
-        `Each arrow starts at a grid point, treated as a noisy point x_t at the slider’s noise step (t = ${t}), and points toward the network’s guess of where it came from: x̂₀ = (x_t − √(1 − ᾱ_t)·ε̂) / √ᾱ_t. Arrows are shortened to fit the grid, and the shorter the move, the fainter the arrow.`,
+        `Each arrow starts at a grid point, treated as a noisy point x_t at the slider’s noise step (t = ${t}), and points toward the network’s guess of where it came from: x̂₀ = (x_t − √(1 − ᾱ_t)·ε_θ) / √ᾱ_t, with ε_θ the network’s guess of the noise. Arrows are shortened to fit the grid, and the shorter the move, the fainter the arrow.`,
         'At high noise the arrows all point at the centre: at t = 90 their average alignment with the direction to the centre is 0.99, where 1 would be exact. When a point is almost all noise, the best guess of where it came from is the middle of the data. As t falls they turn toward the arms: at t = 30, 92% of the arrows end on the arm nearest their start, and 97% at t = 10. They also shrink near the data: at t = 10 an arrow that starts on an arm is about 0.09 long, against 0.8 for one that starts far away (in units of the data’s spread).',
-        'Click anywhere to drop a point. It follows deterministic (DDIM) steps from the slider’s t down to 0, drawn as a line from the dark dot to the coloured dot where it lands. That is what generating does to every point at once: look up the arrow, take a step, lower t, repeat. Drag the slider to change t; dropped points are recomputed from where they started.',
+        `${NA.tapWord()} anywhere to drop a point. It follows deterministic (DDIM) steps from the slider’s t down to 0, drawn as a line from the dark dot to the coloured dot where it lands. That is what generating does to every point at once: look up the arrow, take a step, lower t, repeat. Drag the slider to change t, or press ▶ to lower it step by step; dropped points are recomputed from where they started.`,
       ],
       code: `import matplotlib.pyplot as plt
 ${PRE}
@@ -403,7 +457,8 @@ plt.show()`,
 
   DF.draw = function () {
     const W = Math.max(200, this.stage.clientWidth), Hh = Math.max(200, this.stage.clientHeight), ctx = NA.fitCanvas(this.canvas, W, Hh);
-    const side = Math.min(W, Hh) - 16, s = side / (2 * RANGE), cx = W / 2, cy = Hh / 2;
+    // the plot's heading sits in a band of its own above the square, so it never covers points or arrows
+    const band = 22, side = Math.min(W - 16, Hh - 16 - band), s = side / (2 * RANGE), cx = W / 2, cy = band + (Hh - band) / 2;
     this.lay = { cx, cy, s };
     const X = (x) => cx + x * s, Y = (y) => cy - y * s;
     ctx.clearRect(0, 0, W, Hh);
@@ -412,7 +467,7 @@ plt.show()`,
     for (let g = -RANGE + 1; g < RANGE; g++) { ctx.beginPath(); ctx.moveTo(X(g), cy - side / 2); ctx.lineTo(X(g), cy + side / 2); ctx.moveTo(cx - side / 2, Y(g)); ctx.lineTo(cx + side / 2, Y(g)); ctx.stroke(); }
     ctx.save(); ctx.beginPath(); rr(ctx, cx - side / 2, cy - side / 2, side, side, 10); ctx.clip();
     const D = this.D;
-    if (this.show.data || this.view === 'forward') {
+    if (this.show.data) {
       ctx.fillStyle = theme.c('muted', this.view === 'forward' ? 0.22 : 0.4);
       for (let i = 0; i < D.n; i++) ctx.fillRect(X(D.pts[2 * i]) - 0.8, Y(D.pts[2 * i + 1]) - 0.8, 1.6, 1.6);
     }
@@ -440,10 +495,12 @@ plt.show()`,
       this.drawField(ctx, X, Y, side);
     }
     ctx.restore();
-    // corner label
-    ctx.font = '600 11px ' + (getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    const t = this.currentT(), lab = this.view === 'generate' ? (t === this.model.T ? 'Pure noise' : t === 0 ? 'Generated samples' : `Denoising… t = ${t}`) : this.view === 'forward' ? `Training data with noise, t = ${t}` : `Denoising field at t = ${t}`;
-    ctx.fillText(lab.toUpperCase(), cx - side / 2 + 10, cy - side / 2 + 10);
+    /* heading, in its band above the square. Not upper-cased: t (a step) and T (their number) are different
+       symbols. A training preview says it has fewer steps than the setting. */
+    ctx.font = '600 11.5px ' + (getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'); ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const t = this.currentT(), g = this.gen, state = t === this.model.T ? 'pure noise' : t === 0 ? 'generated samples' : `denoising… t = ${t}`;
+    const labs = this.view === 'generate' ? (g.preview ? [`Preview while training, ${g.ts.length - 1} steps: ${state}`, `Preview, ${g.ts.length - 1} steps: ${state}`] : [state[0].toUpperCase() + state.slice(1)]) : this.view === 'forward' ? [`Training data with noise, t = ${t}`, `Data with noise, t = ${t}`] : [`Denoising field at t = ${t}`, `Field at t = ${t}`];
+    ctx.fillText(labs.find((x) => ctx.measureText(x).width <= side - 4) || labs[labs.length - 1], cx - side / 2 + 2, cy - side / 2 - 11);
     this.syncSlider();
   };
   // Arrows from a grid of points toward the network's guess of their clean version x̂₀.
@@ -496,7 +553,7 @@ plt.show()`,
       P.canvas = el('canvas');
       body.append(UI.section('Cosine noise schedule', el('div', { class: 'chart-box' }, P.canvas), el('div', { class: 'mini-legend' },
         el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--pos)' } }), 'ᾱ_t: share of the signal’s variance left'),
-        el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--grad)' } }), 'β_t: noise added at step t')),
+        el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--grad)' } }), 'β_t: noise added at step t (on a scale of 0 to 0.5)')),
         UI.note(`${this.model.T} steps take the data to almost pure Gaussian noise (ᾱ = ${fmt(this.model.sched.abar[this.model.T], 4)} at the end). The cosine schedule adds noise slowly at first, so early steps keep the shape recognisable, and faster later.`)));
     } else if (id === 'net') {
       P.arch = el('div', { class: 'kv-grid' });
@@ -512,10 +569,11 @@ plt.show()`,
       const q = this.measure(), items = [];
       if (!q) { clear(P.findings).append(UI.note('Generating samples…')); this.inspDirty = true; return; }
       const f = (level, title, text) => items.push(el('div', { class: 'diag diag-' + level }, el('div', { class: 'diag-head' }, UI.pill(level, { good: 'Good', info: 'Note', warn: 'Watch' }[level]), el('h4', { class: 'diag-title', text: title })), el('p', { class: 'diag-body', text })));
-      const ok = q.precision < q.ref.precision * 2.5;
-      f(ok ? 'good' : 'warn', `Precision: ${fmt(q.precision, 3)} from the data`, `Each generated point is on average ${fmt(q.precision, 3)} from the nearest real point (real data: ${fmt(q.ref.precision, 3)}). ${ok ? 'The samples sit on the shape.' : 'Many samples fall between the arms: train longer or sample with more steps.'}`);
-      f(q.coverage < q.ref.coverage * 2.5 ? 'good' : 'warn', `Coverage: ${fmt(q.coverage, 3)}`, `Each real point is on average ${fmt(q.coverage, 3)} from the nearest sample (real data: ${fmt(q.ref.coverage, 3)}). Low coverage would mean the model ignores part of the shape.`);
-      f('info', `${this.gen.ts.length - 1} steps, ${this.sampler === 'ddim' ? 'DDIM' : 'DDPM'}`, this.sampler === 'ddim' ? 'Deterministic sampling: no noise is added on the way back, so each starting point always lands in the same place.' : 'Stochastic sampling: a little fresh noise is added at every step, which helps the samples spread over the whole shape.');
+      // both scores are distances, so smaller is better
+      const ok = q.precision < q.ref.precision * 2.5, covered = q.coverage < q.ref.coverage * 2.5;
+      f(ok ? 'good' : 'warn', `Precision: samples ${fmt(q.precision, 3)} from the data`, `Each generated point is on average ${fmt(q.precision, 3)} from the nearest real point (real data: ${fmt(q.ref.precision, 3)}); smaller is better. ${ok ? 'The samples sit on the shape.' : 'Many samples fall between the arms: train longer or sample with more steps.'}`);
+      f(covered ? 'good' : 'warn', `Coverage: data ${fmt(q.coverage, 3)} from the samples`, `Each real point is on average ${fmt(q.coverage, 3)} from the nearest sample (real data: ${fmt(q.ref.coverage, 3)}); smaller is better. ${covered ? 'The samples reach every part of the shape.' : 'A large distance means the model leaves part of the shape empty.'}`);
+      f('info', `${this.gen.ts.length - 1} steps, ${this.sampler === 'ddim' ? 'DDIM' : 'DDPM'}${this.gen.preview ? ': training preview' : ''}`, (this.gen.preview ? `While training, the samples are a quick ${this.gen.ts.length - 1}-step preview; pausing generates them again with the ${this.steps} steps set in the Process panel. ` : '') + (this.sampler === 'ddim' ? 'Deterministic sampling: no noise is added on the way back, so each starting point always lands in the same place.' : 'Stochastic sampling: a little fresh noise is added at every step, which helps the samples spread over the whole shape.'));
       clear(P.findings).append(...items);
     } else if (id === 'train') {
       const last = this.history[this.history.length - 1];
@@ -550,12 +608,12 @@ plt.show()`,
     ctx.font = `500 10px ${mono}`; ctx.fillStyle = theme.c('muted'); ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText('1', 26, Y(1)); ctx.fillText('0', 26, Y(0));
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText('t', X(T / 2), Hh - 14);
-    ctx.textAlign = 'right'; ctx.fillText('β scaled: 0.5 at the top', W - 12, 12);
+    // β's scale is given in the key below: a label in the corner sat on its steep end
   };
   DF.renderNet = function (P) {
     const net = this.model.net;
     clear(P.arch).append(...[
-      ['Inputs', `${DM.IN_DIM}: x, y, t/T and 8 sine and cosine features of t`], ['Hidden', `${net.sizes.slice(1, -1).join(' → ')} SiLU`], ['Output', '2: the predicted noise ε̂ for x and y'], ['Parameters', fmtInt(net.paramCount)],
+      ['Inputs', `${DM.IN_DIM}: x, y, t/T and 8 sine and cosine features of t`], ['Hidden', `${net.sizes.slice(1, -1).join(' → ')} SiLU`], ['Output', '2: the predicted noise ε_θ for x and y'], ['Parameters', fmtInt(net.paramCount)],
     ].map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))));
     const W = Math.max(220, P.canvas.parentElement.clientWidth), Hh = 120, ctx = NA.fitCanvas(P.canvas, W, Hh), T = this.model.T, X = new Float32Array(DM.IN_DIM * (T + 1));
     ctx.clearRect(0, 0, W, Hh);
@@ -573,7 +631,7 @@ plt.show()`,
 
   DF.runTry = function (t) {
     if (t.action === 'ddim') { this.sampler = 'ddim'; this.samplerSeg.set('ddim'); this.setView('generate'); this.generate(false); NA.ui.toast.show('DDIM: no fresh noise on the way back. Trails become smooth curves.'); }
-    else if (t.action === 'fewSteps') { this.steps = 10; this.setView('generate'); this.generate(false); NA.ui.toast.show('10 big steps instead of 100: faster, but blurrier.'); }
+    else if (t.action === 'fewSteps') { this.steps = 10; this.stepsSel.value = '10'; this.setView('generate'); this.generate(false); NA.ui.toast.show('10 big steps instead of 100: faster, but blurrier.'); }
     else if (t.action === 'field') { this.tView = 60; this.probes = [this.followProbe(2.4, 2.4), this.followProbe(-2.5, 0.3), this.followProbe(0.4, -2.6)]; this.setView('field'); NA.ui.toast.show('Three points dropped at t = 60. Drag the slider to change the noise level; click to drop more.'); }
     else if (t.action === 'moons') { this.pause(); this.load('moons', true); NA.$$('.ds-tile', this.dsTiles).forEach((x) => x.setAttribute('aria-checked', String(x._id === 'moons'))); this.tabs.select('train'); this.play(); NA.ui.toast.show('Training a fresh denoiser on two moons. Samples refresh every 600 steps.'); return; }
     if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network');

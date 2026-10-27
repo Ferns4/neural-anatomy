@@ -7,7 +7,8 @@
 
   const M = { mobile: false, screen: 'network', peek: null };
   // Landscape phones keep the side-by-side layout: one screen at a time would leave the diagram too short.
-  const mq = window.matchMedia('(max-width: 760px)');
+  // phones, held either way: narrow, or short with a touch screen (a phone on its side)
+  const mq = window.matchMedia('(max-width: 760px), (max-height: 500px) and (pointer: coarse)');
 
   M.init = function () {
     M.nav = document.getElementById('mnav');

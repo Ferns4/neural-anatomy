@@ -1,7 +1,7 @@
 /* network-view.js — the network diagram: neurons, connections and every lens drawn on them. */
 (function (NA) {
   'use strict';
-  const { theme, clamp, fmt, el } = NA;
+  const { theme, clamp, fmtSci: fmt, el } = NA; // fmtSci: tiny values as 4.1×10⁻⁴, not 4.1e−4
   const App = NA.app;
 
   const V = { dirty: true, layout: null, thumbs: new Map(), thumbsKey: '', thumbsTime: 0, lastDraw: 0, flowEdges: [], hoverEdge: null, hoverPixel: null };
@@ -20,15 +20,18 @@
     V.overlay = document.getElementById('netOverlay');
     V.legend = document.getElementById('netLegend');
     new ResizeObserver(() => V.resize()).observe(V.stage);
-    // zooming far into a neuron opens it (net-deep.js)
-    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', onDouble: (px, py) => !!(NA.netDeep && NA.netDeep.openAt(px, py)), onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
+    // zooming far into a neuron opens it (net-deep.js). A touch screen gets more room to zoom before that
+    // happens: a pinch to read the labels should not fall into a neuron.
+    V.touch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', max: V.touch ? 5 : 4, onDouble: (px, py) => !!(NA.netDeep && NA.netDeep.openAt(px, py)), onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
     const mark = () => { V.dirty = true; };
     ['weights', 'probe', 'selection', 'hover', 'walk', 'highlight', 'ablation', 'overlay'].forEach((t) => App.on(t, mark));
     App.on('model', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; V.zoom.reset(); buildHeaders(); renderLegend(); });
-    App.on('arch', () => { V.dirty = true; buildHeaders(); renderLegend(); });
+    // a layer that starts mixing functions labels its neurons, which needs room under the last one
+    App.on('arch', () => { V.layout = null; V.dirty = true; buildHeaders(); renderLegend(); });
     App.on('hyper', () => { if (V.lossKey !== App.net.lossId) { V.lossKey = App.net.lossId; buildHeaders(); } });
     App.on('lens', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; renderLegend(); });
     App.on('walk', renderLegend);
@@ -53,25 +56,73 @@
   };
 
   // ------------------------------------------------------------------ layout
+  // Where the layer headers end, in stage pixels, for a given column spacing. Measured, because they grow on a
+  // phone and when narrow columns stack their controls; measured as they look unzoomed (zoomed in, they shrink
+  // to their titles).
+  function headerBottom(gap) {
+    if (!V.headers || !V.headers.length) return 70;
+    const zoomed = V.canvas.classList.contains('is-zoomed'), hidden = V.headers.map((h) => h.hidden);
+    if (zoomed) V.canvas.classList.remove('is-zoomed');
+    for (const h of V.headers) h.hidden = false; // headers panned off screen still count
+    setHeaderMode(gap);
+    let b = 0;
+    for (const h of V.headers) b = Math.max(b, h.offsetTop + h.offsetHeight);
+    V.headers.forEach((h, i) => { h.hidden = hidden[i]; });
+    if (zoomed) V.canvas.classList.add('is-zoomed');
+    return b;
+  }
+  // Height kept clear along the bottom for the depth and zoom controls, also measured.
+  function controlsHeight() {
+    let h = 46;
+    for (const c of V.stage.querySelectorAll('.depth-ctl, .zoom-chip')) if (c.offsetParent) h = Math.max(h, V.H - c.offsetTop + 6);
+    return h;
+  }
+  // Widest input label (the feature's name, or its value with the Values overlay), drawn to the left of its neuron.
+  function inputLabelWidth() {
+    const ds = App.ds, ctx = V.ctx;
+    if (ds.kind === 'image' || !ctx) return 0;
+    ctx.save();
+    ctx.font = `600 13px ${getFont('ui')}`;
+    let w = 0;
+    for (const t of ds.featureLabels) w = Math.max(w, ctx.measureText(t).width);
+    if (App.lenses.values) { ctx.font = `500 10px ${getFont('mono')}`; w = Math.max(w, ctx.measureText('−0.00').width); }
+    ctx.restore();
+    return w;
+  }
+
   function computeLayout() {
     const net = App.net, ds = App.ds, S = net.sizes, L = net.L, W = V.W, H = V.H;
     const img = ds.kind === 'image';
     const narrow = W < 520;
     const imgSideGuess = img ? clamp(Math.min((H - 70) * 0.62, W * 0.2), 84, 176) : 0;
-    const leftPad = img ? 14 + imgSideGuess / 2 : narrow ? 40 : 58;
     const rightPad = narrow ? (ds.task === 'multiclass' && !img ? 66 : 58) : ds.task === 'regression' ? 84 : 124;
-    const x0 = leftPad, x1 = W - rightPad, nCols = L + 1;
-    const compact = nCols > 1 && (x1 - x0) / (nCols - 1) < 128;
-    const top = compact ? 60 : 78, bottom = 46; // room for the depth and zoom controls along the bottom
-    const avail = Math.max(60, H - top - bottom);
+    const x1 = W - rightPad, nCols = L + 1;
+    let maxN = 1;
+    for (let l = img ? 1 : 0; l <= L; l++) maxN = Math.max(maxN, S[l]);
+    const maxSize = App.lenses.maps ? 54 : 26;
+    // labels under the neurons (functions, values, health) hang below the last one in each column
+    let mixed = false;
+    for (let l = 1; l < L; l++) if (net.layerActId(l) === 'mixed') mixed = true;
+    const labelsBelow = App.lenses.acts || App.lenses.values || App.lenses.health || mixed;
+    const bottom = controlsHeight() + (labelsBelow ? 14 : 0);
+    // The input labels sit right-aligned to the left of their neurons, so the left margin has to hold the widest
+    // one beside a neuron of the final size; the size in turn depends on the spacing the margin leaves. A wider
+    // margin only ever shrinks the neurons, so this settles within a pass or two.
+    const base = img ? 14 + imgSideGuess / 2 : narrow ? 40 : 58, labelW = inputLabelWidth();
+    let leftPad = base, x0, colGap, top, avail, size;
+    for (let pass = 0; ; pass++) {
+      x0 = leftPad;
+      colGap = nCols > 1 ? (x1 - x0) / (nCols - 1) : 200;
+      top = headerBottom(colGap) + 12;
+      avail = Math.max(60, H - top - bottom);
+      size = Math.max(9, Math.min(maxSize, (avail / maxN) * (App.lenses.maps ? 0.86 : 0.7), colGap * 0.42));
+      const need = img ? base : Math.max(base, size / 2 + 9 + labelW + 6);
+      if (need <= leftPad + 0.5 || pass === 3) break;
+      leftPad = need;
+    }
     const imgSide = imgSideGuess;
     const xs = [];
     for (let l = 0; l <= L; l++) xs.push(nCols === 1 ? (x0 + x1) / 2 : x0 + ((x1 - x0) * l) / (nCols - 1));
-    let maxN = 1;
-    for (let l = img ? 1 : 0; l <= L; l++) maxN = Math.max(maxN, S[l]);
-    const colGap = nCols > 1 ? (x1 - x0) / (nCols - 1) : 200;
-    const maxSize = App.lenses.maps ? 54 : 26;
-    const size = Math.max(9, Math.min(maxSize, (avail / maxN) * (App.lenses.maps ? 0.86 : 0.7), colGap * 0.42));
     const spacingCap = size * 1.4 + 10;
     const cols = [], nodes = [];
     for (let l = 0; l <= L; l++) {
@@ -527,6 +578,8 @@
   function drawNodeLabels(ctx, lay) {
     const sc = 1 / V.zoom.k, h = 13 * sc, pad = 3.5 * sc, gw = 15 * sc, gh = 9 * sc;
     const colGap = lay.cols.length > 1 ? lay.cols[1].x - lay.cols[0].x : 200;
+    // the part of the diagram on screen, in layout coordinates: zoomed in, a label must not run off its edges
+    const vx0 = -V.zoom.tx * sc + 4 * sc, vx1 = (V.W - V.zoom.tx) * sc - 4 * sc;
     ctx.font = `500 ${9.5 * sc}px ${getFont('mono')}`;
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     for (const lb of V.labels) {
@@ -534,7 +587,9 @@
       // a function-only label beside the node would crowd the wiring: in a layer that shares one function
       // (already named on its header chip) it waits for zooming in, and anywhere it waits until it fits
       if (!below && !lb.text && ((s + nd.gap) * V.zoom.k < 15 || (V.zoom.k < 1.5 && App.net.layerActId(nd.l) !== 'mixed'))) continue;
-      const room = below ? colGap * 0.94 : colGap - s - 10 * sc;
+      // the formula is spelled out only where it fits, centred under its neuron or beside it, on screen
+      const sideX = nd.x + s / 2 + 4 * sc;
+      const room = below ? Math.min(colGap * 0.94, 2 * Math.min(nd.x - vx0, vx1 - nd.x)) : Math.min(colGap - s - 10 * sc, vx1 - sideX);
       const tail = lb.text ? (lb.act ? ' · ' : '') + lb.text : '';
       let main = lb.act ? lb.act.short : '';
       if (lb.act) {
@@ -543,7 +598,11 @@
       }
       const text = main + tail, w = ctx.measureText(text).width + 2 * pad + (lb.act ? gw + 3 * sc : 0);
       let x, y;
-      if (below) { x = nd.x - w / 2; y = nd.y + s / 2 + sc; } else { x = nd.x + s / 2 + 4 * sc; y = nd.y + s / 2 - h + 3 * sc; }
+      // a label under a neuron that is on screen slides sideways to stay on screen with it
+      if (below) {
+        x = nd.x - w / 2; y = nd.y + s / 2 + sc;
+        if (nd.x >= vx0 && nd.x <= vx1) x = clamp(x, vx0, Math.max(vx0, vx1 - w));
+      } else { x = sideX; y = nd.y + s / 2 - h + 3 * sc; }
       ctx.fillStyle = theme.c('panel', 0.92);
       rr(ctx, x, y, w, h, 3 * sc); ctx.fill();
       if (lb.health || lb.act) { ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = sc; rr(ctx, x + sc / 2, y + sc / 2, w - sc, h - sc, 3 * sc); ctx.stroke(); }
@@ -596,8 +655,11 @@
         ctx.font = `600 13px ${ui}`;
         ctx.fillText(ds.featureLabels[nd.j], nd.x - nd.s / 2 - 9, nd.y - (App.lenses.values ? 6 : 0));
         if (App.lenses.values) {
+          // inputs live in [−1, 1]: two decimals always (no "3×10⁻⁴" for a probe a hair from 0), so the margin
+          // left for these labels in computeLayout holds
+          const v = tr.a[0][nd.j];
           ctx.font = `500 10px ${mono}`; ctx.fillStyle = theme.c('ink-2');
-          ctx.fillText(fmt(tr.a[0][nd.j], 2), nd.x - nd.s / 2 - 9, nd.y + 8);
+          ctx.fillText(fmt(Math.abs(v) < 0.005 ? 0 : v, 2), nd.x - nd.s / 2 - 9, nd.y + 8);
         }
       }
     } else {
@@ -757,24 +819,47 @@
       el('button', { class: 'mini-btn', type: 'button', 'aria-label': 'Add a hidden layer', disabled: L - 1 >= 6, onclick: () => App.addLayer() }, '+')));
     positionHeaders();
   }
+  // Headers over narrow columns stack their controls (compact), then call the loss chip just "Loss", then keep
+  // only a short title, the curve and the neuron count (tiny), and finally only the curve (micro). gap: the
+  // on-screen distance between columns. The spacing picks a mode; the chips are then measured, and a mode whose
+  // chips would touch their neighbours' (a long loss name, a phone's larger chips) gives way to the next one.
+  const HEADER_MODES = ['full', 'compact', 'short loss', 'tiny', 'micro'];
+  function setHeaderMode(gap) {
+    let m = gap < 74 ? 3 : gap < 128 ? 1 : 0;
+    applyHeaderMode(m);
+    while (m < 4 && chipsCollide(gap)) applyHeaderMode(++m);
+    return m >= 1;
+  }
+  function applyHeaderMode(m) {
+    const compact = m >= 1, tiny = m >= 3, L = App.net.L;
+    V.headers.forEach((h, l) => {
+      h.classList.toggle('is-compact', compact);
+      h.classList.toggle('is-tiny', tiny);
+      h.classList.toggle('is-micro', m >= 4);
+      const me = h.querySelector('.lh-meta[data-full]'), t = h.querySelector('.lh-title'), lt = h.querySelector('.lh-chip-text[data-full]');
+      if (lt) lt.textContent = m >= 2 ? lt.dataset.tiny : lt.dataset.full;
+      if (me) me.textContent = compact ? me.dataset.short : me.dataset.full;
+      if (t) t.textContent = !tiny ? App.layerName(l) : l === 0 ? 'In' : l === L ? 'Out' : 'H' + l;
+    });
+    V.headerMode = HEADER_MODES[m];
+  }
+  function chipsCollide(gap) {
+    const w = V.headers.map((h) => { const c = h.querySelector('.lh-chip'); return c ? c.offsetWidth : 0; });
+    for (let i = 1; i < w.length; i++) if (w[i - 1] && w[i] && (w[i - 1] + w[i]) / 2 > gap - 3) return true;
+    return false;
+  }
   function positionHeaders() {
     if (!V.layout || !V.headers) return;
     // headers keep their size and stay along the top while zoomed, following their column sideways
     const z = V.zoom, k = z ? z.k : 1, tx = z ? z.tx : 0, W = V.stage.clientWidth;
     const cols = V.layout.cols, gap = (cols.length > 1 ? cols[1].x - cols[0].x : 999) * k;
-    const compact = gap < 128, tiny = gap < 74;
+    const compact = setHeaderMode(gap);
     cols.forEach((c, i) => {
       const h = V.headers[i];
       if (!h) return;
       const x = c.x * k + tx;
       h.style.left = x + 'px';
       h.hidden = x < -30 || x > W + 30;
-      h.classList.toggle('is-compact', compact);
-      h.classList.toggle('is-tiny', tiny);
-      const m = h.querySelector('.lh-meta[data-full]'), t = h.querySelector('.lh-title'), lt = h.querySelector('.lh-chip-text[data-full]');
-      if (lt) lt.textContent = tiny ? lt.dataset.tiny : lt.dataset.full;
-      if (m) m.textContent = compact ? m.dataset.short : m.dataset.full;
-      if (t) t.textContent = !tiny ? App.layerName(c.l) : c.l === 0 ? 'In' : c.l === App.net.L ? 'Out' : 'H' + c.l;
     });
     if (V.addBtn) {
       const a = cols[cols.length - 2], b = cols[cols.length - 1];

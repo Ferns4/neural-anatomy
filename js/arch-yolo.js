@@ -542,11 +542,20 @@ print(torch.allclose(${rec.act ? 'F.silu(z)' : 'z'}, y, atol=1e-5))         # Tr
     ctx.drawImage(cv, r.x + (r.w - s) / 2, r.y + (r.h - s) / 2, s, s);
     ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 0.8; ctx.strokeRect(r.x + (r.w - s) / 2 - 0.5, r.y + (r.h - s) / 2 - 0.5, s + 1, s + 1);
   }
-  // a column (or row) of maps, one per stage, each as large as fits
+  // the maps of a stage, one per scale, in the grid of rows and columns that makes them largest (a row, a column,
+  // or two columns in a box about as wide as it is tall)
   function drawPyramid(ctx, S, ts, r, labels) {
-    const n = ts.length, vertical = Math.min(r.w, r.h / n) >= Math.min(r.w / n, r.h), gap = 6, cap = 11;
+    const n = ts.length, gap = 6, cap = 11;
+    let best = null;
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols), cw = r.w / cols, ch = r.h / rows, s = Math.min(cw - gap, ch - gap - cap);
+      if (!best || s > best.s + 0.5) best = { cols, rows, cw, ch, s };
+    }
+    const { cols, cw, ch } = best;
     for (let i = 0; i < n; i++) {
-      const q = vertical ? { x: r.x, y: r.y + i * (r.h / n), w: r.w, h: r.h / n - gap } : { x: r.x + i * (r.w / n), y: r.y, w: r.w / n - gap, h: r.h };
+      // a last row that is not full is centred
+      const row = Math.floor(i / cols), inRow = Math.min(cols, n - row * cols), shift = ((cols - inRow) * cw) / 2;
+      const q = { x: r.x + shift + (i % cols) * cw + gap / 2, y: r.y + row * ch, w: cw - gap, h: ch - gap };
       const inner = { x: q.x, y: q.y + cap, w: q.w, h: q.h - cap };
       if (inner.h > 8 && inner.w > 8) { drawEnergy(ctx, ts[i], inner); S.text(ctx, labels[i], q.x + q.w / 2, q.y + cap / 2, { size: 8.5, align: 'center', color: theme.c('muted'), maxW: q.w }); }
     }
@@ -570,6 +579,8 @@ print(torch.allclose(${rec.act ? 'F.silu(z)' : 'z'}, y, atol=1e-5))         # Tr
     }
   }
   const shape = (t) => `${t.c} × ${t.h} × ${t.w}`;
+  // a layer's number in yolo26.yaml from its module name: 'b9' → 9, 'h16' → 16, 'u11' → 11
+  const layerNo = (name) => name.replace(/^[bhu]/, '');
   const paramsOf = (L, prefix) => Object.values(L.net.P).filter((p) => p.name === prefix || p.name.startsWith(prefix + '.')).reduce((s, p) => s + p.w.length + p.b.length, 0);
 
   // ------------------------------------------------------------------ the diagram
@@ -673,7 +684,7 @@ print(torch.allclose(${rec.act ? 'F.silu(z)' : 'z'}, y, atol=1e-5))         # Tr
     /* A tensor's channels as tiles, each opening that channel. The layout is chosen once against the size of an
        open level (what build() is given), and both the drawing and the grid use it, so cells land on tiles. */
     const tileLayout = (t, n, f) => tiles(t, n, { x: 0, y: 0, w: f[2] * size.w, h: f[3] * size.h });
-    const tileGrid = (t, f, name, lay) => ({ id: 'ch', rect: f, rows: lay.rows, cols: lay.cols, square: true,
+    const tileGrid = (t, f, name, lay) => ({ id: 'ch', index: true, rect: f, rows: lay.rows, cols: lay.cols, square: true,
       skip: (i, j) => i * lay.cols + j >= lay.k, make: (i, j) => (i * lay.cols + j < lay.k ? channelNode(t, i * lay.cols + j, `${name} · channel ${i * lay.cols + j}`) : null) });
 
     // a single Conv (conv + BatchNorm + SiLU)
@@ -837,7 +848,7 @@ print(weights[0, 0].sum(-1))`,
       const o = K[name], parts = K[name + '.parts'], tr = OUT(), lay = tileLayout(o, 16, tr);
       const pr = (k) => W2(X, [k * 0.16, 0.56, 0.15, 0.36], [k * 0.25, 0.46, 0.22, 0.16]);
       return {
-        id: name, title: `${name} · SPPF`, sub: `${shape(K.b8)} → ${shape(o)}`, rect, tone: 's4',
+        id: name, title: `${layerNo(name)} · SPPF`, sub: `${shape(K.b8)} → ${shape(o)}`, rect, tone: 's4',
         summary: (ctx, r) => drawTiles(ctx, o, r, 8),
         inner: (ctx, r, S) => {
           const u = S.u(r, 8, 13);
@@ -856,7 +867,7 @@ print(weights[0, 0].sum(-1))`,
     function c2psaNode(name, rect) {
       const o = K[name], tr = OUT(), lay = tileLayout(o, 16, tr);
       return {
-        id: name, title: `${name} · C2PSA`, sub: `${shape(K.b9)} → ${shape(o)}`, rect, tone: 's7',
+        id: name, title: `${layerNo(name)} · C2PSA`, sub: `${shape(K.b9)} → ${shape(o)}`, rect, tone: 's7',
         summary: (ctx, r) => drawTiles(ctx, o, r, 8),
         inner: (ctx, r, S) => {
           S.lines(ctx, ['a, b = cv1(x).split();  y = cv2(cat(a, psa(b)))', 'attention on half the channels, the other half passed through'], S.place(r, W2(X, [0, 0, 0.64, 0.12], [0, 0.32, 1, 0.1])), { mono: true, size: S.u(r, 8, 13), strong: (k) => k === 0 });
@@ -881,7 +892,7 @@ print(weights[0, 0].sum(-1))`,
       ['h17', 'conv', 'Conv 3×3/2'], ['h19', 'c3k', 'C3k2 · cat → P4 out'], ['h20', 'conv', 'Conv 3×3/2'], ['h22', 'attn', 'C3k2 + PSA → P5 out'],
     ];
     function layerNode([name, kind, title], rect) {
-      const t = `${name.replace(/^[bhu]/, '')} · ${title}`;
+      const t = `${layerNo(name)} · ${title}`;
       if (kind === 'conv') return convNode(name, t, rect);
       if (kind === 'sppf') return sppfNode(name, rect);
       if (kind === 'c2psa') return c2psaNode(name, rect);
@@ -999,8 +1010,9 @@ print(p[a, :4], boxes[a], logits[a].sigmoid())`,
     function headNode(head, rect) {
       const isO = head === 'o2o';
       return {
-        id: head, title: isO ? 'One-to-one head' : 'One-to-many head', sub: isO ? 'trained: one cell per object' : 'trained: ten cells per object', rect, tone: isO ? 's7' : 's4',
-        summary: (ctx, r, S) => { const g = Y.GRIDS[0], dd = D[head]; S.heat(ctx, (i, j) => Math.max(...dd.scores.subarray((i * g + j) * Y.NC, (i * g + j + 1) * Y.NC)), g, g, r, { seq: true, max: 1, square: true }); },
+        id: head, title: isO ? 'One-to-one head' : 'One-to-many head', sub: isO ? 'one cell per object' : 'ten cells per object', rect, tone: isO ? 's7' : 's4',
+        // closed: the fine grid's best score per cell, a square in the middle of the box
+        summary: (ctx, r, S) => { const g = Y.GRIDS[0], dd = D[head], s = Math.min(r.w, r.h); S.heat(ctx, (i, j) => Math.max(...dd.scores.subarray((i * g + j) * Y.NC, (i * g + j + 1) * Y.NC)), g, g, { x: r.x + (r.w - s) / 2, y: r.y, w: s, h: s }, { seq: true, max: 1, square: true }); },
         inner: (ctx, r, S) => S.lines(ctx, [isO ? 'top-1 assignment in training → one box per object → no NMS' : 'top-10 assignment in training → several boxes per object → NMS'], S.place(r, [0, 0, 1, 0.08]), { mono: true, size: S.u(r, 8, 13), strong: () => true }),
         children: [0, 1, 2].map((si) => scaleNode(head, si, W2(X, [si * 0.335, 0.12, 0.32, 0.86], [0, 0.1 + si * 0.3, 1, 0.28]))),
         about: isO
@@ -1080,7 +1092,7 @@ print(p[a, :4], boxes[a], logits[a].sigmoid())`,
     };
     const outNode = (rect) => ({
       id: 'out', title: 'Detections', sub: `${(L.head === 'o2o' ? dets.o2o : dets.o2m).length} boxes`, rect, tone: 's7',
-      summary: (ctx, r) => { const d = drawImage(ctx, L, r); drawBoxes(ctx, L.head === 'o2o' ? dets.o2o : dets.o2m, d, { lw: 1.2 }); },
+      summary: (ctx, r) => { const s = Math.min(r.w, r.h), d = drawImage(ctx, L, { x: r.x + (r.w - s) / 2, y: r.y, w: s, h: s }); drawBoxes(ctx, L.head === 'o2o' ? dets.o2o : dets.o2m, d, { lw: 1.2 }); },
       inner: (ctx, r, S) => {
         const q = S.place(r, W2(X, [0, 0, 0.62, 0.98], [0, 0, 1, 0.7])), d = drawImage(ctx, L, q), list = L.head === 'o2o' ? dets.o2o : dets.o2m;
         drawBoxes(ctx, list, d, { lw: 2 });
@@ -1090,9 +1102,23 @@ print(p[a, :4], boxes[a], logits[a].sigmoid())`,
       code: `${py.detect}\n\nimg, _, _ = random_scene(np.random.default_rng(1))\nboxes, scores, classes = detect(model, img, head='${L.head}')\nfor b, s, c in zip(boxes, scores, classes):\n    print(NAMES[c], round(s.item(), 2), [round(v) for v in b.tolist()])`,
     });
 
-    // ---- the whole model
+    /* ---- the whole model, laid out for the stage's shape. Tall (a phone): a column, with the two heads, their
+       post-processing and the detections in pairs. Most screens: two rows, the image, the backbone and the neck,
+       then the heads, NMS and top scores, and the detections, every box about a third of the width so that its
+       title stays readable. Very wide: one row. */
+    const aspect = size.w / size.h, MODE = aspect < 1.05 ? 'tall' : aspect >= 2.3 && size.w >= 1000 ? 'wide' : 'mid';
+    const LAY = {
+      tall: { input: [0.25, 0, 0.5, 0.115], backbone: [0, 0.145, 1, 0.175], neck: [0, 0.35, 1, 0.155], o2m: [0, 0.535, 0.48, 0.15], o2o: [0.52, 0.535, 0.48, 0.15],
+        nms: [0, 0.715, 0.48, 0.12], topk: [0.52, 0.715, 0.48, 0.12], out: [0.25, 0.865, 0.5, 0.135] },
+      // the heads leave a margin on the left for the line from the neck, which wraps round like a line of text,
+      // and are the widest boxes: "One-to-many head" needs about 150 px at 1280 × 720
+      mid: { input: [0, 0.03, 0.355, 0.38], backbone: [0.405, 0, 0.27, 0.44], neck: [0.725, 0, 0.275, 0.44], o2m: [0.025, 0.54, 0.33, 0.21], o2o: [0.025, 0.79, 0.33, 0.21],
+        nms: [0.405, 0.54, 0.27, 0.21], topk: [0.405, 0.79, 0.27, 0.21], out: [0.725, 0.57, 0.275, 0.4] },
+      wide: { input: [0, 0.3, 0.1, 0.4], backbone: [0.125, 0.02, 0.15, 0.96], neck: [0.3, 0.02, 0.15, 0.96], o2m: [0.475, 0.02, 0.17, 0.47], o2o: [0.475, 0.51, 0.17, 0.47],
+        nms: [0.67, 0.02, 0.14, 0.47], topk: [0.67, 0.51, 0.14, 0.47], out: [0.835, 0.28, 0.165, 0.44] },
+    }[MODE];
     const inputNode = {
-      id: 'input', title: 'Image', sub: '3 × 128 × 128', rect: W2(X, [0, 0.3, 0.1, 0.4], [0.3, 0, 0.4, 0.12]), tone: 's8',
+      id: 'input', title: 'Image', sub: '3 × 128 × 128', rect: LAY.input, tone: 's8',
       summary: (ctx, r) => drawImage(ctx, L, { x: r.x + (r.w - Math.min(r.w, r.h)) / 2, y: r.y, w: Math.min(r.w, r.h), h: Math.min(r.w, r.h) }),
       inner: (ctx, r, S) => {
         const q = S.place(r, W2(X, [0, 0.06, 0.6, 0.92], [0, 0.06, 1, 0.6])), s = Math.min(q.w, q.h);
@@ -1103,25 +1129,43 @@ print(p[a, :4], boxes[a], logits[a].sigmoid())`,
       about: ['The input: a 128 × 128 colour picture, 49,152 numbers between 0 and 1. YOLO26 works on 640 × 640 pictures (1.2 million numbers); this one is smaller so the browser can run it as you drag.', 'The scene is drawn with the same maths as the training data: a background gradient, thin lines that are not objects, the shapes (anti-aliased over one pixel) and a little sensor noise.'],
       code: `${py.scenes}\n\nimg, boxes, classes = random_scene(np.random.default_rng(1))\nprint(img.shape, boxes, [NAMES[c] for c in classes])`,
     };
-    const bbNode = stageNode('backbone', 'Backbone', '11 layers: 128 px → 4 × 4', BB, W2(X, [0.13, 0.02, 0.25, 0.96], [0, 0.15, 1, 0.2]), 's1',
+    const bbNode = stageNode('backbone', 'Backbone', '11 layers: 128 px → 4 × 4', BB, LAY.backbone, 's1',
       ['The backbone turns pixels into features. Five convolutions with stride 2 halve the map five times, 128 → 64 → 32 → 16 → 8 → 4, while the channels grow from 3 to 64: fewer positions, each describing a larger patch in more detail. C3k2 blocks refine the features at each scale; SPPF and the attention block C2PSA let the coarsest map see the whole picture.', 'The maps at stride 8, 16 and 32 (P3, P4, P5) are handed to the neck.'],
       `${py.layers}\n\nmodel = YOLO26Tiny()\nx = torch.randn(1, 3, 128, 128)\nfor name in ['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9', 'b10']:\n    x = getattr(model, name)(x)\n    print(name, tuple(x.shape))`, ['b0', 'b2', 'b4', 'b6', 'b10']);
-    const neckNode = stageNode('neck', 'Neck', 'FPN + PAN: mixes P3, P4, P5', NECK, W2(X, [0.41, 0.02, 0.22, 0.96], [0, 0.38, 1, 0.2]), 's3',
+    const neckNode = stageNode('neck', 'Neck', 'FPN + PAN over P3–P5', NECK, LAY.neck, 's3',
       ['The neck combines scales in both directions. Top-down (FPN), the coarse 4 × 4 map, which knows what is in the picture, is upsampled and concatenated with the sharper 8 × 8 and 16 × 16 maps from the backbone. Bottom-up (PAN), stride-2 convs carry the sharpened result back down. Each of the three outputs mixes "what" from deep layers with "where" from shallow ones.'],
       `print(model.h13, model.h16, model.h19, model.h22)`, ['h16', 'h19', 'h22']);
-    const headsArea = W2(X, [0.66, 0.02, 0.14, 0.47], [0, 0.61, 0.48, 0.17]), headsArea2 = W2(X, [0.66, 0.51, 0.14, 0.47], [0.52, 0.61, 0.48, 0.17]);
     const root = {
       id: 'yolo', title: 'YOLO26 detector', sub: `${fmtInt(L.net.params)} parameters`,
       inner: (ctx, r, S) => {
-        const c = (id) => S.place(r, root.children.find((q) => q.id === id).rect), A = (p, q, o) => (X.wide ? S.arrow(ctx, p.x + p.w + 2, p.y + p.h / 2, q.x - 3, q.y + q.h / 2, o) : S.arrow(ctx, p.x + p.w / 2, p.y + p.h + 2, q.x + q.w / 2, q.y - 3, o));
-        A(c('input'), c('backbone')); A(c('backbone'), c('neck')); A(c('neck'), c('o2m')); A(c('neck'), c('o2o')); A(c('o2m'), c('nms')); A(c('o2o'), c('topk'));
-        A(c(L.head === 'o2o' ? 'topk' : 'nms'), c('out'), { color: theme.c('focus') });
+        const c = (id) => S.place(r, LAY[id]);
+        /* an arrow from box p to box q: sideways when they share a row, straight down (or up) when they share a
+           column, each time through the middle of what the two boxes have in common */
+        const A = (p, q, o) => {
+          const y0 = Math.max(p.y, q.y), y1 = Math.min(p.y + p.h, q.y + q.h), x0 = Math.max(p.x, q.x), x1 = Math.min(p.x + p.w, q.x + q.w);
+          if (y1 - y0 > 6) { const y = (y0 + y1) / 2; return q.x >= p.x + p.w ? S.arrow(ctx, p.x + p.w + 2, y, q.x - 3, y, o) : S.arrow(ctx, p.x - 2, y, q.x + q.w + 3, y, o); }
+          if (x1 - x0 > 6) { const x = (x0 + x1) / 2; return q.y >= p.y + p.h ? S.arrow(ctx, x, p.y + p.h + 2, x, q.y - 3, o) : S.arrow(ctx, x, p.y - 2, x, q.y + q.h + 3, o); }
+          return S.arrow(ctx, p.x + p.w / 2, p.y + p.h + 2, q.x + q.w / 2, q.y - 3, o);
+        };
+        A(c('input'), c('backbone')); A(c('backbone'), c('neck'));
+        if (MODE === 'mid') {
+          // the neck's three maps go to both heads: down from the neck, back across under the first row, and
+          // down the left margin into each head
+          const n = c('neck'), a = c('o2m'), b = c('o2o'), my = (n.y + n.h + a.y) / 2, bx = r.x - 5;
+          ctx.strokeStyle = theme.c('ink-2'); ctx.lineWidth = 1.3; ctx.lineJoin = 'round';
+          ctx.beginPath(); ctx.moveTo(n.x + n.w / 2, n.y + n.h + 2); ctx.lineTo(n.x + n.w / 2, my); ctx.lineTo(bx, my); ctx.lineTo(bx, b.y + b.h / 2); ctx.stroke();
+          S.arrow(ctx, bx, a.y + a.h / 2, a.x - 3, a.y + a.h / 2, { head: 5 }); S.arrow(ctx, bx, b.y + b.h / 2, b.x - 3, b.y + b.h / 2, { head: 5 });
+        } else { A(c('neck'), c('o2m')); A(c('neck'), c('o2o')); }
+        A(c('o2m'), c('nms')); A(c('o2o'), c('topk'));
+        // the head in use feeds the detections (highlighted); the other one's path is dashed
+        const used = { color: theme.c('focus') }, unused = { color: theme.c('muted', 0.7), dash: [3, 3] };
+        A(c('nms'), c('out'), L.head === 'o2m' ? used : unused);
+        A(c('topk'), c('out'), L.head === 'o2o' ? used : unused);
       },
-      children: [inputNode, bbNode, neckNode, headNode('o2m', headsArea), headNode('o2o', headsArea2),
-        nmsNode(W2(X, [0.82, 0.02, 0.08, 0.47], [0, 0.8, 0.31, 0.18])), topkNode(W2(X, [0.82, 0.51, 0.08, 0.47], [0.345, 0.8, 0.31, 0.18])), outNode(W2(X, [0.91, 0.3, 0.09, 0.4], [0.69, 0.8, 0.31, 0.18]))],
+      children: [inputNode, bbNode, neckNode, headNode('o2m', LAY.o2m), headNode('o2o', LAY.o2o), nmsNode(LAY.nms), topkNode(LAY.topk), outNode(LAY.out)],
       about: [
         `The whole detector: ${fmtInt(L.net.params)} parameters in the layer layout of Ultralytics' yolo26.yaml (YOLO26n has 2.4 million). The image goes through a backbone of convolutions, a neck that mixes three scales, and two heads that each predict, for every cell of three grids (16 × 16, 8 × 8 and 4 × 4, 336 cells in all), a box and a score for each class.`,
-        'The one-to-many head needs NMS to clean up its duplicate boxes; the one-to-one head is used as it is. Everything here ran in your browser on the scene shown, in the order drawn; click or zoom into any part to open it.',
+        `The one-to-many head needs NMS to clean up its duplicate boxes; the one-to-one head is used as it is. Everything here ran in your browser on the scene shown, in the order drawn; ${NA.tapWord ? NA.tapWord(true) : 'click'} or zoom into any part to open it.`,
         'Training (in PyTorch, on a GPU) used this repository’s versions of YOLO26’s recipe: ProgLoss, STAL and the MuSGD optimiser. The Python tab has the whole thing: model, synthetic data, loss, optimiser, training loop and inference.',
       ],
       code: py.model(), codeLabel: 'Python · PyTorch · the whole detector: model, data, loss, MuSGD, training and inference',

@@ -10,6 +10,8 @@
   const font = (w, px, mono) => `${w} ${px}px ${mono ? getComputedStyle(document.body).getPropertyValue('--font-mono') || 'monospace' : getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'}`;
   const text = (ctx, s, x, y, o = {}) => { ctx.font = font(o.w || 500, o.size || 12, o.mono); ctx.fillStyle = o.color || theme.c('ink'); ctx.textAlign = o.align || 'left'; ctx.textBaseline = o.base || 'middle'; ctx.fillText(s, x, y); };
   const rgb = (name) => theme.tokens[name] || [128, 128, 128];
+  // a caption that fits its width: shortened with an ellipsis rather than cut mid-word by the edge
+  const fit = (ctx, s, w, size = 10.5, weight = 600) => { ctx.font = font(weight, size); if (ctx.measureText(s).width <= w) return s; let t = s; while (t.length > 1 && ctx.measureText(t + '…').width > w) t = t.slice(0, -1); return t.trimEnd() + '…'; };
   V.classColour = (data, k) => BT.CLASS_COLOURS[(data.colourOf ? data.colourOf[k] : k) % 4];
   const softmax = (o, base, K) => { let m = -Infinity; for (let k = 0; k < K; k++) m = Math.max(m, o[base + k]); const e = []; let z = 0; for (let k = 0; k < K; k++) { e.push(Math.exp(o[base + k] - m)); z += e[k]; } return e.map((v) => v / z); };
 
@@ -59,26 +61,28 @@
 
   // ------------------------------------------------------------------ the curve
   function drawCurve(ctx, r, L) {
-    const d = L.data, pad = 28, q = { x: r.x + pad, y: r.y + 8, w: r.w - pad - 8, h: r.h - 30 };
-    const ys = [...d.Ytr, ...d.Yva];
+    // values are stored scaled to about ±1 for training; the plot shows them in the formula's own units
+    const d = L.data, pad = 34, q = { x: r.x + pad, y: r.y + 8, w: r.w - pad - 8, h: r.h - 30 }, u = 1 / (d.scale || 1);
+    const ys = [...d.Ytr, ...d.Yva].map((v) => v * u);
     let lo = Math.min(...ys), hi = Math.max(...ys);
     const span = hi - lo || 1; lo -= span * 0.12; hi += span * 0.12;
     const X = (v) => q.x + ((v + 1) / 2) * q.w, Y = (v) => q.y + q.h - ((v - lo) / (hi - lo)) * q.h;
     ctx.fillStyle = theme.c('panel-2'); ctx.beginPath(); NA.rr(ctx, q.x, q.y, q.w, q.h, 8); ctx.fill();
     ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1;
-    for (const t of NA.niceTicks(lo, hi, 4)) { const y = Math.round(Y(t)) + 0.5; if (y < q.y || y > q.y + q.h) continue; ctx.beginPath(); ctx.moveTo(q.x, y); ctx.lineTo(q.x + q.w, y); ctx.stroke(); text(ctx, fmt(t, 1), q.x - 6, y, { size: 10, align: 'right', color: theme.c('muted'), mono: true }); }
+    const ticks = NA.niceTicks(lo, hi, 4), dec = ticks.length > 1 ? clamp(-Math.floor(Math.log10(Math.abs(ticks[1] - ticks[0]) + 1e-12)), 0, 3) : 1;
+    for (const t of ticks) { const y = Math.round(Y(t)) + 0.5; if (y < q.y || y > q.y + q.h) continue; ctx.beginPath(); ctx.moveTo(q.x, y); ctx.lineTo(q.x + q.w, y); ctx.stroke(); text(ctx, t.toFixed(dec).replace('-', NA.MINUS), q.x - 6, y, { size: 10, align: 'right', color: theme.c('muted'), mono: true }); }
     for (const t of [-1, -0.5, 0, 0.5, 1]) text(ctx, String(t), X(t), q.y + q.h + 11, { size: 10, align: 'center', color: theme.c('muted'), mono: true });
-    if (d.truth) { ctx.strokeStyle = theme.c('ink-2', 0.55); ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5; ctx.beginPath(); for (let i = 0; i <= 200; i++) { const x = -1 + i / 100, y = d.truth(x); i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)); } ctx.stroke(); ctx.setLineDash([]); }
+    if (d.truth) { ctx.strokeStyle = theme.c('ink-2', 0.55); ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5; ctx.beginPath(); for (let i = 0; i <= 200; i++) { const x = -1 + i / 100, y = d.truth(x) * u; i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)); } ctx.stroke(); ctx.setLineDash([]); }
     const dot = (x, y, hollow) => { ctx.beginPath(); ctx.arc(X(x), Y(y), 2.6, 0, Math.PI * 2); if (hollow) { ctx.strokeStyle = theme.c('s2'); ctx.lineWidth = 1.4; ctx.stroke(); } else { ctx.fillStyle = theme.c('s1', 0.8); ctx.fill(); } };
-    for (let i = 0; i < d.nTr; i++) dot(d.Xtr[i], d.Ytr[i], false);
-    for (let i = 0; i < d.nVa; i++) dot(d.Xva[i], d.Yva[i], true);
+    for (let i = 0; i < d.nTr; i++) dot(d.Xtr[i], d.Ytr[i] * u, false);
+    for (let i = 0; i < d.nVa; i++) dot(d.Xva[i], d.Yva[i] * u, true);
     if (L.model) {
       const n = 240, xs = new Float32Array(n);
       for (let i = 0; i < n; i++) xs[i] = -1 + (2 * i) / (n - 1);
       const p = L.model.predict(xs, n);
       ctx.save(); ctx.beginPath(); ctx.rect(q.x, q.y, q.w, q.h); ctx.clip();
       ctx.strokeStyle = theme.c('ink'); ctx.lineWidth = 2.4; ctx.lineJoin = 'round';
-      ctx.beginPath(); for (let i = 0; i < n; i++) { const x = X(xs[i]), y = Y(p[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+      ctx.beginPath(); for (let i = 0; i < n; i++) { const x = X(xs[i]), y = Y(p[i] * u); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
       ctx.restore();
     }
     return q;
@@ -147,7 +151,8 @@
     }
   }
   function drawAlgo(ctx, r, L) {
-    const d = L.data, Lq = d.len, n = Math.min(6, d.nVa), S = L.seqView || (L.seqView = {});
+    // narrow and tall: fewer examples, so the attention map fits under them
+    const d = L.data, Lq = d.len, S = L.seqView || (L.seqView = {}), n = Math.min(r.w > 560 || !L.model ? 6 : clamp(Math.floor((r.h - 230) / 38), 3, 6), d.nVa);
     const prompts = new Int32Array(n * Lq);
     for (let i = 0; i < n; i++) for (let t = 0; t < Lq; t++) prompts[i * Lq + t] = d.Xva[i * 2 * Lq + t];
     const gen = L.model ? BT.generateAlgo(L.model, prompts, n, Lq) : null;
@@ -155,8 +160,8 @@
     const listH = 24 + n * rowH, under = !attnW && r.h - listH > 140 ? Math.min(r.w, r.h - listH - 22) : 0;
     const cw = Math.min(26, tw / (Lq * 3 + 3));
     text(ctx, 'input', r.x, r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
-    text(ctx, 'right answer', r.x + cw * (Lq + 1.2), r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
-    text(ctx, 'the model writes', r.x + cw * (2 * Lq + 2.4), r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+    text(ctx, fit(ctx, 'right answer', cw * (Lq + 1)), r.x + cw * (Lq + 1.2), r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+    text(ctx, fit(ctx, L.model ? 'the model writes' : 'train to see what it writes', Math.max(40, tw - cw * (2 * Lq + 2.4))), r.x + cw * (2 * Lq + 2.4), r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
     for (let i = 0; i < n; i++) {
       const y = r.y + 24 + i * rowH, xs = Array.from(prompts.subarray(i * Lq, (i + 1) * Lq)), ans = BT.algoAnswer(d.task, xs);
       const tile = (x, s, col, bgc) => { ctx.fillStyle = bgc || theme.c('panel-2'); NA.rr(ctx, x, y, cw - 3, rowH - 8, 5); ctx.fill(); text(ctx, s, x + (cw - 3) / 2, y + (rowH - 8) / 2, { size: clamp(cw * 0.55, 10, 15), align: 'center', mono: true, w: 650, color: col || theme.c('ink') }); };
@@ -170,7 +175,7 @@
         L.model.predict(d.Xva.subarray(0, 2 * Lq), 1); // fill the attention maps for example 0
         const li = clamp(S.layer || 0, 0, layers.length - 1), lay = layers[li], h = clamp(S.head || 0, 0, lay.heads - 1);
         const q = { x: left, y: top + 18, w: side, h: side - 18 };
-        text(ctx, `attention of the first example: layer ${li + 1} of ${layers.length}, head ${h + 1} (each row looks at the columns)`, q.x, top + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+        text(ctx, fit(ctx, `attention of the first example: layer ${li + 1} of ${layers.length}, head ${h + 1} (each row looks at the columns)`, side), q.x, top + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
         const labels = Array.from(d.Xva.subarray(0, 2 * Lq)).map((v) => d.vocab[v]);
         drawAttention(ctx, q, lay, h, 2 * Lq, labels);
       } else text(ctx, 'No attention layer: no position can look at another.', left, top + 20, { size: 11.5, color: theme.c('muted') });
@@ -179,9 +184,10 @@
   }
   function drawText(ctx, r, L) {
     const d = L.data, S = L.seqView || (L.seqView = {}), T = d.input.len, Vn = d.vocab.length;
-    const prompt = S.promptIds || [], cont = S.cont || [];
+    // before the first run there is no model yet: show the prompt alone
+    const prompt = S.promptIds || (d.task === 'language' ? NA.lmData.tokenize(S.prompt || 'alice likes tea . bob likes milk . alice drinks').ids : []), cont = (L.model && S.cont) || [];
     const attnW = r.w > 560 ? Math.min(r.h, r.w * 0.42) : 0, tw = r.w - attnW - (attnW ? 16 : 0);
-    text(ctx, 'the prompt, then what the model writes (its likeliest next word each time)', r.x, r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+    text(ctx, fit(ctx, L.model ? 'the prompt, then what the model writes (its likeliest next word each time)' : 'the prompt: train the model to see what it writes after it', tw), r.x, r.y + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
     // words as chips that wrap
     let x = r.x, y = r.y + 30;
     const chip = (w, col, bg) => {
@@ -193,7 +199,7 @@
       x += cw + 5;
     };
     prompt.forEach((t) => chip(d.vocab[t], theme.c('ink'), theme.c('panel-2')));
-    cont.forEach((t) => chip(d.vocab[t], theme.c('ink'), theme.c('pos', 0.16)));
+    if (L.model) cont.forEach((t) => chip(d.vocab[t], theme.c('ink'), theme.c('pos', 0.16)));
     const under = !attnW && r.y + r.h - (y + 24) > 170 ? Math.min(r.w, r.y + r.h - (y + 24) - 10) : 0, top = attnW ? r.y : y + 24, left = attnW ? r.x + r.w - attnW : r.x, side = attnW || under;
     if (side && L.model && prompt.length) {
       const layers = V.attnLayers(L.model);
@@ -203,7 +209,7 @@
         L.model.predict(X, 1);
         const li = clamp(S.layer || 0, 0, layers.length - 1), lay = layers[li], h = clamp(S.head || 0, 0, lay.heads - 1);
         const q = { x: left, y: top + 18, w: side, h: side - 18 };
-        text(ctx, `attention over the last ${T} words: layer ${li + 1}, head ${h + 1} (each row looks at the columns)`, q.x, top + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
+        text(ctx, fit(ctx, `attention over the last ${T} words: layer ${li + 1}, head ${h + 1} (each row looks at the columns)`, side), q.x, top + 8, { size: 10.5, color: theme.c('muted'), w: 600 });
         drawAttention(ctx, q, lay, h, T, Array.from(X).map((v) => d.vocab[v].slice(0, 5)));
       }
     }
@@ -214,7 +220,7 @@
   V.draw = function (ctx, r, L) {
     const d = L.data;
     if (!d) return;
-    if (d.error) { text(ctx, d.error, r.x + 8, r.y + r.h / 2, { size: 13, color: theme.c('critical') }); return; }
+    if (d.error) return; // the lab shows the problem's error as text above the picture
     if (d.family === 'plane') return drawPlane(ctx, r, L);
     if (d.family === 'curve') return drawCurve(ctx, r, L);
     if (d.family === 'digits') return drawDigits(ctx, r, L);
@@ -237,7 +243,9 @@
       const last = ys.filter((v) => v >= 0).pop();
       lines.push(xs.map((v) => d.vocab[v]).join(' ') + (last !== undefined && d.task !== 'language' ? ' ' + d.vocab[last] : ''));
     }
-    lines.forEach((l, i) => text(ctx, l.length > 52 ? l.slice(0, 50) + '…' : l, 4, 12 + i * 18, { size: 11.5, mono: true, color: theme.c('ink-2') }));
+    ctx.font = font(500, 11.5, true);
+    const cut = (l) => { if (ctx.measureText(l).width <= W - 8) return l; const ws = l.split(' '); while (ws.length > 1 && ctx.measureText(ws.join(' ') + ' …').width > W - 8) ws.pop(); return ws.join(' ') + ' …'; };
+    lines.forEach((l, i) => text(ctx, cut(l), 4, 12 + i * 18, { size: 11.5, mono: true, color: theme.c('ink-2') }));
   };
 
   NA.builderViz = V;

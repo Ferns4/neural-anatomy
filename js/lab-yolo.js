@@ -9,6 +9,13 @@
   const NAMES = Y.NAMES, GLYPH = ['●', '▲', '■', '★'];
   const CLS = (i, a = 1) => (a >= 1 ? theme.series[i] : theme.series[i].replace('rgb(', 'rgba(').replace(')', `,${a})`));
   const HEADS = { o2o: 'One-to-one (no NMS)', o2m: 'One-to-many + NMS' };
+  // a post-processing time: a sort of a few scores can take less than the 0.01 ms two decimals show
+  const msText = (v) => (v < 0.005 ? 'under 0.01 ms' : `${fmt(v, 2)} ms`);
+  // touch screens get touch wording (and pinch and twist on the picture); a mouse gets the wheel
+  const touchUI = () => !!(NA.mobile && NA.mobile.mobile) || (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
+  const HELP = () => (touchUI()
+    ? 'Drag a shape to move it, pinch to resize it and twist to turn it, double-tap it to remove it, double-tap empty space to add one.'
+    : 'Drag a shape to move it, scroll on it to resize it (Shift + scroll turns it), double-click it to remove it, double-click empty space to add one.');
 
   const YL = H.transport({
     id: 'yolo26', screens: { network: 'Detect', data: 'Scene', insp: 'Inspect' },
@@ -41,26 +48,47 @@
     this.offTheme = theme.onChange(() => { this._ic = null; this.dirty = true; this.inspDirty = true; this.leftDirty = true; if (this.arch) this.arch.dirty = true; });
     if (!this.scene) this.scene = DEFAULT();
     if (NA.yoloWeights) this.ready();
-    else {
-      this.loading = true;
-      H.loadScript('js/yolo-weights.js').then(() => this.ready(), () => { this.loadError = true; this.dirty = true; });
-    }
+    else this.loadWeights();
     this.dirty = true; this.leftDirty = true; this.inspDirty = true;
   };
+  // The trained weights (1 MB) load the first time the lab opens. If they cannot be loaded, every place that
+  // would show the detector's output says so and offers to try again.
+  YL.loadWeights = function () {
+    this.loading = true; this.loadError = false;
+    this.syncLoad();
+    H.loadScript('js/yolo-weights.js').then(() => this.ready(), () => { this.loading = false; this.loadError = true; this.syncLoad(); });
+  };
   YL.ready = function () {
-    this.loading = false;
+    this.loading = false; this.loadError = false;
     this.net = Y.load(NA.yoloWeights);
     if (!this.runner) this.runner = new Y.Runner(this.net, (r) => this.onResult(r));
-    if (H.lab === this) { this.changed(); this.inspDirty = true; }
+    if (H.lab === this) { this.syncLoad(); this.changed(); }
+  };
+  // after the weights arrive or fail: the centre swaps the picture for the error (or back), the tabs built
+  // without the weights are built again, and everything that shows the detector redraws
+  YL.syncLoad = function () {
+    if (H.lab !== this || !this.errBox) return;
+    this.setView(this.view);
+    if (this.tabPending) this.tabs.select(this.tabs.current);
+    this.dirty = true; this.leftDirty = true; this.inspDirty = true; this.infoStale = true;
+    if (this.arch) this.arch.dirty = true;
+  };
+  // what stands in for the detector's output until it can run: a note while loading, the error and a Retry
+  // button when the weights could not be loaded (announced once, by the large one in the picture's place)
+  YL.pending = function (big) {
+    if (!this.loadError) return UI.note('Loading the trained detector (1 MB)…');
+    const text = 'The detector’s trained weights (js/yolo-weights.js, 1 MB) could not be loaded. Check the connection and try again.';
+    return el('div', { class: big ? 'yl-error' : 'yl-error-note', role: big ? 'alert' : null }, big ? el('p', { text }) : UI.note(text),
+      el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.loadWeights() }, 'Retry')));
   };
   YL.deactivate = function () {
     if (this.offTheme) this.offTheme();
     if (this.resizeObs) this.resizeObs.disconnect();
     if (this.arch) this.arch.destroy();
-    this.drag = null;
+    this.drag = null; this.pinch = null; this.ptrs = null; this.tap = null;
   };
   YL.archText = function () { return 'YOLO26 layout · 128 px image → boxes at 3 scales · 2 heads'; };
-  YL.stateText = function () { return this.training ? 'Moving' : this.loading ? 'Loading' : 'Still'; };
+  YL.stateText = function () { return this.training ? 'Moving' : this.loading ? 'Loading' : this.loadError ? 'Not loaded' : 'Still'; };
   YL.fastForward = function () {};
   YL.trainChunk = function () { return 0; };
 
@@ -175,15 +203,55 @@
   };
 
   YL.buildHyper = function (root) {
+    this.headSel = UI.select([{ value: 'o2o', label: HEADS.o2o }, { value: 'o2m', label: HEADS.o2m }], this.head, (v) => this.setHead(v));
+    this.confSel = UI.select([0.1, 0.25, 0.4, 0.6].map((v) => ({ value: v, label: '≥ ' + v })), this.conf, (v) => this.setConf(+v));
+    this.iouSel = UI.select([0.45, 0.6, 0.7, 0.8].map((v) => ({ value: v, label: '> ' + v })), this.iouThr, (v) => this.setIou(+v));
     root.append(
-      UI.field('Head', UI.select([{ value: 'o2o', label: HEADS.o2o }, { value: 'o2m', label: HEADS.o2m }], this.head, (v) => this.setHead(v))),
-      UI.field('Confidence', UI.select([0.1, 0.25, 0.4, 0.6].map((v) => ({ value: v, label: '≥ ' + v })), this.conf, (v) => this.setConf(+v))),
-      UI.field('NMS IoU', UI.select([0.45, 0.6, 0.7, 0.8].map((v) => ({ value: v, label: '> ' + v })), this.iouThr, (v) => this.setIou(+v)), 'NMS deletes a box that overlaps a better one of its class by more than this'),
+      UI.field('Head', this.headSel),
+      UI.field('Confidence', this.confSel),
+      UI.field('NMS IoU', this.iouSel, 'NMS deletes a box that overlaps a better one of its class by more than this'),
       el('div', { class: 'sheet-actions' }, el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.reset(); } }, 'New scene')));
   };
-  YL.setHead = function (h) { this.head = h; if (this.headSeg) this.headSeg.set(h); this.dirty = true; this.leftDirty = true; this.inspDirty = true; this.archStale = true; this.infoStale = true; };
-  YL.setConf = function (v) { this.conf = v; if (this.confSl) this.confSl.set(v); this.redetect(); };
-  YL.setIou = function (v) { this.iouThr = v; if (this.iouSl) this.iouSl.set(v); this.redetect(); };
+  /* One setter per setting, and each updates every control that shows it: the settings' selects, the toolbar's
+     head buttons and the sliders under the picture. A select lists a few round values; any other value (from a
+     slider or an experiment) gets an option of its own while it is in use, so the select never shows a value
+     that is not the one in use. */
+  const selectValue = (sel, v, label) => {
+    if (!sel) return;
+    const opts = Array.from(sel.options), own = opts.find((o) => o.dataset.own);
+    if (opts.some((o) => !o.dataset.own && o.value === String(v))) { if (own) own.remove(); sel.value = String(v); return; }
+    const o = own || el('option', { dataset: { own: '1' } });
+    o.value = String(v); o.textContent = label;
+    // in numerical order among the round values
+    const next = opts.find((q) => !q.dataset.own && +q.value > v);
+    sel.insertBefore(o, next || null);
+    sel.value = String(v);
+  };
+  YL.setHead = function (h) {
+    this.head = h;
+    if (this.headSeg) this.headSeg.set(h);
+    if (this.headSel) this.headSel.value = h;
+    this.dirty = true; this.leftDirty = true; this.inspDirty = true; this.archStale = true; this.infoStale = true;
+  };
+  YL.setConf = function (v, fromSlider) {
+    this.conf = v;
+    if (this.confSl && !fromSlider) this.confSl.set(v);
+    selectValue(this.confSel, v, '≥ ' + v);
+    this.redetect();
+  };
+  YL.setIou = function (v, fromSlider) {
+    this.iouThr = v;
+    if (this.iouSl && !fromSlider) this.iouSl.set(v);
+    selectValue(this.iouSel, v, '> ' + v);
+    this.redetect();
+  };
+  // the picture's chips (Truth, Raw boxes, Cells) and what they show, kept together
+  YL.setShow = function (key, on) {
+    this.show[key] = on;
+    const chip = this.chipOf && this.chipOf[key];
+    if (chip) chip.setAttribute('aria-pressed', String(on));
+    this.dirty = true;
+  };
 
   // ------------------------------------------------------------------ left: the scene
   YL.buildLeft = function (root) {
@@ -197,12 +265,13 @@
     const add = el('div', { class: 'yl-add' }, ...NAMES.map((n, k) => el('button', { class: 'btn yl-add-btn', type: 'button', title: `Add a ${n}`, onclick: () => this.addShape(k) }, el('span', { class: 'yl-glyph', style: { color: CLS(k) }, text: GLYPH[k] }), n)));
     this.selBox = el('div');
     this.found = el('div', { class: 'yl-found' });
+    this.help = UI.note(HELP());
     body.append(
-      UI.section('Scene', el('div', { class: 'btn-row' },
+      // no title: the panel's own (Scene) names it
+      UI.section(null, el('div', { class: 'btn-row' },
         el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.reset() }, 'New random scene'),
         el('button', { class: 'btn', type: 'button', onclick: () => { this.scene.objs = []; this.sel = -1; this.changed(); } }, 'Clear')),
-      UI.note('Drag a shape to move it, scroll on it to resize (Shift + scroll turns it), double-click it to remove it, double-click empty space to add one.'),
-      add, this.noiseSl, el('div', { class: 'chip-row' }, this.clutterChip)),
+      this.help, add, this.noiseSl, el('div', { class: 'chip-row' }, this.clutterChip)),
       UI.section('Selected shape', this.selBox),
       UI.section('What the detector found', this.found),
       UI.section('How a head reads its grids',
@@ -214,10 +283,11 @@
         UI.note('Each of 336 cells (16 × 16 + 8 × 8 + 4 × 4) predicts four distances to the edges of a box and a score for each shape. YOLO26 predicts the distances directly (no DFL) and, with its one-to-one head, needs no NMS.')));
   };
   YL.renderLeft = function () {
+    this.help.textContent = HELP();
     // the selected shape's controls
     clear(this.selBox);
     const o = this.scene.objs[this.sel];
-    if (!o) this.selBox.append(UI.note('Click a shape in the picture to select it.'));
+    if (!o) this.selBox.append(UI.note(`${touchUI() ? 'Tap' : 'Click'} a shape in the picture to select it.`));
     else {
       const seg = UI.seg(NAMES.map((n, k) => ({ value: k, label: GLYPH[k] + ' ' + n })), o.cls, (v) => { o.cls = +v; this.changed(); }, 'Kind of shape');
       this.selBox.append(seg,
@@ -227,7 +297,7 @@
     }
     // the true shapes against the current head's detections
     clear(this.found);
-    if (!this.dets) { this.found.append(UI.note(this.loadError ? 'The detector’s weights could not be loaded.' : 'Running the detector…')); return; }
+    if (!this.dets) { this.found.append(this.loading || this.loadError ? this.pending() : UI.note('Running the detector…')); return; }
     const dets = this.headDets(), M = this.match[this.head], rows = [];
     this.gts.forEach((g, j) => {
       const d = dets.find((q) => q.hit === j);
@@ -245,21 +315,28 @@
   YL.buildCenter = function (root) {
     this.viewSeg = UI.seg([{ value: 'detect', label: 'Detect', title: 'The picture and the boxes of one head' }, { value: 'compare', label: 'Compare heads', title: 'Before NMS, after NMS, and the one-to-one head' }, { value: 'scales', label: 'Grids', title: 'The three grids each head reads: what each cell scores' }, { value: 'arch', label: 'Architecture', title: 'The network’s parts: click or zoom in to open them' }], this.view, (v) => this.setView(v), 'View');
     this.headSeg = UI.seg([{ value: 'o2o', label: 'One-to-one', title: 'YOLO26’s end-to-end head: used as it is, no NMS' }, { value: 'o2m', label: 'One-to-many + NMS', title: 'The classic head: several boxes per object, cleaned up by NMS' }], this.head, (v) => this.setHead(v), 'Head');
-    this.chips = el('div', { class: 'chip-row' },
-      UI.chip('Truth', this.show.truth, (on) => { this.show.truth = on; this.dirty = true; }, 'The true box of every shape (white, dashed)'),
-      UI.chip('Raw boxes', this.show.raw, (on) => { this.show.raw = on; this.dirty = true; }, 'One-to-many: every box over the threshold, before NMS'),
-      UI.chip('Cells', this.show.cells, (on) => { this.show.cells = on; this.dirty = true; }, 'Mark the grid cell that predicted each box'));
+    this.chipOf = {
+      truth: UI.chip('Truth', this.show.truth, (on) => this.setShow('truth', on), 'The true box of every shape (white, dashed)'),
+      raw: UI.chip('Raw boxes', this.show.raw, (on) => this.setShow('raw', on), 'One-to-many: every box over the threshold, before NMS'),
+      cells: UI.chip('Cells', this.show.cells, (on) => this.setShow('cells', on), 'Mark the grid cell that predicted each box'),
+    };
+    this.chips = el('div', { class: 'chip-row' }, this.chipOf.truth, this.chipOf.raw, this.chipOf.cells);
     root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.headSeg, this.chips));
     this.stage = el('div', { class: 'lab-stage yl-stage' });
     this.canvas = el('canvas', { 'aria-label': 'The scene with the detector’s boxes. Drag shapes to move them.', tabindex: '0' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: 'YOLO26 architecture: click a part or zoom in to open it', build: (size) => NA.archYolo.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
-    this.confSl = UI.slider({ label: 'Confidence ≥', min: 0.05, max: 0.95, step: 0.01, value: this.conf, format: (v) => fmt(v, 2), onInput: (v) => { this.conf = v; this.redetect(); } });
-    this.iouSl = UI.slider({ label: 'NMS IoU >', min: 0.3, max: 0.95, step: 0.01, value: this.iouThr, format: (v) => fmt(v, 2), onInput: (v) => { this.iouThr = v; this.redetect(); } });
+    // stands in for the picture and the diagram when the weights could not be loaded
+    this.errBox = el('div', { class: 'lab-stage yl-error-stage', hidden: true });
+    this.confSl = UI.slider({ label: 'Confidence ≥', min: 0.05, max: 0.95, step: 0.01, value: this.conf, format: (v) => fmt(v, 2), onInput: (v) => this.setConf(v, true) });
+    // down to 0.2: the Overlapping shapes experiment sets a strict 0.2
+    this.iouSl = UI.slider({ label: 'NMS IoU >', min: 0.2, max: 0.95, step: 0.01, value: this.iouThr, format: (v) => fmt(v, 2), onInput: (v) => this.setIou(v, true) });
     this.controls = el('div', { class: 'yl-controls' }, this.confSl, this.iouSl);
-    root.append(this.stage, this.archStage, this.controls);
-    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
+    root.append(this.stage, this.archStage, this.errBox, this.controls);
+    // The explanation starts closed unless the panel is tall enough to keep the picture large under it (the
+    // picture is what this lab is about: at 1440 × 900 an open explanation would shrink it from about 500 px to 290)
+    this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 980 });
     root.append(this.foot = el('div', { class: 'lab-foot' },
       ...NAMES.map((n, k) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: CLS(k) } }), n)),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line yl-dash' }), 'removed by NMS'),
@@ -269,7 +346,8 @@
     c.addEventListener('pointermove', (e) => this.pointerMove(e));
     c.addEventListener('pointerup', (e) => this.pointerUp(e));
     c.addEventListener('pointercancel', (e) => this.pointerUp(e));
-    c.addEventListener('pointerleave', () => { NA.tooltip.hide(); if (this.hoverI !== -1) { this.hoverI = -1; this.dirty = true; } });
+    // a pointer that leaves without a press held (a mouse moving off) is no longer one of the fingers counted for a pinch
+    c.addEventListener('pointerleave', (e) => { NA.tooltip.hide(); if (this.ptrs && !this.drag && !this.pinch) this.ptrs.delete(e.pointerId); if (this.hoverI !== -1) { this.hoverI = -1; this.dirty = true; } });
     c.addEventListener('dblclick', (e) => this.dblclick(e));
     c.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     this.resizeObs = new ResizeObserver(() => { this.dirty = true; });
@@ -279,12 +357,23 @@
   YL.setView = function (v) {
     this.view = v;
     this.viewSeg.set(v);
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.chips.hidden = arch || v === 'compare'; this.headSeg.hidden = arch || v === 'compare'; this.foot.hidden = arch; this.controls.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', err = !!this.loadError;
+    this.stage.hidden = arch || err; this.chips.hidden = arch || err || v === 'compare'; this.headSeg.hidden = arch || err || v === 'compare'; this.foot.hidden = arch || err; this.controls.hidden = arch || err; this.archStage.hidden = !arch || err;
+    this.errBox.hidden = !err;
+    if (err && !this.errBox.firstChild) this.errBox.append(this.pending(true));
+    if (!err) clear(this.errBox);
     this.dirty = true; this.archStale = true;
     this.showInfo();
   };
   YL.showInfo = function () {
+    if (!this.result) {
+      // nothing to explain until the detector has run
+      const what = { detect: 'Detect view', compare: 'Compare heads', scales: 'Grids view', arch: 'Architecture' }[this.view];
+      this.info.set(this.loadError
+        ? { kicker: what, title: 'The detector could not be loaded', about: ['Its trained weights (js/yolo-weights.js, 1 MB) did not arrive, so there is nothing to show yet. Check the connection and press Retry.'] }
+        : { kicker: what, title: 'Loading the detector', about: ['The trained weights (1 MB) are loading. The picture, the boxes and the explanation follow as soon as the network has run once.'] });
+      return;
+    }
     if (this.view === 'arch') { if (this.arch) this.arch.refreshFocus(); return; }
     this.info.set((this.view === 'detect' ? DETECT_INFO : this.view === 'compare' ? COMPARE_INFO : SCALES_INFO)(this));
   };
@@ -306,32 +395,38 @@
     ctx.clearRect(0, 0, W, Hh);
     this.panels = [];
     if (!this.result) {
-      const msg = this.loadError ? 'The detector’s weights could not be loaded.' : 'Loading the trained detector (1 MB)…';
+      const msg = this.loadError ? 'The detector’s weights could not be loaded.' : 'Loading the trained detector (1 MB)…';
       NA.archKit.text(ctx, msg, W / 2, Hh / 2, { align: 'center', color: theme.c('muted'), size: 13 });
       return;
     }
     const d = this.dets;
+    // three pictures' titles in the same number of words: the longest wording that fits over all three
+    const same = (qs, lists) => { ctx.font = NA.archKit.font(600, 12); const v = lists[0].findIndex((_, k) => lists.every((l, i) => ctx.measureText(l[k]).width <= qs[i].s)); return lists.map((l) => l[v < 0 ? l.length - 1 : v]); };
     if (this.view === 'detect') {
       const [q] = this.layout(W, Hh, 1), list = this.headDets();
-      this.panel(ctx, q, { title: `${HEADS[this.head]}: ${list.length} box${list.length === 1 ? '' : 'es'}`, dets: list, raw: this.show.raw && this.head === 'o2m' ? d.raw : null, labels: true });
+      this.panel(ctx, q, { title: [`${HEADS[this.head]}: ${list.length} box${list.length === 1 ? '' : 'es'}`, `${this.head === 'o2o' ? 'One-to-one' : 'One-to-many + NMS'}: ${list.length}`], dets: list, raw: this.show.raw && this.head === 'o2m' ? d.raw : null, labels: true });
     } else if (this.view === 'compare') {
       const qs = this.layout(W, Hh, 3), rm = d.o2m.suppressed || [];
-      this.panel(ctx, qs[0], { title: `One-to-many: ${d.raw.length} boxes`, dets: d.raw, thin: true, counts: true });
-      this.panel(ctx, qs[1], { title: `+ NMS: ${d.o2m.length} kept, ${rm.length} removed`, dets: d.o2m, removed: rm, labels: true });
-      this.panel(ctx, qs[2], { title: `One-to-one: ${d.o2o.length} boxes, no NMS`, dets: d.o2o, labels: true });
+      const t = same(qs, [[`One-to-many: ${d.raw.length} boxes`, `One-to-many: ${d.raw.length}`, `Raw: ${d.raw.length}`], [`+ NMS: ${d.o2m.length} kept, ${rm.length} removed`, `+ NMS: ${d.o2m.length} kept, −${rm.length}`, `NMS: ${d.o2m.length}, −${rm.length}`],
+        [`One-to-one: ${d.o2o.length} boxes, no NMS`, `One-to-one: ${d.o2o.length}`, `One-to-one: ${d.o2o.length}`]]);
+      this.panel(ctx, qs[0], { title: t[0], dets: d.raw, thin: true, counts: true });
+      this.panel(ctx, qs[1], { title: t[1], dets: d.o2m, removed: rm, labels: true });
+      this.panel(ctx, qs[2], { title: t[2], dets: d.o2o, labels: true });
     } else {
-      const qs = this.layout(W, Hh, 3), list = this.headDets();
-      Y.STRIDES.forEach((s, si) => {
-        const mine = list.filter((q) => this.dec[this.head].where[q.a].si === si), g = Y.GRIDS[si];
-        this.panel(ctx, qs[si], { title: `${g} × ${g} grid (stride ${s}): ${mine.length} box${mine.length === 1 ? '' : 'es'}`, dets: mine, grid: si, labels: false });
-      });
+      const qs = this.layout(W, Hh, 3), list = this.headDets(), boxes = (n) => `${n} box${n === 1 ? '' : 'es'}`;
+      const mine = Y.STRIDES.map((s, si) => list.filter((q) => this.dec[this.head].where[q.a].si === si));
+      const t = same(qs, Y.STRIDES.map((s, si) => { const g = Y.GRIDS[si], n = mine[si].length; return [`${g} × ${g} grid (stride ${s}): ${boxes(n)}`, `${g} × ${g} grid: ${boxes(n)}`, `${g} × ${g}: ${boxes(n)}`, `${g} × ${g}: ${n}`]; }));
+      Y.STRIDES.forEach((s, si) => this.panel(ctx, qs[si], { title: t[si], dets: mine[si], grid: si, labels: false }));
     }
   };
   // one picture with its boxes. o: { title, dets, raw, removed, grid (scale index), labels, thin }
   YL.panel = function (ctx, q, o) {
     this.panels.push(q);
     const k = q.s / Y.IMG, X = (v) => q.x + v * k, Yp = (v) => q.y + v * k, S = NA.archKit;
-    S.text(ctx, o.title, q.x, q.y - 11, { size: 12, w: 600, color: theme.c('ink-2'), maxW: q.s });
+    // the title, in as many words as fit over the picture (o.title: the longest first)
+    ctx.font = S.font(600, 12);
+    const titles = [].concat(o.title), ttl = titles.find((t) => ctx.measureText(t).width <= q.s) || titles[titles.length - 1];
+    S.text(ctx, ttl, q.x, q.y - 11, { size: 12, w: 600, color: theme.c('ink-2'), maxW: q.s });
     ctx.save();
     ctx.beginPath(); NA.rr(ctx, q.x, q.y, q.s, q.s, 6); ctx.clip();
     ctx.imageSmoothingEnabled = false;
@@ -355,7 +450,6 @@
     const box = (b, col, lw, dash) => { ctx.strokeStyle = col; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash); ctx.strokeRect(X(b[0]), Yp(b[1]), (b[2] - b[0]) * k, (b[3] - b[1]) * k); ctx.setLineDash([]); };
     if (this.show.truth && o.grid === undefined) for (const g of this.gts) { box(g.box, 'rgba(0,0,0,0.65)', 3, [5, 4]); box(g.box, 'rgba(255,255,255,0.95)', 1.4, [5, 4]); }
     if (o.raw) for (const d of o.raw) box(d.box, CLS(d.cls, 0.45), 1);
-    if (o.removed) for (const d of o.removed) box(d.box, theme.c('muted', 0.85), 1.2, [3, 3]);
     for (const d of o.dets) {
       box(d.box, o.thin ? CLS(d.cls, 0.75) : CLS(d.cls), o.thin ? 1.1 : 2.2);
       if (o.counts) {
@@ -369,12 +463,38 @@
         ctx.fillStyle = theme.c('focus'); ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(cx, cy, 3.2, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
-      if (o.labels && q.s > 180) {
-        const t = `${NAMES[d.cls]} ${fmt(d.score, 2)}`;
-        ctx.font = `600 11px ${getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'}`;
-        const tw = ctx.measureText(t).width + 8, lx = clamp(X(d.box[0]) - 1, q.x, q.x + q.s - tw), ly = Yp(d.box[1]) - 16 < q.y ? Yp(d.box[1]) + 1 : Yp(d.box[1]) - 16;
-        ctx.fillStyle = CLS(d.cls); NA.rr(ctx, lx, ly, tw, 15, 3); ctx.fill();
-        ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(t, lx + 4, ly + 8);
+    }
+    // What NMS removed. Each removed box lies within a pixel of the box that removed it, so drawn where it is it
+    // would vanish under that box's outline: they are drawn over it, 3.5 px further out and dashed.
+    const pad = 3.5, removed = o.removed || [];
+    const outline = (b, col, lw) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash([3, 3]); ctx.strokeRect(X(b[0]) - pad, Yp(b[1]) - pad, (b[2] - b[0]) * k + 2 * pad, (b[3] - b[1]) * k + 2 * pad); ctx.setLineDash([]); };
+    for (const d of removed) { outline(d.box, 'rgba(0,0,0,0.5)', 2.6); outline(d.box, 'rgba(232,236,242,0.95)', 1.2); }
+    // the names and scores, over the outlines; where each went is kept, so the counts below can keep clear of them
+    const font = getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif', taken = [];
+    if (o.labels && q.s > 180) for (const d of o.dets) {
+      const t = `${NAMES[d.cls]} ${fmt(d.score, 2)}`;
+      ctx.font = `600 11px ${font}`;
+      const tw = ctx.measureText(t).width + 8, lx = clamp(X(d.box[0]) - 1, q.x, q.x + q.s - tw), ly = Yp(d.box[1]) - 16 < q.y ? Yp(d.box[1]) + 1 : Yp(d.box[1]) - 16;
+      ctx.fillStyle = CLS(d.cls); NA.rr(ctx, lx, ly, tw, 15, 3); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(t, lx + 4, ly + 8);
+      taken.push({ x: lx, y: ly, w: tw, h: 15 });
+    }
+    if (removed.length && q.s >= 160) { // on a small picture the dashes alone (the title has the count)
+      // how many each kept box removed, beside its lower corner: the first place that is clear of the other
+      // boxes, the labels and the counts already placed
+      ctx.font = `700 11px ${font}`;
+      const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+      const rectOf = (d) => ({ x: X(d.box[0]) - pad, y: Yp(d.box[1]) - pad, w: (d.box[2] - d.box[0]) * k + 2 * pad, h: (d.box[3] - d.box[1]) * k + 2 * pad });
+      for (const d of o.dets) {
+        const n = removed.filter((x) => x.suppressedBy === d).length;
+        if (!n) continue;
+        const t = `−${n}`, tw = ctx.measureText(t).width + 8, R = rectOf(d), others = o.dets.filter((e) => e !== d).map(rectOf).concat(taken);
+        const spots = [[R.x + R.w - tw, R.y + R.h + 2], [R.x + R.w + 2, R.y + R.h - 14], [R.x, R.y + R.h + 2], [R.x + R.w + 2, R.y], [R.x - tw - 2, R.y + R.h - 14]]
+          .map(([x, y]) => ({ x: clamp(x, q.x, q.x + q.s - tw), y: clamp(y, q.y, q.y + q.s - 14), w: tw, h: 14 }));
+        const b = spots.find((s) => !others.some((r) => hit(s, r))) || spots[0];
+        taken.push(b);
+        ctx.fillStyle = 'rgba(0,0,0,0.72)'; NA.rr(ctx, b.x, b.y, tw, 14, 7); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(t, b.x + 4, b.y + 7.5);
       }
     }
     if (o.counts) {
@@ -404,27 +524,67 @@
     for (const q of this.panels || []) if (px >= q.x && py >= q.y && px <= q.x + q.s && py <= q.y + q.s) return { q, ix: ((px - q.x) / q.s) * Y.IMG, iy: ((py - q.y) / q.s) * Y.IMG };
     return null;
   };
+  /* Pointers: one drags a shape; two pinch it (the shape under the first finger, else the one selected) to
+     resize it and twist to turn it; a quick second tap does what a double-click does, since touch screens do not
+     always send dblclick. The tooltip belongs to the hover only: it hides as soon as anything is pressed. */
   YL.pointerDown = function (e) {
+    NA.tooltip.hide();
+    const pts = this.ptrs || (this.ptrs = new Map());
+    pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2) { this.startPinch(); e.preventDefault(); return; }
+    if (pts.size > 2) return;
+    this.tap = { x: e.clientX, y: e.clientY, moved: false, sel: this.sel };
     const p = this.toImage(e);
     if (!p || !this.result) return;
     const i = this.hit(p.ix, p.iy);
     this.sel = i; this.leftDirty = true; this.dirty = true;
+    try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* a pointer that is already gone */ }
     if (i < 0) return;
     const o = this.scene.objs[i];
     this.drag = { i, dx: o.cx - p.ix, dy: o.cy - p.iy, id: e.pointerId };
-    try { this.canvas.setPointerCapture(e.pointerId); } catch (err) { /* a pointer that is already gone */ }
     this.canvas.style.cursor = 'grabbing';
     e.preventDefault();
   };
+  YL.startPinch = function () {
+    const [a, b] = [...this.ptrs.values()];
+    this.drag = null;
+    let i = this.sel;
+    if (i < 0) {
+      // the second finger landed before anything was picked: the shape between the fingers, or the one
+      // selected before the first finger touched empty space
+      const p = this.toImage({ clientX: (a[0] + b[0]) / 2, clientY: (a[1] + b[1]) / 2 });
+      i = p ? this.hit(p.ix, p.iy) : -1;
+      if (i < 0 && this.tap) i = this.tap.sel;
+    }
+    const o = this.scene && this.scene.objs[i];
+    this.pinch = { o: o || null, d0: Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, a0: Math.atan2(b[1] - a[1], b[0] - a[0]), size0: o ? o.size : 0, ang0: o ? o.ang : 0 };
+    this.tap = null;
+    if (o) { this.sel = i; this.leftDirty = true; this.dirty = true; }
+    for (const id of this.ptrs.keys()) { try { this.canvas.setPointerCapture(id); } catch (err) { /* gone already */ } }
+  };
   YL.pointerMove = function (e) {
+    if (this.ptrs && this.ptrs.has(e.pointerId)) this.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (this.tap && Math.hypot(e.clientX - this.tap.x, e.clientY - this.tap.y) > 8) this.tap.moved = true;
+    if (this.pinch) {
+      const P = this.pinch, o = P.o;
+      if (!o || this.ptrs.size < 2) return;
+      const [a, b] = [...this.ptrs.values()], d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      o.size = clamp((P.size0 * d) / P.d0, Y.SIZE[0], Y.SIZE[1]);
+      o.ang = P.ang0 + Math.atan2(b[1] - a[1], b[0] - a[0]) - P.a0;
+      Y.clampShape(o);
+      this.changed();
+      return;
+    }
     const p = this.toImage(e);
     if (this.drag) {
+      NA.tooltip.hide();
       if (!p) return;
       const o = this.scene.objs[this.drag.i];
       o.cx = p.ix + this.drag.dx; o.cy = p.iy + this.drag.dy; Y.clampShape(o);
       this.changed();
       return;
     }
+    if (e.pointerType === 'touch' || e.buttons) return; // the tooltip is for a hovering mouse
     const i = p ? this.hit(p.ix, p.iy) : -1;
     this.canvas.style.cursor = i >= 0 ? 'grab' : 'default';
     if (i !== this.hoverI) { this.hoverI = i; }
@@ -436,13 +596,27 @@
       NA.tooltip.show([el('div', { class: 'tt-title', text: `${NAMES[d.cls]} ${fmt(d.score, 3)}` }), el('div', { class: 'tt-hint', text: `from cell (${w.gx}, ${w.gy}) of the ${Y.GRIDS[w.si]} × ${Y.GRIDS[w.si]} grid` }), el('div', { class: 'tt-hint', text: d.hit >= 0 ? `matches a ${NAMES[this.gts[d.hit].cls]}, IoU ${fmt(d.iou, 2)}` : d.dup ? 'a duplicate of a box already found' : 'on nothing, or the wrong kind' })], e.clientX, e.clientY);
     } else NA.tooltip.hide();
   };
-  YL.pointerUp = function () {
-    if (!this.drag) return;
-    this.drag = null;
-    this.canvas.style.cursor = 'grab';
-    this.leftDirty = true;
+  YL.pointerUp = function (e) {
+    if (this.ptrs) this.ptrs.delete(e.pointerId);
+    if (this.pinch) {
+      // the gesture ends when the last finger lifts; the one left behind does not start a drag
+      if (!this.ptrs.size) { this.pinch = null; this.leftDirty = true; }
+      return;
+    }
+    const tap = this.tap;
+    this.tap = null;
+    if (this.drag) { this.drag = null; this.canvas.style.cursor = 'grab'; this.leftDirty = true; }
+    if (e.type !== 'pointerup' || e.pointerType === 'mouse' || !tap || tap.moved) return;
+    const now = performance.now(), last = this.lastTap;
+    if (last && now - last.t < 350 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30) { this.lastTap = null; this.lastDouble = now; this.doubleAt(e); }
+    else this.lastTap = { t: now, x: e.clientX, y: e.clientY };
   };
   YL.dblclick = function (e) {
+    if (performance.now() - (this.lastDouble || 0) < 600) return; // the double-tap that made it was handled already
+    this.doubleAt(e);
+  };
+  // double-click or double-tap: remove the shape there, or add one in empty space
+  YL.doubleAt = function (e) {
     const p = this.toImage(e);
     if (!p || !this.result) return;
     const i = this.hit(p.ix, p.iy);
@@ -454,6 +628,7 @@
     const i = this.hit(p.ix, p.iy);
     if (i < 0) return;
     e.preventDefault();
+    NA.tooltip.hide();
     const o = this.scene.objs[i], dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
     if (e.shiftKey) o.ang += dy * 0.004;
     else { o.size = clamp(o.size * Math.exp(-dy * 0.0015), Y.SIZE[0], Y.SIZE[1]); Y.clampShape(o); }
@@ -520,7 +695,7 @@ print('one-to-one, no NMS:     ', len(detect(model, img, 'o2o', conf=${fmt(L.con
     };
   };
   const SCALES_INFO = (L) => ({
-    kicker: 'Grids view', title: `Where ${HEADS[L.head].toLowerCase()} finds each shape`,
+    kicker: 'Grids view', title: `Where the ${L.head === 'o2o' ? 'one-to-one' : 'one-to-many'} head finds each shape`,
     about: [
       'The head reads three feature maps of the neck: 16 × 16 cells of 8 pixels, 8 × 8 cells of 16 pixels and 4 × 4 cells of 32 pixels. Each cell is coloured by its best class score (the colour of that class, stronger when surer). Every box comes from one cell of one grid.',
       'Nobody told the network which grid to use: in training, each shape was simply assigned to the cells whose boxes already fitted it best, on any grid. On these small pictures the fine grid wins almost everything. Over 250 random scenes it made every box for shapes under 24 pixels, and about half of those 32 to 40 pixels across; the rest went to the 8 × 8 grid. The 4 × 4 grid never won, because the largest shapes (44 pixels) are a third of the picture, and its 32-pixel cells place them less precisely than the finer grids. Grow a shape past about 30 pixels to see its box move to the 8 × 8 grid. On 640-pixel photos, YOLO26’s coarse grid is the one that finds objects a hundred pixels and more across.',
@@ -544,6 +719,9 @@ plt.show()`,
   // ------------------------------------------------------------------ right: inspector
   YL.buildTab = function (id, body) {
     this.tabId = id; const P = (this.parts = {});
+    // the other tabs show the trained detector: until it is here they say why they are empty (built again by syncLoad)
+    this.tabPending = id !== 'overview' && !(id === 'net' ? this.net : NA.yoloWeights);
+    if (this.tabPending) { body.append(UI.section(null, this.pending())); return; }
     if (id === 'overview') {
       body.append(UI.modelCard(this.preset, (t) => this.runTry(t)));
       P.findings = el('div', { class: 'diag-list' });
@@ -563,24 +741,25 @@ plt.show()`,
           UI.note('Both heads are trained at once on the same features. Early on most of the loss comes from the one-to-many head, whose ten positives per object give a strong, easy signal for learning features; the weight then moves linearly to the one-to-one head, the one used at inference (0.8 → 0.1 and 0.2 → 0.9 here).')),
         UI.section('Box loss (1 − CIoU), per head', el('div', { class: 'chart-box' }, c3), el('div', { class: 'mini-legend' }, key('var(--s4)', 'one-to-many'), key('var(--s7)', 'one-to-one'))),
         UI.section('Small shapes found (under 12 px)', el('div', { class: 'chart-box' }, c4), UI.note('Recall of shapes under 12 pixels at confidence 0.25, one-to-one head. STAL widens small boxes to 16 pixels when choosing which cells learn them, so they are never left without positives.')),
-        UI.section('The recipe', el('div', { class: 'kv-grid' }, ...[
+        // sentences, so set as text beside their names (kv-prose), like the radar's training notes
+        UI.section('The recipe', el('div', { class: 'kv-grid kv-prose' }, ...[
           ['Optimiser', 'MuSGD: each weight matrix steps half by SGD (momentum 0.937, Nesterov) and half by Muon, its momentum orthogonalised by 5 Newton–Schulz iterations; biases and norms by SGD'],
           ['Learning rate', '0.01, one epoch of warm-up, then linear decay to 1%'],
-          ['Assignment', 'task-aligned: score^0.5 × IoU^6; top 10 cells per object (one-to-many), top 1 (one-to-one); STAL widens boxes under 16 px'],
+          ['Assignment', 'task-aligned: √score × IoU⁶; top 10 cells per object (one-to-many), top 1 (one-to-one); STAL widens boxes under 16 px'],
           ['Loss', '7.5 × (1 − CIoU) + 0.5 × binary cross-entropy, per head; ProgLoss weights 0.8 → 0.1 (one-to-many)'],
           ['Data', 'fresh synthetic scenes every step, never the same picture twice'],
         ].map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
     } else if (id === 'heads') {
-      P.table = el('div', { class: 'yl-table' });
+      P.table = el('div', { class: 'yl-table yl-heads' });
       P.scene = el('div', { class: 'diag-list' });
       body.append(
         UI.section('On 500 validation scenes', P.table, UI.note('Boxes per shape: how many boxes land on each shape that is found (IoU ≥ 0.5, confidence ≥ 0.25). 1.00 means no duplicates at all.')),
         UI.section('On this scene', P.scene),
         UI.section('Why one-to-one needs no NMS', UI.note('Training decides which cells are positives for each object. With ten positives (one-to-many), the network learns that several cells around an object should all fire; that helps learning, but leaves duplicates for NMS. With one positive (one-to-one), the neighbours are explicitly trained to stay quiet, so they learn to defer to the best cell: duplicate suppression is learned inside the network instead of bolted on after it.'), UI.note('The idea comes from YOLOv10 (dual assignments). YOLO26 makes the one-to-one head the default output, removes DFL so the boxes are four plain numbers, and uses ProgLoss to move the training’s attention to that head over time.')));
     } else if (id === 'net') {
-      P.kv = el('div', { class: 'kv-grid' });
+      P.kv = el('div', { class: 'kv-grid kv-prose' }); // mostly sentences, like the recipe
       P.layers = el('div', { class: 'yl-table yl-layers' });
-      body.append(UI.section('This model and YOLO26n', P.kv), UI.section('Layers (as in yolo26.yaml)', P.layers, UI.note('From: the layer each input comes from (−1 is the previous one). Shapes are channels × height × width for this scene. Open the Architecture view to see inside any of them.')));
+      body.append(UI.section('This model and YOLO26n', P.kv), UI.section('Layers', P.layers, UI.note('As listed in Ultralytics’ yolo26.yaml. From: the layer each input comes from (−1 is the previous one). Shapes are channels × height × width for this scene. Open the Architecture view to see inside any of them.')));
     }
     this.updateTab();
   };
@@ -590,11 +769,11 @@ plt.show()`,
     this.W = W;
     if (id === 'overview') {
       clear(P.findings);
-      if (!this.dets) { P.findings.append(UI.note(this.loadError ? 'The detector’s weights could not be loaded.' : 'Running the detector…')); return; }
+      if (!this.dets) { P.findings.append(this.loading || this.loadError ? this.pending() : UI.note('Running the detector…')); return; }
       const f = (level, title, text) => P.findings.append(el('div', { class: 'diag diag-' + level }, el('div', { class: 'diag-head' }, UI.pill(level, { good: 'Good', info: 'Note', warn: 'Watch' }[level]), el('h4', { class: 'diag-title', text: title })), el('p', { class: 'diag-body', text })));
       const M = this.match[this.head], n = this.gts.length, d = this.dets;
       f(M.found === n ? 'good' : 'warn', `${HEADS[this.head]} finds ${M.found} of ${n} shapes`, M.found === n ? 'Every shape has a box of the right kind overlapping it by IoU 0.5 or more.' : `Missed: ${M.missed.map((j) => `a ${fmt(this.gts[j].size, 0)} px ${NAMES[this.gts[j].cls]}`).join(', ')}. Small, faint or heavily overlapped shapes are the hard ones; lowering the confidence threshold may bring them back, with more false alarms.`);
-      f('info', `${d.raw.length} raw boxes, ${d.o2m.length} after NMS, ${d.o2o.length} one-to-one`, `NMS removed ${(d.o2m.suppressed || []).length} duplicates in ${fmt(d.nmsMs, 2)} ms; the one-to-one head needed no clean-up at all.`);
+      f('info', `${d.raw.length} raw boxes, ${d.o2m.length} after NMS, ${d.o2o.length} one-to-one`, `NMS removed ${(d.o2m.suppressed || []).length} duplicates in ${msText(d.nmsMs)}; the one-to-one head needed no clean-up at all.`);
       f('info', `Network: ${this.runner && this.runner.ms ? fmt(this.runner.ms, 0) : '—'} ms per picture`, `${fmtInt(this.net.params)} parameters and about 27 million multiply-adds per picture, run ${this.runner && this.runner.worker ? 'in a background thread of your browser (a Web Worker), so dragging stays smooth' : 'on the page itself'}.`);
     } else if (id === 'train') {
       if (!W) return;
@@ -607,17 +786,19 @@ plt.show()`,
       P.small.set({ series: [{ name: 'small shapes found', color: theme.c('s7'), points: pts((r) => r.o2o.small_recall) }] });
     } else if (id === 'heads') {
       if (!W) return;
-      const F = W.final, rows = [['', 'mAP@0.5', 'mAP@0.5:0.95', 'Found', 'Boxes per shape'],
+      // the header may wrap: "mAP@0.5:0.95" may break after the @ (wbr), the rest at their spaces
+      const F = W.final, rows = [['', ['mAP@', el('wbr'), '0.5'], ['mAP@', el('wbr'), '0.5:0.95'], 'Found', 'Boxes per shape'],
         ['One-to-one, no NMS', fmtPct(F.o2o.map50, 1), fmtPct(F.o2o.map, 1), fmtPct(F.o2o.recall, 1), fmt(F.o2o.boxes_per_obj, 2)],
         ['One-to-many + NMS', fmtPct(F.o2m.map50, 1), fmtPct(F.o2m.map, 1), fmtPct(F.o2m.recall, 1), fmt(F.o2m.boxes_per_obj, 2)],
         ['One-to-many, raw', '—', '—', fmtPct(F.raw.recall, 1), fmt(F.raw.boxes_per_obj, 2)]];
-      clear(P.table).append(...rows.map((r, i) => el('div', { class: 'yl-tr' + (i ? '' : ' yl-th') }, ...r.map((v) => el('span', { text: v })))));
+      // yl-lab: the row's name, which takes a line of its own when the panel is narrow
+      clear(P.table).append(...rows.map((r, i) => el('div', { class: 'yl-tr' + (i ? '' : ' yl-th') }, ...r.map((v, j) => el('span', j ? null : { class: 'yl-lab' }, v)))));
       clear(P.scene);
       if (this.dets) {
         const d = this.dets, m = this.match;
         P.scene.append(...[
-          ['One-to-one', `${d.o2o.length} boxes, ${m.o2o.found} of ${this.gts.length} shapes found, ${m.o2o.dups} duplicates. Post-processing: a sort, ${fmt(d.topMs, 2)} ms.`],
-          ['One-to-many + NMS', `${d.raw.length} boxes before NMS, ${d.o2m.length} after; ${m.o2m.found} found, ${m.o2m.dups} duplicates left. NMS: ${fmt(d.nmsMs, 2)} ms.`],
+          ['One-to-one', `${d.o2o.length} boxes, ${m.o2o.found} of ${this.gts.length} shapes found, ${m.o2o.dups} duplicates. Post-processing: a sort, ${msText(d.topMs)}.`],
+          ['One-to-many + NMS', `${d.raw.length} boxes before NMS, ${d.o2m.length} after; ${m.o2m.found} found, ${m.o2m.dups} duplicates left. NMS: ${msText(d.nmsMs)}.`],
         ].map(([t, x]) => el('div', { class: 'diag diag-info' }, el('div', { class: 'diag-head' }, el('h4', { class: 'diag-title', text: t })), el('p', { class: 'diag-body', text: x }))));
       }
     } else if (id === 'net') {
@@ -639,31 +820,42 @@ plt.show()`,
     }
   };
 
+  /* Each experiment sets everything its text depends on (the scene, the head, both thresholds, the view and the
+     Raw boxes chip) and stops the shapes moving, so the numbers it quotes come out the same whatever was on
+     screen before. Measured with this scene and these settings: duplicates 48 raw boxes → 6 after NMS; overlap
+     NMS at 0.2 keeps 2 of the 3 shapes, the one-to-one head 3; small all 7 found, every box from the 16 × 16 grid;
+     noise 3 of 6 found and 3 false boxes. */
   YL.runTry = function (t) {
-    const go = () => { if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); };
-    const fresh = (S) => { this.scene = S; this.sel = -1; this.savedLines = null; this.clutterChip.setAttribute('aria-pressed', 'true'); this.noiseSl.set(S.sigma); };
+    if (this.training) this.pause();
+    const setUp = (S, o) => {
+      this.scene = S; this.sel = -1; this.savedLines = null;
+      this.clutterChip.setAttribute('aria-pressed', String(S.lines.length > 0)); this.noiseSl.set(S.sigma);
+      this.setHead(o.head); this.setConf(0.25); this.setIou(o.iou || 0.7); this.setShow('raw', !!o.raw);
+      this.setView(o.view);
+      this.changed();
+    };
     if (t.action === 'nms') {
-      fresh(DEFAULT()); this.setIou(0.7); this.setView('detect'); this.setHead('o2m'); this.show.raw = true; NA.$$('.chip', this.chips)[1].setAttribute('aria-pressed', 'true'); this.changed();
+      setUp(DEFAULT(), { head: 'o2m', raw: true, view: 'detect' });
       NA.ui.toast.show('Faint boxes: everything the one-to-many head proposed. NMS kept the solid ones.');
     } else if (t.action === 'overlap') {
       // the most overlap any pair had in training (true IoU 0.35); a strict NMS threshold merges them
       const S = DEFAULT();
       S.objs = [{ cls: 2, cx: 50, cy: 60, size: 36, ang: 0.1, col: Y.hsv(0.55, 0.75, 0.9) }, { cls: 2, cx: 62, cy: 64.8, size: 36, ang: 0.5, col: Y.hsv(0.12, 0.85, 0.98) }, { cls: 0, cx: 100, cy: 24, size: 20, ang: 0, col: Y.hsv(0.95, 0.65, 0.92) }];
-      fresh(S); this.setIou(0.2); this.setView('compare'); this.changed();
+      setUp(S, { head: 'o2o', iou: 0.2, view: 'compare' });
       NA.ui.toast.show('NMS threshold 0.2: compare the middle picture (one square deleted) with the right one.');
     } else if (t.action === 'small') {
       const S = DEFAULT(), rng = new NA.RNG(5);
       S.objs = [];
       for (let k = 0; k < 7; k++) { const o = Y.randomShape(rng, S, k % 4); if (!o) continue; o.size = 7 + rng.next() * 3; if (S.objs.every((p) => Y.iou(Y.boxOf(o), Y.boxOf(p)) < 0.05)) S.objs.push(o); }
-      fresh(S); this.setIou(0.7); this.setView('scales'); this.changed();
+      setUp(S, { head: 'o2o', view: 'scales' });
       NA.ui.toast.show('Shapes 7 to 10 pixels across: watch which grid finds them.');
     } else if (t.action === 'noise') {
       const S = DEFAULT();
       S.sigma = 0.15;
-      fresh(S); this.setIou(0.7); this.setView('detect'); this.changed();
+      setUp(S, { head: 'o2o', view: 'detect' });
       NA.ui.toast.show('Noise σ = 0.15, three times the most the detector saw in training.');
     }
-    go();
+    if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network');
     this.dirty = true; this.inspDirty = true;
   };
 
