@@ -1097,5 +1097,10 @@
   };
 
   D.lazy = node;
+  // the kind of view each level is, for Merge in the zoom views (zooming out keeps showing this kind of view)
+  for (const [name, form] of [['neuron', 'weighted sum'], ['code', 'code'], ['lib', 'library routine'], ['fmul', 'float multiplier'], ['fadd', 'float adder'], ['products', 'partial-product grid'], ['adder', 'adder'], ['fullAdder', 'full adder'], ['gate', 'logic gate'], ['cmos', 'logic gate'], ['mos', 'transistor'], ['electrons', 'piece of silicon'], ['stored', 'stored number'], ['memCell', 'memory cell']]) {
+    const make = D[name];
+    D[name] = function (...args) { const n = make.apply(this, args); if (n && typeof n === 'object' && !n.form) n.form = form; return n; };
+  }
   NA.deep = D;
 })(window.NA);

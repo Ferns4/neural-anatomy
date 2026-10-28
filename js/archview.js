@@ -123,6 +123,10 @@
   };
 
   // ------------------------------------------------------------------ the view
+  // the kind of view a level is (a memory cell, a logic gate, a block…), for Merge; null when it does not say
+  const formOf = (n) => (n && (n.form || null)) || null;
+  const formsOf = (f, n) => (n === 1 || f === 'code' ? f : f.startsWith('piece of') ? 'pieces' + f.slice(5) : f + 's');
+
   class ArchView {
     /* stage: positioned container; opts: { build(size) → root node, onFocus(node, path, isLevel), label,
        outer: { title, exit() } when the root itself was opened from another view (backing out of it returns) } */
@@ -132,7 +136,9 @@
       this.canvas = el('canvas', { class: 'arch-canvas', tabindex: '0', 'aria-label': opts.label || 'Architecture diagram: click a part to open it' });
       this.back = el('button', { class: 'icon-btn arch-back', type: 'button', 'aria-label': 'Back out one level', title: 'Back out one level (Esc)', onclick: () => this.exit() }, '←');
       this.crumbs = el('nav', { class: 'arch-crumbs', 'aria-label': 'Where you are in the model' });
-      this.bar = el('div', { class: 'arch-bar' }, this.back, this.crumbs);
+      this.merge = false; this.mergeDepth = 0; this.mergeForm = null; this.mergeHits = null;
+      this.mergeBtn = el('button', { class: 'arch-merge', type: 'button', 'aria-pressed': 'false', title: 'Merge: when you zoom out, keep this level of detail. The parts around this one are drawn the same way, side by side, each with a thin line around it and its name.', onclick: () => this.setMerge(!this.merge) }, el('span', { class: 'arch-merge-dot', 'aria-hidden': 'true' }), 'Merge');
+      this.bar = el('div', { class: 'arch-bar' }, this.back, this.crumbs, this.mergeBtn);
       stage.append(this.canvas, this.bar);
       this.zoom = new NA.ui.Zoom(this.canvas, {
         host: stage, panOne: true, max: 3, noDouble: true, wheel: 'always', wheelGate: () => this.wheelOpen(),
@@ -183,7 +189,7 @@
 
     frame(now) {
       if (this.anim) { this.dirty = true; this.stepAnim(now); }
-      else if (now - (this.lastMotion || 0) > 32 && this.levelAnimates()) { this.lastMotion = now; this.dirty = true; }
+      else if (now - (this.lastMotion || 0) > 32 && (this.levelAnimates() || this.mergeAnim)) { this.lastMotion = now; this.dirty = true; }
       if (!this.dirty || !this.canvas.offsetParent) return;
       this.dirty = false;
       this.draw();
@@ -192,6 +198,7 @@
       const [W, H] = this.size(), ctx = NA.fitCanvas(this.canvas, W, H), R = this.levelRect();
       ctx.clearRect(0, 0, W, H);
       S.now = performance.now();
+      this.mergeAnim = false;
       this.hy = Math.max(0.07, 30 / R.h); // room for the level title, whatever the stage height
       const chip = this.zoom.chip;
       this.chipW = chip && chip.offsetParent ? chip.offsetWidth + 14 : 0;
@@ -204,7 +211,7 @@
       if (this.focusLater) { this.focusLater = false; this.notify(); }
       this.W = W; this.H = H;
       const a = this.anim;
-      if (!a) { const node = this.node(); this.drawLevel(ctx, node, R, this.camNow(), 1); this.drawHoverCell(ctx, node, R); }
+      if (!a) { const node = this.node(); this.drawLevel(ctx, node, R, this.camNow(), 1, false, null, 0, this.mergeK(this.path.length)); this.drawHoverCell(ctx, node, R); }
       else {
         /* The parent zooms toward the part, and the part's own level is drawn inside the part's box, growing with
            it until it fills the view: you travel into the box rather than cutting to a new screen. Backing out
@@ -215,14 +222,14 @@
         const cx = a.w0[0] + (a.w1[0] - a.w0[0]) * s, cy = a.w0[1] + (a.w1[1] - a.w0[1]) * s;
         cam.k = lk; cam.tx = R.x + R.w / 2 - cx * lk; cam.ty = R.y + R.h / 2 - cy * lk;
         const childAlpha = smooth((s - 0.18) / 0.5), parentAlpha = 1 - smooth((s - 0.5) / 0.45) * 0.92;
-        this.drawLevel(ctx, parent, R, cam, parentAlpha, false, child.id, childAlpha);
+        this.drawLevel(ctx, parent, R, cam, parentAlpha, false, child.id, childAlpha, this.mergeK(this.path.length));
         if (childAlpha > 0) {
           // where the part's box is on screen right now, and the child level scaled to fit inside it
           const box = this.camRect({ x: a.w1[0] - a.bw / 2, y: a.w1[1] - a.bh / 2, w: a.bw, h: a.bh }, cam);
           const sc = Math.min(1, Math.min(box.w / R.w, box.h / R.h)), ox = box.x + box.w / 2 - (R.x + R.w / 2) * sc, oy = box.y + box.h / 2 - (R.y + R.h / 2) * sc;
           ctx.save();
           ctx.translate(ox, oy); ctx.scale(sc, sc);
-          this.drawLevel(ctx, child, R, { k: 1, tx: 0, ty: 0 }, childAlpha, true);
+          this.drawLevel(ctx, child, R, { k: 1, tx: 0, ty: 0 }, childAlpha, true, null, 0, this.mergeK(this.path.length + 1));
           ctx.restore();
         }
       }
@@ -230,16 +237,233 @@
       this.syncBar();
     }
     // fadeId: the part being entered, whose small preview fades as its own level grows inside it
-    drawLevel(ctx, node, R, cam, alpha, cover, fadeId, fade = 0) {
+    drawLevel(ctx, node, R, cam, alpha, cover, fadeId, fade = 0, k = 0) {
       const r = this.camRect(R, cam);
       ctx.globalAlpha = alpha;
       // a level drawn over another covers it, as a panel with soft corners growing out of its box
       if (cover) { ctx.fillStyle = theme.c('panel'); ctx.beginPath(); NA.rr(ctx, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 12); ctx.fill(); }
+      const c = this.content(node, r), hits = k > 0 ? [] : null, merged = k > 0 ? this.drawMerged(ctx, node, c, k, alpha, hits) : null;
+      if (!cover) { this.mergeHits = merged ? hits : null; this.mergeCut = merged && merged.cut ? merged.count : 0; }
       // the zoom buttons sit at the top right, so the open level's title stops short of them
-      S.text(ctx, node.title + (node.sub ? '  ·  ' + node.sub : ''), r.x + 2, r.y + 14, { size: clamp(14 * cam.k, 9, 40), w: 650, maxW: cam.k > 1.001 ? r.w : Math.max(60, r.w - (this.chipW || 0)) });
-      const c = this.content(node, r);
+      S.text(ctx, node.title + (node.sub ? '  ·  ' + node.sub : '') + (merged ? `  ·  merged: ${merged.count}${merged.cut ? '+' : ''} ${this.mergeForm ? formsOf(this.mergeForm, merged.count) : merged.count === 1 ? 'part' : 'parts'}` : ''), r.x + 2, r.y + 14, { size: clamp(14 * cam.k, 9, 40), w: 650, maxW: cam.k > 1.001 ? r.w : Math.max(60, r.w - (this.chipW || 0)) });
+      if (merged) return;
       if (node.inner) { ctx.save(); ctx.globalAlpha = alpha; node.inner(ctx, c, S); ctx.restore(); }
       for (const ch of node.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), ch.id === fadeId ? alpha * (1 - fade) : alpha);
+    }
+
+    /* Merge: zoom out without leaving the kind of view you were in. Turned on at a level, the view remembers that
+       level's form (a memory cell, a logic gate, a weighted sum, a block…; levels without one count by depth) and
+       its depth. Every level above it is then drawn as all the parts around of that same form, found down to that
+       depth: grouped by the part of this level they belong to, each group framed and named, each part drawn the
+       way its own level looks, with a thin line around it and its name. A click opens that part directly. */
+    setMerge(on) {
+      this.merge = !!on;
+      this.mergeDepth = this.path.length;
+      this.mergeForm = this.root ? formOf(this.node()) : null;
+      this.mergeBtn.setAttribute('aria-pressed', String(this.merge));
+      this.dirty = true; this.focusKey = null; this.notify();
+      if (NA.ui && NA.ui.toast) NA.ui.toast.show(this.merge ? `Merge on: zoom out, and everything around this ${this.mergeForm || 'part'} is shown the same way.` : 'Merge off: zooming out shows each level as it usually is.');
+    }
+    mergeK(depth) { return this.merge ? Math.max(0, (this.mergeDepth || 0) - depth) : 0; }
+    // a level's parts as nodes with their ids: its children, then its grids' cells (made on demand)
+    partNodes(node, which, limit = 400) {
+      const out = [];
+      if (which !== 'cells') for (const ch of node.children || []) { if (ch.inner || ch.children || ch.grids || ch.shape !== 'op') out.push(ch); if (out.length >= limit) return out; }
+      if (which !== 'kids') for (const g of node.grids || []) for (const n of this.eachCell(g)) { out.push(n); if (out.length >= limit) return out; }
+      return out;
+    }
+    *eachCell(g) {
+      for (let i = 0; i < g.rows; i++) for (let j = 0; j < g.cols; j++) {
+        if (g.skip && g.skip(i, j)) continue;
+        let n = null;
+        try { n = g.make(i, j); } catch (e) { n = null; }
+        if (n) { n.id = g.index ? `${g.id}:${i * g.cols + j}` : `${g.id}:${i}:${j}`; n._grid = g; yield n; }
+      }
+    }
+    // the parts of the remembered form within k levels below node, grouped by the part of node they sit in; each
+    // keeps the part it sits directly in (up). The parts of node with none of them come last, as Other parts
+    mergedGroups(node, k) {
+      const F = this.mergeForm, budget = { visit: 8000, found: 0, part: 0, partVisit: 0, cut: false };
+      const want = (n, d) => (F ? formOf(n) === F : d === k);
+      const collect = (n, d, rel, out, up, trail) => {
+        if (budget.visit-- <= 0 || budget.partVisit-- <= 0 || budget.found <= 0 || budget.part <= 0) return;
+        if (want(n, d)) { out.push({ node: n, rel, up, trail }); budget.found--; budget.part--; return; }
+        if (d >= k) return;
+        for (const q of this.partNodes(n, 'kids', 300)) collect(q, d + 1, rel.concat(q.id), out, n, trail.concat(q.title));
+        // a grid's cells are made alike: when the first few hold none of the form, the rest are not searched (a
+        // 24 × 24 grid of adders would otherwise use up the search before the parts after it are looked at)
+        for (const g of n.grids || []) {
+          let dry = 0, seen = 0;
+          for (const q of this.eachCell(g)) {
+            if (++seen > 300 || budget.visit <= 0 || budget.partVisit <= 0 || budget.found <= 0 || budget.part <= 0) break;
+            const before = out.length;
+            collect(q, d + 1, rel.concat(q.id), out, n, trail.concat(q.title));
+            if (out.length > before) dry = -Infinity; else if (++dry >= 4) break;
+          }
+        }
+      };
+      // the column (child) a grid sits in, for a picture of columns: its title names the group
+      const colOf = (g) => { const x = g.rect[0] + g.rect[2] / 2, y = g.rect[1] + g.rect[3] / 2; return (node.children || []).find((ch) => ch.rect && x >= ch.rect[0] && x <= ch.rect[0] + ch.rect[2] && y >= ch.rect[1] && y <= ch.rect[1] + ch.rect[3]); };
+      const gather = (which) => {
+        const flat = { title: null, items: [] }, byGrid = new Map(), groups = [], rest = [], noRoom = [], parts = this.partNodes(node, which);
+        const visits = Math.max(300, Math.floor(4000 / Math.max(1, parts.length)));
+        const stopped = () => budget.part <= 0 || budget.partVisit <= 0 || budget.visit <= 0 || budget.found <= 0;
+        // first which parts hold any of the form at all (true, false, or null: not found before the search ran out),
+        // then those parts share the room evenly, so one big part cannot crowd out the others
+        budget.found = Infinity;
+        const holds = parts.map((p) => { const t = []; budget.part = 1; budget.partVisit = visits; collect(p, 1, [p.id], t, node, [p.title]); return t.length ? true : stopped() ? null : false; });
+        const n = holds.filter((h) => h).length, share = Math.max(32, Math.floor(520 / Math.max(1, n)));
+        budget.found = n <= 24 ? share * n : 520;
+        parts.forEach((p, pi) => {
+          const items = [];
+          if (holds[pi]) { budget.part = share; budget.partVisit = visits; collect(p, 1, [p.id], items, node, [p.title]); }
+          // a search that stopped short: there may be more than were found. The parts of the last number (gate…) it
+          // reached are dropped, so each one shown is whole
+          const short = holds[pi] === null || (holds[pi] && stopped());
+          if (short) budget.cut = true;
+          if (short && items.length > 1) {
+            const up = (it) => it.rel.slice(0, -1).join('/'), last = up(items[items.length - 1]);
+            let m = items.length;
+            while (m > 0 && up(items[m - 1]) === last) m--;
+            if (m > 0) items.length = m;
+          }
+          // a part with none of that form close enough keeps its usual box; so do a few there was no room for
+          if (!items.length) { if (p.shape !== 'ghost') (holds[pi] ? noRoom : rest).push({ node: p, rel: [p.id], up: node, trail: [p.title], closed: true }); return; }
+          if (items.length === 1 && items[0].node === p) {
+            if (node.gridsFirst && p._grid) { let gg = byGrid.get(p._grid); if (!gg) { const col = colOf(p._grid); gg = { title: col ? col.title : null, items: [] }; byGrid.set(p._grid, gg); groups.push(gg); } gg.items.push(items[0]); }
+            else flat.items.push(items[0]);
+          } else groups.push({ title: p.title, items });
+        });
+        const out = flat.items.length ? [flat, ...groups] : groups;
+        // the parts with none of that form close enough keep their usual boxes, so the level is all there
+        if (noRoom.length <= 12) rest.push(...noRoom);
+        if (out.length && rest.length) out.push({ title: 'Other parts', items: rest.slice(0, 60), rest: true });
+        return out;
+      };
+      // a level drawn as one picture has its nodes in grids inside its columns: those first, so nothing comes twice
+      let out = gather(node.gridsFirst ? 'cells' : 'all');
+      if (!out.length && node.gridsFirst) out = gather('kids');
+      out.cut = budget.cut;
+      out.count = out.reduce((sum, g) => sum + (g.rest ? 0 : g.items.length), 0);
+      return out;
+    }
+    drawMerged(ctx, node, c, k, alpha, hits) {
+      const groups = this.mergedGroups(node, k);
+      if (!groups.length) return null;
+      const rest = groups[groups.length - 1].rest ? groups[groups.length - 1] : null;
+      if (rest && groups.length > 1) {
+        const sh = clamp(c.h * 0.2, 46, 96);
+        this.layGroups(ctx, groups.slice(0, -1), { x: c.x, y: c.y, w: c.w, h: c.h - sh - 8 }, alpha, hits, 0, null);
+        this.layGroups(ctx, [rest], { x: c.x, y: c.y + c.h - sh, w: c.w, h: sh }, alpha, hits, 0, null);
+      } else this.layGroups(ctx, groups, c, alpha, hits, 0, null);
+      return groups;
+    }
+    // a group's parts split by the part they sit in, at the first level down where they differ (one multiplication
+    // of several, one gate of four…): framed again inside the group, numbered where several have the same name
+    // (the number first, so a name cut short still says which one)
+    splitGroup(g) {
+      if (g.rest || g.title === null) return null;
+      const deepest = Math.max(...g.items.map((it) => it.rel.length));
+      for (let L = 2; L < deepest; L++) {
+        const by = new Map();
+        for (const it of g.items) {
+          const at = Math.min(L, it.rel.length - 1), key = it.rel.slice(0, at).join('/');
+          let sub = by.get(key);
+          if (!sub) by.set(key, (sub = { title: (it.trail && it.trail[at - 1]) || 'part', items: [] }));
+          sub.items.push(it);
+        }
+        if (by.size < 2) continue;
+        const subs = [...by.values()], same = new Map(), seen = new Map();
+        for (const sub of subs) same.set(sub.title, (same.get(sub.title) || 0) + 1);
+        for (const sub of subs) if (same.get(sub.title) > 1) { const n = (seen.get(sub.title) || 0) + 1; seen.set(sub.title, n); sub.title = n + ' · ' + sub.title; }
+        return subs;
+      }
+      return null;
+    }
+    // groups in a grid filling c, each framed and named; a group's parts in a grid of tiles about 1.4 times wider
+    // than tall. A group whose parts sit in different parts of it is framed once more inside. False: no room for that
+    layGroups(ctx, groups, c, alpha, hits, depth, outer) {
+      const G = groups.length, gap = depth ? 5 : 8, framed = depth > 0 || G > 1 || groups.some((g) => g.title !== null);
+      const fw = framed ? (depth ? 8 : 10) : 0, fh = framed ? (depth ? 20 : 26) : 0;
+      // the number of group columns that gives the parts the largest tiles (judged by their smaller side)
+      const tilesFor = (w, h, m) => { const ic = Math.max(1, Math.min(m, Math.round(Math.sqrt((m * w) / (h * 1.4))))), ir = Math.ceil(m / ic); return Math.min(w / ic / 1.4, h / ir); };
+      let gc = 0, best = -1;
+      for (let q = 1; q <= G; q++) {
+        const rows = Math.ceil(G / q), w = (c.w - gap * (q - 1)) / q, h = (c.h - gap * (rows - 1)) / rows;
+        if (depth && (w < 54 || h < 40)) continue;
+        const score = Math.min(...groups.map((g) => tilesFor(w - fw, h - fh, g.items.length)));
+        if (score > best) { best = score; gc = q; }
+      }
+      if (!gc) { if (depth) return false; gc = 1; }
+      const gr = Math.ceil(G / gc), gw = (c.w - gap * (gc - 1)) / gc, gh = (c.h - gap * (gr - 1)) / gr;
+      groups.forEach((g, gi) => {
+        const x = c.x + (gi % gc) * (gw + gap), y = c.y + Math.floor(gi / gc) * (gh + gap), name = outer ? `${outer} › ${g.title}` : g.title;
+        let body = { x, y, w: gw, h: gh };
+        if (framed) {
+          const band = depth ? clamp(gh * 0.08, 10, 14) : clamp(gh * 0.09, 12, 18), pad = depth ? 4 : 5;
+          ctx.globalAlpha = alpha;
+          ctx.strokeStyle = theme.c('ink-2', depth ? 0.3 : 0.45); ctx.lineWidth = depth ? 1 : 1.2;
+          ctx.beginPath(); NA.rr(ctx, x + 0.5, y + 0.5, gw - 1, gh - 1, depth ? 6 : 8); ctx.stroke();
+          S.text(ctx, g.title || 'these parts', x + pad + 3, y + band / 2 + 3, { size: Math.min(depth ? 10.5 : 12, band * 0.72), w: depth ? 600 : 650, color: theme.c(depth ? 'muted' : 'ink-2'), maxW: gw - 2 * pad - 6 });
+          body = { x: x + pad, y: y + band + pad - 1, w: gw - 2 * pad, h: gh - band - 2 * pad + 1 };
+        }
+        const subs = depth ? null : this.splitGroup(g);
+        if (subs && this.layGroups(ctx, subs, body, alpha, hits, 1, g.title)) return;
+        const m = g.items.length, ic = Math.max(1, Math.min(m, Math.round(Math.sqrt((m * body.w) / (body.h * 1.4))))), ir = Math.ceil(m / ic), tg = Math.min(4, body.w * 0.01);
+        const tw = (body.w - tg * (ic - 1)) / ic, th = (body.h - tg * (ir - 1)) / ir;
+        g.items.forEach((it, q) => {
+          const r = { x: body.x + (q % ic) * (tw + tg), y: body.y + Math.floor(q / ic) * (th + tg), w: tw, h: th };
+          this.drawItem(ctx, it.node, r, alpha, it.closed);
+          if (hits) hits.push({ r, rel: it.rel, node: it.node, group: name });
+        });
+      });
+      return true;
+    }
+    // one part in a merged level: drawn the way its own level looks, framed and named; too small, or one of the
+    // other parts, as its usual box
+    drawItem(ctx, n, r, alpha, closed) {
+      if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2 || r.h < 2) return;
+      const hov = this.hoverId === '~' + n.id;
+      if (closed || r.w < 62 || r.h < 44 || !(n.inner || n.children)) {
+        if (n.summary && r.w >= 10 && r.h >= 10 && (r.w < 62 || r.h < 34)) {
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = theme.c('panel'); ctx.fillRect(r.x, r.y, r.w, r.h);
+          if (n.tone) { ctx.fillStyle = theme.c(n.tone, theme.dark ? 0.12 : 0.08); ctx.fillRect(r.x, r.y, r.w, r.h); }
+          ctx.save(); ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip(); n.summary(ctx, { x: r.x + 2, y: r.y + r.h * 0.12, w: r.w - 4, h: r.h * 0.8 }, S); ctx.restore();
+          ctx.strokeStyle = hov ? theme.c('focus') : theme.c('line-2'); ctx.lineWidth = hov ? 2 : 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+          return;
+        }
+        if (r.w < 16 || r.h < 12) {
+          ctx.globalAlpha = alpha; ctx.fillStyle = n.tone ? theme.c(n.tone, 0.55) : theme.c('line-2'); ctx.fillRect(r.x, r.y, r.w, r.h);
+          if (hov) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2; ctx.strokeRect(r.x - 0.5, r.y - 0.5, r.w + 1, r.h + 1); }
+          return;
+        }
+        if (n.shape === 'zone' || n.shape === 'ghost') {
+          ctx.globalAlpha = alpha;
+          S.box(ctx, r, { fill: theme.c('panel'), stroke: hov ? theme.c('focus') : theme.c('line-2'), lw: hov ? 2 : 1.1 });
+          S.text(ctx, n.title, r.x + r.w / 2, r.y + r.h / 2, { size: clamp(Math.min(r.h * 0.3, r.w * 0.09), 8, 14), w: 650, align: 'center', maxW: r.w - 8 });
+          return;
+        }
+        this.drawClosed(ctx, n, r, alpha, hov); return;
+      }
+      if (n.animate) this.mergeAnim = true;
+      const lab = clamp(r.h * 0.11, 9, 13), box = { x: r.x + 3, y: r.y + lab + 4, w: r.w - 6, h: r.h - lab - 7 };
+      const L = this.levelRect(), vw = Math.max(box.w, L.w * 0.5), vh = Math.max(box.h, L.h * 0.5), sc = Math.min(box.w / vw, box.h / vh);
+      const c = { x: 0, y: 0, w: vw, h: vh };
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+      ctx.fillStyle = theme.c('panel'); ctx.fillRect(r.x, r.y, r.w, r.h);
+      if (n.tone) { ctx.fillStyle = theme.c(n.tone, theme.dark ? 0.07 : 0.05); ctx.fillRect(r.x, r.y, r.w, r.h); }
+      ctx.translate(box.x + (box.w - vw * sc) / 2, box.y + (box.h - vh * sc) / 2); ctx.scale(sc, sc);
+      const W0 = this.W, H0 = this.H; this.W = Infinity; this.H = Infinity; // drawn in its own space: nothing is off screen there
+      if (n.inner) { ctx.save(); n.inner(ctx, c, S); ctx.restore(); }
+      for (const ch of n.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), alpha);
+      this.W = W0; this.H = H0;
+      ctx.restore();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = hov ? theme.c('focus') : theme.c('line-2'); ctx.lineWidth = hov ? 2 : 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      S.text(ctx, n.title, r.x + 5, r.y + lab / 2 + 3, { size: Math.max(7.5, lab * 0.78), w: 600, color: theme.c('muted'), maxW: r.w - 10 });
     }
     // the grid cell under the cursor gets an outline, so it is clear which number zooming in will open
     drawHoverCell(ctx, node, R) {
@@ -249,9 +473,9 @@
       ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2;
       ctx.strokeRect(gr.x + +m[3] * cw - 1, gr.y + +m[2] * ch - 1, cw + 2, ch + 2);
     }
-    drawClosed(ctx, node, r, alpha) {
+    drawClosed(ctx, node, r, alpha, lit) {
       if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2) return;
-      const hov = this.hoverId === node.id || this.selected === node.id;
+      const hov = lit || this.hoverId === node.id || this.selected === node.id;
       ctx.globalAlpha = alpha;
       if (node.shape === 'ghost') {
         // part of the parent's drawing, outlined only under the pointer
@@ -298,6 +522,7 @@
     // children of the current level under a screen point
     pick(px, py) {
       if (!this.root) return null;
+      if (this.mergeHits) { for (const h of this.mergeHits) if (px >= h.r.x && py >= h.r.y && px <= h.r.x + h.r.w && py <= h.r.y + h.r.h) return { node: h.node, r: h.r, rel: h.rel, group: h.group }; return null; }
       const node = this.node(), c = this.content(node, this.camRect(this.levelRect(), this.camNow()));
       const kids = () => {
         for (const ch of node.children || []) {
@@ -323,15 +548,17 @@
       if (this.zoom.suppressClick || this.anim) return;
       const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top);
       if (!f) { if (this.selected) { this.selected = null; this.dirty = true; this.notify(); } return; }
+      if (f.rel) { this.jump(f.rel); return; }
       if (this.canEnter(f.node)) this.enter(f.node);
       else { this.selected = f.node.id; this.dirty = true; this.notify(); }
     }
     hover(e) {
       if (this.zoom.busy || this.anim) return;
       const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top), id = f ? f.node.id : null;
-      if (id !== this.hoverId) { this.hoverId = id; this.dirty = true; }
+      const hid = f && f.rel ? '~' + f.node.id : id;
+      if (hid !== this.hoverId) { this.hoverId = hid; this.dirty = true; }
       this.canvas.style.cursor = f ? (this.canEnter(f.node) ? 'zoom-in' : 'pointer') : 'default';
-      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: this.canEnter(f.node) ? 'Click or zoom in to open it' : 'Click for the explanation and code' })], e.clientX, e.clientY);
+      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: f.rel ? 'Click to open it' : this.canEnter(f.node) ? 'Click or zoom in to open it' : 'Click for the explanation and code' })], e.clientX, e.clientY);
       else NA.tooltip.hide();
     }
     // zoomed far enough into the level: open the part nearest the middle of the view
@@ -339,6 +566,8 @@
       // the part under the cursor or the fingers, or under the middle for the + button
       const [W, H] = this.size(), a = this.zoom.anchor, cx = a ? a[0] : W / 2, cy = a ? a[1] : (H + 46) / 2;
       let f = this.pick(cx, cy);
+      if (f && f.rel) { this.jump(f.rel); return; }
+      if (this.mergeHits) return;
       if (!f || !this.canEnter(f.node)) {
         // nearest enterable part to that point
         const node = this.node(), c = this.content(node, this.camRect(this.levelRect(), this.camNow()));
@@ -353,12 +582,20 @@
       }
       this.enter(f.node);
     }
+    // open a part of a merged level, however far down it is: the path goes straight there
+    jump(rel) {
+      this.path = this.path.concat(rel);
+      if (this.merge && this.path.length >= this.mergeDepth) { this.mergeDepth = this.path.length; this.mergeForm = formOf(this.node()) || this.mergeForm; }
+      this.mergeHits = null; this.selected = null; this.hoverId = null;
+      this.zoomSet(1, 0, 0); this.lockUntil = performance.now() + 200; this.wheelHold = true;
+      this.dirty = true; this.focusKey = null; NA.tooltip.hide();
+    }
     // animate into a part of the current level
     enter(child) {
       const R = this.levelRect(), parent = this.node(), c = this.content(parent, R), cr = S.place(c, child.rect);
       const k1 = Math.min(R.w / cr.w, R.h / cr.h), c0 = this.camNow();
       this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, c0, c1: { k: k1 }, bw: cr.w, bh: cr.h,
-        w0: [(R.x + R.w / 2 - c0.tx) / c0.k, (R.y + R.h / 2 - c0.ty) / c0.k], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: () => { this.path = this.path.concat(child.id); } };
+        w0: [(R.x + R.w / 2 - c0.tx) / c0.k, (R.y + R.h / 2 - c0.ty) / c0.k], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: () => { this.path = this.path.concat(child.id); if (this.merge && this.path.length >= this.mergeDepth) { this.mergeDepth = this.path.length; this.mergeForm = formOf(this.node()) || this.mergeForm; } } };
       this.selected = null; this.wheelHold = true;
       this.dirty = true;
       NA.tooltip.hide();
@@ -420,7 +657,9 @@
       let n = this.root;
       for (const id of path.slice(1)) { n = this.childOf(n, id) || n; names.push(n.title); }
       const trail = node.id === path[path.length - 1] ? names.slice(0, -1) : names;
-      return { kicker: [this.opts.kicker || 'Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about: node.about, code: node.code, codeLabel: node.codeLabel };
+      const k = node.id === path[path.length - 1] ? this.mergeK(path.length) : 0;
+      const F = this.mergeForm, about = k > 0 && this.mergeHits ? [`Merged: every ${F || 'part'} within ${k === 1 ? 'one level' : `${k} levels`} of this one, side by side and drawn the way its own level looks, framed by the part of this level it belongs to (and inside that, by the part it sits in). ${F ? `Parts with no ${F} that close` : 'Parts with nothing that far down'} keep their usual boxes, under Other parts${this.mergeCut ? ' (so do any there was no room for)' : ''}. You see what surrounds the part you were in, in the same detail; click any of them to open it. Turn Merge off to see this level as it usually is.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`, ...(node.about || [])] : node.about;
+      return { kicker: [this.opts.kicker || 'Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about, code: node.code, codeLabel: node.codeLabel };
     }
     syncBar() {
       const key = this.path.join('/');

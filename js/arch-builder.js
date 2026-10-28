@@ -1271,6 +1271,7 @@ print(torch.allclose(y, block(x)))                # True`,
     // a block's level, its explanation ending with an experiment to try
     function blockNode(i) {
       const b = BK(i), node = blockNode0(i), t = TRY[b.type], g = NA.partGuide && NA.partGuide.G[b.type === 'dense' && b.units === 1 ? 'neuron' : b.type], deep = (b.type !== 'parallel' && g && g.deep) || []; // the parallel level explains itself
+      if (node && !node.form) node.form = 'block'; // for Merge: zooming out keeps showing blocks
       if (!node || (!t && !deep.length)) return node;
       const desc = Object.getOwnPropertyDescriptor(node, 'about'), own = desc && (desc.get ? () => desc.get.call(node) : () => desc.value);
       Object.defineProperty(node, 'about', { configurable: true, enumerable: true, get: () => [...((own && own()) || []), ...deep.slice(1), ...(t ? [`Try this: ${t}`] : [])] });
