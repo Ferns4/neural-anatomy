@@ -401,63 +401,193 @@ def story():
         x = x + self.attn(self.norm1(x))
         return x + self.mlp(self.norm2(x))`;
 
+  /* One block: its layers (for __init__) and its lines in forward(), with n in its attribute names. Inside a part of
+     your own, a size can be a name (the part's argument, or a size no layer depends on) instead of a number. */
+  function emitBlock(b, si, so, n, helpers) {
+    const init = [], fwd = [], last = si[si.length - 1];
+    const put = (code) => fwd.push(/ # /.test(code) ? `${code}, ${shp(so)}` : code.padEnd(54) + `# ${shp(so)}`); // a line with its own comment gets the shape at its end
+    const same = (p, q) => (typeof p === 'number' && typeof q === 'number' ? p === q : null);
+    // a residual: the input is added back only when the shape is kept; inside a part whose copies differ, checked as it runs
+    const res = (z, keep) => {
+      if (keep === true) put(`x = x + ${z}`);
+      else if (keep === false) put(`x = ${z}`);
+      else { fwd.push(`z = ${z}`); put('x = x + z if z.shape == x.shape else z    # added back when the shape is kept'); }
+    };
+    if (b.type === 'dense') {
+      init.push(`self.dense${n} = nn.Linear(${last}, ${b.units})`);
+      let z = `self.dense${n}(x)`;
+      if (b.acts) { helpers.add('mixed'); init.push(`self.act${n} = MixedActivation(${JSON.stringify(b.acts)})`); z = `self.act${n}(${z})`; }
+      else z = ACT_PY[b.act](z);
+      res(z, b.residual ? same(last, b.units) : false); // the engine adds the input back only when the width is kept
+    } else if (b.type === 'activation') put(`x = ${ACT_PY[b.act]('x')}`);
+    else if (b.type === 'dropout') { init.push(`self.drop${n} = nn.Dropout(${num(b.p)})`); put(`x = self.drop${n}(x)`); }
+    else if (b.type === 'layernorm') { init.push(`self.norm${n} = nn.LayerNorm(${last})`); put(`x = self.norm${n}(x)`); }
+    else if (b.type === 'attention') {
+      helpers.add('attn');
+      init.push(`self.attn${n} = SelfAttention(${last}, heads=${b.heads}, causal=${b.causal !== false ? 'True' : 'False'})`);
+      put(b.residual !== false ? `x = x + self.attn${n}(x)` : `x = self.attn${n}(x)`);
+    } else if (b.type === 'transformer') {
+      helpers.add('attn'); helpers.add('block');
+      init.push(`self.block${n} = TransformerBlock(${last}, heads=${b.heads}, mlp=${b.mlp || 4}, causal=${b.causal !== false ? 'True' : 'False'})`);
+      put(`x = self.block${n}(x)`);
+    } else if (b.type === 'conv') {
+      init.push(`self.conv${n} = nn.Conv2d(${si[0]}, ${b.filters}, ${b.k}, stride=${b.stride || 1}, padding=${(b.k - 1) >> 1})`);
+      res(ACT_PY[b.act](`self.conv${n}(x)`), b.residual && (b.stride || 1) === 1 ? same(si[0], b.filters) : false); // the engine adds the input back only when the shape is kept
+    } else if (b.type === 'pool') put(`x = F.max_pool2d(x, ${b.size})                     # leftover rows and columns are dropped`);
+    else if (b.type === 'flatten') put('x = x.flatten(1)');
+    else if (b.type === 'gap') put(si.length === 3 ? 'x = x.mean((2, 3))' : 'x = x.mean(1)');
+    else {
+      const c = cfg(b);
+      if (b.type === 'gated') { helpers.add('gated'); init.push(`self.glu${n} = Gated(${last}, ${c.units}, ${ACT_FN[c.gate] || 'F.silu'})`); put(`x = self.glu${n}(x)`); }
+      else if (b.type === 'batchnorm') { init.push(`self.bn${n} = nn.BatchNorm${si.length === 3 ? '2d' : '1d'}(${si.length === 3 ? si[0] : last})`); put(si.length === 2 ? `x = self.bn${n}(x.transpose(1, 2)).transpose(1, 2)` : `x = self.bn${n}(x)`); }
+      else if (b.type === 'noise') { helpers.add('noise'); init.push(`self.noise${n} = GaussianNoise(${num(c.sigma)})`); put(`x = self.noise${n}(x)`); }
+      else if (b.type === 'fourier') {
+        init.push(`self.register_buffer("B${n}", ${num(c.scale)} * torch.randn(${c.features}, ${last}))   # random frequencies, never trained`);
+        fwd.push(`a = 2 * math.pi * x @ self.B${n}.T`); put('x = torch.cat([x, torch.sin(a), torch.cos(a)], -1)');
+      } else if (b.type === 'rnn') { init.push(`self.rnn${n} = nn.${{ lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' }[c.cell] || 'LSTM'}(${last}, ${c.units}, batch_first=True)`); put(`x, _ = self.rnn${n}(x)`); }
+      else if (b.type === 'conv1d') {
+        const reach = (c.k - 1) * (c.dilation || 1), left = c.causal ? reach : Math.floor(reach / 2);
+        init.push(`self.conv${n} = nn.Conv1d(${last}, ${c.filters}, ${c.k}${c.dilation > 1 ? `, dilation=${c.dilation}` : ''})`);
+        res(`${ACT_PY[c.act](`self.conv${n}(F.pad(x.transpose(1, 2), (${left}, ${reach - left})))`)}.transpose(1, 2)`, c.residual ? same(last, c.filters) : false);
+      } else if (b.type === 'position') {
+        if (c.mode === 'sine') { helpers.add('sine'); init.push(`self.register_buffer("pe${n}", sine_positions(${si[0]}, ${last}))   # fixed waves, one row per position`); put(`x = x + self.pe${n}`); }
+        else { init.push(`self.pos${n} = nn.Parameter(0.02 * torch.randn(${si[0]}, ${last}))   # a learned vector for each position`); put(`x = x + self.pos${n}`); }
+      } else if (b.type === 'seqpool') put(c.mode === 'max' ? 'x = x.max(1).values' : c.mode === 'mean' ? 'x = x.mean(1)' : 'x = x[:, -1]                                  # the last position');
+      else if (b.type === 'patches') {
+        init.push(`self.patch${n} = nn.Conv2d(${si[0]}, ${c.dim}, ${c.size}, stride=${c.size})   # one projection for every ${c.size}×${c.size} patch`, `self.pos${n} = nn.Parameter(0.02 * torch.randn(${so[0]}, ${c.dim}))   # each patch's learned place`);
+        put(`x = self.patch${n}(x).flatten(2).transpose(1, 2) + self.pos${n}`);
+      } else if (b.type === 'avgpool') put(`x = F.avg_pool2d(x, ${c.size})`);
+    }
+    return { init, fwd };
+  }
+
+  // ------------------------------------------------------------------ parts of your own: a class each
+  /* Blocks you boxed into a part become a class, and every copy an instance of it with its own weights. A size that
+     differs between the copies (a first copy that reads 2 numbers, a second that reads 16) becomes an argument of the
+     class, so it is used like a function: Bend(d_in=2), Bend(d_in=16). Names come from the part's name. */
+  const PY_TAKEN = new Set(['Model', 'SelfAttention', 'TransformerBlock', 'Gated', 'GaussianNoise', 'MixedActivation', 'None', 'True', 'False']);
+  const STEMS = new Set(['dense', 'act', 'drop', 'norm', 'attn', 'block', 'conv', 'glu', 'bn', 'noise', 'rnn', 'pe', 'pos', 'patch', 'b', 'tok', 'out']);
+  const wordsOf = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const specOf = (b) => { const c = Object.assign({}, b); delete c.id; delete c.grp; delete c.part; return c; };
+  function partNames(setup) {
+    const runs = BT.groupsOf ? BT.groupsOf(setup.blocks) : [], cls = {}, taken = new Set(), snakes = new Set(), inst = {}, count = {};
+    for (const def of setup.parts || []) {
+      if (!runs.some((r) => r.part === def.id)) continue;
+      const w = wordsOf(def.name);
+      let c = w.map((x) => x[0].toUpperCase() + x.slice(1)).join('') || 'Part';
+      if (/^\d/.test(c)) c = 'Part' + c;
+      if (c.length < 3 || c === c.toUpperCase() || PY_TAKEN.has(c)) c += 'Part'; // never F, X, None…: names the script uses
+      let u = c, k = 2;
+      while (taken.has(u)) u = c + k++;
+      taken.add(u);
+      let sn = w.map((x) => x.toLowerCase()).join('_') || 'part';
+      if (/^\d/.test(sn)) sn = 'part_' + sn;
+      if (STEMS.has(sn)) sn += '_part';
+      let su = sn; k = 2;
+      while (snakes.has(su)) su = `${sn}_${k++}`;
+      snakes.add(su);
+      cls[def.id] = { name: u, snake: su, def };
+    }
+    const where = setup.blocks.map((_, i) => ({ pre: 'model.', n: i + 1 }));
+    for (const r of runs) {
+      const c = cls[r.part];
+      if (!c) continue;
+      const k = (count[r.part] = (count[r.part] || 0) + 1);
+      inst[r.grp] = `${c.snake}${/\d$/.test(c.snake) ? '_' : ''}${k}`;
+      for (let i = r.from; i < r.to; i++) where[i] = { pre: `model.${inst[r.grp]}.`, n: i - r.from + 1 };
+    }
+    return { runs: runs.filter((r) => cls[r.part]), cls, inst, where };
+  }
+  // sizes that may be names: computed when they are numbers, written as Python when they are not
+  const wrap = (v) => (typeof v === 'string' && / /.test(v) ? `(${v})` : v);
+  const SX = {
+    add: (p, q) => (typeof p === 'number' && typeof q === 'number' ? p + q : `${p} + ${q}`),
+    mul: (...v) => (v.every((q) => typeof q === 'number') ? v.reduce((p, q) => p * q, 1) : v.map(wrap).join(' * ')),
+    div: (p, q) => (typeof p === 'number' ? Math.floor(p / q) : q === 1 ? p : `${wrap(p)} // ${q}`),
+    ceil: (p, q) => (typeof p === 'number' ? Math.ceil(p / q) : q === 1 ? p : `-(-${wrap(p)} // ${q})`),
+  };
+  // the engine's shape rules (builder-engine.js, blockShape), on sizes that may be names
+  function symShape(b, s) {
+    const c = cfg(b), k = s.length;
+    switch (b.type) {
+      case 'dense': case 'gated': return k === 1 ? [c.units] : [s[0], c.units];
+      case 'conv': return [c.filters, SX.ceil(s[1], c.stride || 1), SX.ceil(s[2], c.stride || 1)];
+      case 'pool': case 'avgpool': return [s[0], SX.div(s[1], c.size), SX.div(s[2], c.size)];
+      case 'flatten': return [SX.mul(...s)];
+      case 'gap': return k === 3 ? [s[0]] : [s[1]];
+      case 'seqpool': return [s[1]];
+      case 'fourier': return [SX.add(s[0], 2 * c.features)];
+      case 'rnn': return [s[0], c.units];
+      case 'conv1d': return [s[0], c.filters];
+      case 'patches': return [SX.mul(SX.div(s[1], c.size), SX.div(s[2], c.size)), c.dim];
+      default: return s.slice();
+    }
+  }
+  const ARGS = [null, ['d_in'], ['t_in', 'd_in'], ['c_in', 'h_in', 'w_in']], FREE = [null, ['D'], ['T', 'D'], ['C', 'H', 'W']];
+  const ARG_TEXT = { d_in: 'the numbers it is given', t_in: 'the positions of the sequence it is given', c_in: 'the channels of the picture it is given', h_in: 'its height', w_in: 'its width' };
+  const HELPER_NAME = { mixed: 'MixedActivation', attn: 'SelfAttention', block: 'TransformerBlock', gated: 'Gated', noise: 'GaussianNoise', sine: 'sine_positions' };
+  // every part's class (or classes, when copies differ in kind of input), and how each copy is made and used
+  function planParts(setup, chk, names) {
+    const byGrp = {}, classes = [], label = NA.builderLab && NA.builderLab.blockLabel ? NA.builderLab.blockLabel : (b) => b.type;
+    for (const pid of Object.keys(names.cls)) {
+      const pc = names.cls[pid], groups = [];
+      for (const r of names.runs.filter((q) => q.part === pid)) {
+        const inS = (chk.shapes[r.from] || {}).in || [], specs = JSON.stringify(setup.blocks.slice(r.from, r.to).map(specOf));
+        let g = groups.find((q) => q.rank === inS.length && q.specs === specs);
+        if (!g) groups.push((g = { rank: inS.length, specs, runs: [], ins: [] }));
+        g.runs.push(r); g.ins.push(inS);
+      }
+      groups.forEach((g, gi) => {
+        const R = g.rank, blocks = setup.blocks.slice(g.runs[0].from, g.runs[0].to), name = gi ? `${pc.name}_v${gi + 1}` : pc.name, helpers = new Set();
+        const emit = (inShape) => {
+          let sh = inShape;
+          const init = [], fwd = [];
+          blocks.forEach((b, k) => { const so = symShape(b, sh), e = emitBlock(b, sh, so, k + 1, helpers); init.push(...e.init); fwd.push(...e.fwd); sh = so; });
+          return { init, fwd, out: sh };
+        };
+        // a size the copies share is a number; one they do not is a name: an argument when a layer needs it
+        const sym = g.ins[0].map((v, j) => (g.ins.every((q) => q[j] === v) ? v : (ARGS[R] || [])[j] || `s${j}`));
+        const first = emit(sym), used = (nm) => first.init.some((l) => new RegExp(`\\b${nm}\\b`).test(l));
+        const args = sym.filter((v) => typeof v === 'string' && used(v));
+        const shown = sym.map((v, j) => (typeof v === 'string' && !args.includes(v) ? (FREE[R] || [])[j] || v : v)), e = emit(shown);
+        const text = lines(
+          `class ${name}(nn.Module):`,
+          `    """Your part ${pc.def.name}: ${blocks.map(label).join(' → ')}. Each copy has its own weights."""`,
+          `    def __init__(self${args.map((q) => ', ' + q).join('')}):`.padEnd(args.length ? 50 : 0) + (args.length ? `# ${args.map((q) => `${q}: ${ARG_TEXT[q] || 'a size'}`).join('; ')}` : ''),
+          '        super().__init__()', e.init.map((l) => '        ' + l), '',
+          '    def forward(self, x):'.padEnd(50) + `# x: ${shp(shown)}`, e.fwd.map((l) => '        ' + l), '        return x');
+        classes.push({ name, text, helpers });
+        g.runs.forEach((r, ci) => {
+          const vals = args.map((q) => `${q}=${g.ins[ci][sym.indexOf(q)]}`).join(', ');
+          byGrp[r.grp] = { cls: name, text, helpers, inst: names.inst[r.grp], make: `self.${names.inst[r.grp]} = ${name}(${vals})`, out: (chk.shapes[r.to - 1] || {}).out };
+        });
+      });
+    }
+    return { byGrp, classes };
+  }
+
   function modelCode(setup, d, chk) {
     const blocks = setup.blocks, inp = d.input, out = d.output, init = [], fwd = [], helpers = new Set();
     if (inp.kind === 'tokens') {
       init.push(`self.tok = nn.Embedding(${inp.vocab}, ${inp.embed})           # a learned vector for each token`, `self.pos = nn.Embedding(${inp.len}, ${inp.embed})           # and one for each position`);
       fwd.push(`x = self.tok(x) + self.pos(torch.arange(x.shape[1]))`.padEnd(54) + `# ${shp([inp.len, inp.embed])}`);
     }
-    blocks.forEach((b, i) => {
-      const sh = chk.shapes[i] || {}, si = sh.in || [], so = sh.out || [], n = i + 1, last = si[si.length - 1];
-      const put = (code) => fwd.push(code.padEnd(54) + `# ${shp(so)}`);
-      if (b.type === 'dense') {
-        init.push(`self.dense${n} = nn.Linear(${last}, ${b.units})`);
-        let z = `self.dense${n}(x)`;
-        if (b.acts) { helpers.add('mixed'); init.push(`self.act${n} = MixedActivation(${JSON.stringify(b.acts)})`); z = `self.act${n}(${z})`; }
-        else z = ACT_PY[b.act](z);
-        put(b.residual && last === b.units ? `x = x + ${z}` : `x = ${z}`); // the engine adds the input back only when the width is kept
-      } else if (b.type === 'activation') put(`x = ${ACT_PY[b.act]('x')}`);
-      else if (b.type === 'dropout') { init.push(`self.drop${n} = nn.Dropout(${num(b.p)})`); put(`x = self.drop${n}(x)`); }
-      else if (b.type === 'layernorm') { init.push(`self.norm${n} = nn.LayerNorm(${last})`); put(`x = self.norm${n}(x)`); }
-      else if (b.type === 'attention') {
-        helpers.add('attn');
-        init.push(`self.attn${n} = SelfAttention(${last}, heads=${b.heads}, causal=${b.causal !== false ? 'True' : 'False'})`);
-        put(b.residual !== false ? `x = x + self.attn${n}(x)` : `x = self.attn${n}(x)`);
-      } else if (b.type === 'transformer') {
-        helpers.add('attn'); helpers.add('block');
-        init.push(`self.block${n} = TransformerBlock(${last}, heads=${b.heads}, mlp=${b.mlp || 4}, causal=${b.causal !== false ? 'True' : 'False'})`);
-        put(`x = self.block${n}(x)`);
-      } else if (b.type === 'conv') {
-        init.push(`self.conv${n} = nn.Conv2d(${si[0]}, ${b.filters}, ${b.k}, stride=${b.stride || 1}, padding=${(b.k - 1) >> 1})`);
-        const z = ACT_PY[b.act](`self.conv${n}(x)`);
-        put(b.residual && b.filters === si[0] && (b.stride || 1) === 1 ? `x = x + ${z}` : `x = ${z}`); // the engine adds the input back only when the shape is kept
-      } else if (b.type === 'pool') put(`x = F.max_pool2d(x, ${b.size})                     # leftover rows and columns are dropped`);
-      else if (b.type === 'flatten') put('x = x.flatten(1)');
-      else if (b.type === 'gap') put(si.length === 3 ? 'x = x.mean((2, 3))' : 'x = x.mean(1)');
-      else {
-        const c = cfg(b);
-        if (b.type === 'gated') { helpers.add('gated'); init.push(`self.glu${n} = Gated(${last}, ${c.units}, ${ACT_FN[c.gate] || 'F.silu'})`); put(`x = self.glu${n}(x)`); }
-        else if (b.type === 'batchnorm') { init.push(`self.bn${n} = nn.BatchNorm${si.length === 3 ? '2d' : '1d'}(${si.length === 3 ? si[0] : last})`); put(si.length === 2 ? `x = self.bn${n}(x.transpose(1, 2)).transpose(1, 2)` : `x = self.bn${n}(x)`); }
-        else if (b.type === 'noise') { helpers.add('noise'); init.push(`self.noise${n} = GaussianNoise(${num(c.sigma)})`); put(`x = self.noise${n}(x)`); }
-        else if (b.type === 'fourier') {
-          init.push(`self.register_buffer("B${n}", ${num(c.scale)} * torch.randn(${c.features}, ${last}))   # random frequencies, never trained`);
-          fwd.push(`a = 2 * math.pi * x @ self.B${n}.T`); put('x = torch.cat([x, torch.sin(a), torch.cos(a)], -1)');
-        } else if (b.type === 'rnn') { init.push(`self.rnn${n} = nn.${{ lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' }[c.cell] || 'LSTM'}(${last}, ${c.units}, batch_first=True)`); put(`x, _ = self.rnn${n}(x)`); }
-        else if (b.type === 'conv1d') {
-          const reach = (c.k - 1) * (c.dilation || 1), left = c.causal ? reach : Math.floor(reach / 2);
-          init.push(`self.conv${n} = nn.Conv1d(${last}, ${c.filters}, ${c.k}${c.dilation > 1 ? `, dilation=${c.dilation}` : ''})`);
-          const z = `${ACT_PY[c.act](`self.conv${n}(F.pad(x.transpose(1, 2), (${left}, ${reach - left})))`)}.transpose(1, 2)`;
-          put(c.residual && c.filters === last ? `x = x + ${z}` : `x = ${z}`);
-        } else if (b.type === 'position') {
-          if (c.mode === 'sine') { helpers.add('sine'); init.push(`self.register_buffer("pe${n}", sine_positions(${si[0]}, ${last}))   # fixed waves, one row per position`); put(`x = x + self.pe${n}`); }
-          else { init.push(`self.pos${n} = nn.Parameter(0.02 * torch.randn(${si[0]}, ${last}))   # a learned vector for each position`); put(`x = x + self.pos${n}`); }
-        } else if (b.type === 'seqpool') put(c.mode === 'max' ? 'x = x.max(1).values' : c.mode === 'mean' ? 'x = x.mean(1)' : 'x = x[:, -1]                                  # the last position');
-        else if (b.type === 'patches') {
-          init.push(`self.patch${n} = nn.Conv2d(${si[0]}, ${c.dim}, ${c.size}, stride=${c.size})   # one projection for every ${c.size}×${c.size} patch`, `self.pos${n} = nn.Parameter(0.02 * torch.randn(${so[0]}, ${c.dim}))   # each patch's learned place`);
-          put(`x = self.patch${n}(x).flatten(2).transpose(1, 2) + self.pos${n}`);
-        } else if (b.type === 'avgpool') put(`x = F.avg_pool2d(x, ${c.size})`);
+    const names = partNames(setup), parts = planParts(setup, chk, names);
+    for (const c of parts.classes) for (const h of c.helpers) helpers.add(h);
+    for (let i = 0; i < blocks.length;) {
+      const run = names.runs.find((r) => r.from === i);
+      if (run) {
+        // a copy of one of your parts: one instance of its class
+        const g = parts.byGrp[run.grp];
+        init.push(g.make);
+        fwd.push(`x = self.${g.inst}(x)`.padEnd(54) + `# ${shp(g.out)}`);
+        i = run.to;
+        continue;
       }
-    });
+      const sh = chk.shapes[i] || {}, e = emitBlock(blocks[i], sh.in || [], sh.out || [], i + 1, helpers);
+      init.push(...e.init); fwd.push(...e.fwd);
+      i++;
+    }
     const fin = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : inp.kind === 'tokens' ? [inp.len, inp.embed] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w];
     const dIn = fin ? fin[fin.length - 1] : 1, K = out.kind === 'tokens' ? out.vocab : out.k;
     init.push(`self.out = nn.Linear(${dIn}, ${K})${out.kind === 'classes' ? '                # one score per class' : out.kind === 'tokens' ? '                # a score for every possible next token' : ''}`);
@@ -469,10 +599,23 @@ def story():
     if (helpers.has('gated')) pre.push(GATED_PY, '', '');
     if (helpers.has('noise')) pre.push(NOISE_PY, '', '');
     if (helpers.has('sine')) pre.push(SINE_PY, '', '');
+    for (const c of parts.classes) pre.push(c.text, '', '');
     return lines('# ---------------------------------------------------------------- the model', ...pre,
       'class Model(nn.Module):', '    def __init__(self):', '        super().__init__()', init.map((l) => '        ' + l), '',
       '    def forward(self, x):' + `                                   # x: ${shp(inp.kind === 'tokens' ? [inp.len] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w])}`, fwd.map((l) => '        ' + l));
   }
+  // where a block's layers live in the model: model.dense3, or model.bend2.dense1 inside a copy of one of your parts
+  PY.attrPath = function (setup, i, stem) { const w = partNames(setup).where[i] || { pre: 'model.', n: i + 1 }; return `${w.pre}${stem}${w.n}`; };
+  // one part's class, for the architecture view
+  PY.partClass = function (setup, d, run) {
+    if (!d || d.error || !NA.bx) return '';
+    const chk = NA.bx.check(setup.blocks, d.input, d.output);
+    if (!chk.ok) return '# This part does not fit here yet, so there is nothing to write out.';
+    const names = partNames(setup), g = planParts(setup, chk, names).byGrp[run.grp];
+    if (!g) return '';
+    const uses = [...g.helpers].map((h) => HELPER_NAME[h]).filter(Boolean);
+    return lines(uses.length ? `# uses ${uses.join(', ')}: see the whole script (the Python tab)` : null, g.text, '', `# in the model:         ${g.make}`, `# and in its forward(): x = self.${g.inst}(x)`);
+  };
 
   // ------------------------------------------------------------------ loss, optimizer, training
   function lossCode(setup, d) {
@@ -510,20 +653,21 @@ def story():
       '        fan_in = layer.weight[0].numel()', '        for j, g in enumerate(rows or [gain] * layer.weight.shape[0]):', '            layer.weight[j].normal_(0.0, math.sqrt(g / fan_in))', '        layer.bias.zero_()');
     out.push('');
     if (d.input.kind === 'tokens') out.push('nn.init.normal_(model.tok.weight, 0.0, 0.1)', 'nn.init.normal_(model.pos.weight, 0.0, 0.1)');
+    const where = partNames(setup).where;
     setup.blocks.forEach((b, i) => {
-      const n = i + 1, attn = (m) => `for layer in (${['q', 'k', 'v', 'o'].map((x) => `${m}.${x}`).join(', ')}):`;
-      if (b.type === 'dense') out.push(call(`model.dense${n}`, b.acts && !small ? b.acts.map((a) => gain(HE(a))) : gain(HE(b.act))));
-      else if (b.type === 'conv') out.push(call(`model.conv${n}`, gain(HE(b.act))));
-      else if (b.type === 'conv1d') out.push(call(`model.conv${n}`, gain(HE(cfg(b).act))));
-      else if (b.type === 'gated') out.push(call(`model.glu${n}.value`, 1), call(`model.glu${n}.gate`, gain(HE(cfg(b).gate))));
-      else if (b.type === 'patches') out.push(call(`model.patch${n}`, 1));
+      const at = (stem) => `${where[i].pre}${stem}${where[i].n}`, attn = (m) => `for layer in (${['q', 'k', 'v', 'o'].map((x) => `${m}.${x}`).join(', ')}):`;
+      if (b.type === 'dense') out.push(call(at('dense'), b.acts && !small ? b.acts.map((a) => gain(HE(a))) : gain(HE(b.act))));
+      else if (b.type === 'conv') out.push(call(at('conv'), gain(HE(b.act))));
+      else if (b.type === 'conv1d') out.push(call(at('conv'), gain(HE(cfg(b).act))));
+      else if (b.type === 'gated') out.push(call(`${at('glu')}.value`, 1), call(`${at('glu')}.gate`, gain(HE(cfg(b).gate))));
+      else if (b.type === 'patches') out.push(call(at('patch'), 1));
       else if (b.type === 'rnn') {
         // as on the page: normal weights with sd √(1 / inputs) (0.02 for tiny), zero biases, an LSTM's forget gates open
-        out.push('with torch.no_grad():', `    r = model.rnn${n}`, small ? '    r.weight_ih_l0.normal_(0.0, 0.02), r.weight_hh_l0.normal_(0.0, 0.02)' : '    r.weight_ih_l0.normal_(0.0, math.sqrt(1 / r.input_size)), r.weight_hh_l0.normal_(0.0, math.sqrt(1 / r.hidden_size))',
+        out.push('with torch.no_grad():', `    r = ${at('rnn')}`, small ? '    r.weight_ih_l0.normal_(0.0, 0.02), r.weight_hh_l0.normal_(0.0, 0.02)' : '    r.weight_ih_l0.normal_(0.0, math.sqrt(1 / r.input_size)), r.weight_hh_l0.normal_(0.0, math.sqrt(1 / r.hidden_size))',
           '    r.bias_ih_l0.zero_(), r.bias_hh_l0.zero_()', ...(cfg(b).cell === 'lstm' ? ['    r.bias_ih_l0[r.hidden_size:2 * r.hidden_size] = 1.0     # forget gates start open: the memory lasts from the start'] : []));
       }
-      else if (b.type === 'attention') out.push(attn(`model.attn${n}`), '    init_(layer)');
-      else if (b.type === 'transformer') out.push(attn(`model.block${n}.attn`), '    init_(layer)', call(`model.block${n}.mlp[0]`, gain(true)), call(`model.block${n}.mlp[2]`, mode === 'he' ? 2 : 1));
+      else if (b.type === 'attention') out.push(attn(at('attn')), '    init_(layer)');
+      else if (b.type === 'transformer') out.push(attn(`${at('block')}.attn`), '    init_(layer)', call(`${at('block')}.mlp[0]`, gain(true)), call(`${at('block')}.mlp[2]`, mode === 'he' ? 2 : 1));
     });
     out.push('init_(model.out)');
     return out;
@@ -551,7 +695,19 @@ def story():
   function summary(setup, d) {
     const L = NA.builderLab && NA.builderLab.blockLabel ? NA.builderLab.blockLabel : (b) => b.type;
     const o = d.output, end = o.kind === 'classes' ? `${o.k} class scores` : o.kind === 'value' ? '1 number' : `${o.vocab} next-token scores`;
-    return [...(d.input.kind === 'tokens' ? ['embedding'] : []), ...setup.blocks.map(L), end].join(' → ');
+    const names = partNames(setup), items = [];
+    for (let i = 0; i < setup.blocks.length;) {
+      const r = names.runs.find((q) => q.from === i);
+      if (r) { items.push(names.cls[r.part].def.name); i = r.to; } else { items.push(L(setup.blocks[i])); i++; }
+    }
+    return [...(d.input.kind === 'tokens' ? ['embedding'] : []), ...items, end].join(' → ');
+  }
+  function partsSummary(setup) {
+    const L = NA.builderLab && NA.builderLab.blockLabel ? NA.builderLab.blockLabel : (b) => b.type, names = partNames(setup);
+    return Object.values(names.cls).map((c) => {
+      const r = names.runs.find((q) => q.part === c.def.id), n = names.runs.filter((q) => q.part === c.def.id).length;
+      return `#   ${c.def.name} (${c.name}, ${n} cop${n === 1 ? 'y' : 'ies'}): ${setup.blocks.slice(r.from, r.to).map(L).join(' → ')}`;
+    });
   }
 
   // ------------------------------------------------------------------ classic models: scikit-learn, and XGBoost for boosting
@@ -559,7 +715,7 @@ def story():
     const s = NA.cml.withDefaults(b), cls = d.output.kind === 'classes', n = d.nTr, CR = cls ? 'Classifier' : 'Regressor';
     const sk = (imp, make) => ({ imp, fit: [`model = ${make}`, 'model.fit(Xtr_, ytr_)'], predict: 'predict = model.predict', proba: 'model.predict_proba(x)' });
     if (b.type === 'linear') {
-      if (cls) return sk('from sklearn.linear_model import LogisticRegression', s.lambda ? `LogisticRegression(C=${num(1 / (s.lambda * n))}, max_iter=2000)   # C = 1 / (λ × examples): the page's λ = ${num(s.lambda)}` : 'LogisticRegression(penalty=None, max_iter=2000)');
+      if (cls) return sk('from sklearn.linear_model import LogisticRegression', s.lambda ? `LogisticRegression(C=${num(1 / (s.lambda * n))}, max_iter=2000)   # C = 1 / (λ × examples): the page's λ = ${num(s.lambda)}` : 'LogisticRegression(C=float("inf"), max_iter=2000)   # C = ∞: no penalty, as with the page\'s λ = 0');
       return s.lambda ? sk('from sklearn.linear_model import Ridge', `Ridge(alpha=${num(s.lambda)})                         # least squares plus λ|w|²`) : sk('from sklearn.linear_model import LinearRegression', 'LinearRegression()                                 # least squares, solved exactly');
     }
     if (b.type === 'knn') return sk(`from sklearn.neighbors import KNeighbors${CR}`, `KNeighbors${CR}(n_neighbors=${s.k}, weights="${s.weights === 'distance' ? 'distance' : 'uniform'}")`);
@@ -632,6 +788,7 @@ def story():
     return lines(
       `# Built in Neural Anatomy's model builder: ${p.label}.`,
       `# Model:     ${summary(setup, d)}`,
+      ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
       `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}`,
       ...needs.filter(Boolean), 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
       `torch.manual_seed(${T.seed})`, needsRandom(p, d) ? `random.seed(${T.seed})` : null, '',

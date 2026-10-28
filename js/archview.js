@@ -201,6 +201,7 @@
       let n = this.root, keep = 1;
       for (const id of this.path.slice(1)) { const c = this.childOf(n, id); if (!c) break; n = c; keep++; }
       if (keep < this.path.length) { this.path = this.path.slice(0, keep); this.selected = null; this.focusKey = null; }
+      if (this.focusLater) { this.focusLater = false; this.notify(); }
       this.W = W; this.H = H;
       const a = this.anim;
       if (!a) { const node = this.node(); this.drawLevel(ctx, node, R, this.camNow(), 1); this.drawHoverCell(ctx, node, R); }
@@ -252,6 +253,11 @@
       if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2) return;
       const hov = this.hoverId === node.id || this.selected === node.id;
       ctx.globalAlpha = alpha;
+      if (node.shape === 'ghost') {
+        // part of the parent's drawing, outlined only under the pointer
+        if (hov) { ctx.strokeStyle = theme.c('focus', 0.85); ctx.lineWidth = 1.6; ctx.beginPath(); NA.rr(ctx, r.x - 2, r.y - 2, r.w + 4, r.h + 4, 8); ctx.stroke(); ctx.fillStyle = theme.c('focus', 0.05); ctx.fill(); }
+        return;
+      }
       if (node.shape === 'zone') {
         // part of the parent's own drawing: a dotted outline says it opens, a solid one that it is under the cursor
         ctx.setLineDash(hov ? [] : [2, 3]); ctx.strokeStyle = hov ? theme.c('focus') : theme.c('muted', 0.55); ctx.lineWidth = hov ? 1.6 : 1;
@@ -293,18 +299,25 @@
     pick(px, py) {
       if (!this.root) return null;
       const node = this.node(), c = this.content(node, this.camRect(this.levelRect(), this.camNow()));
-      for (const ch of node.children || []) {
-        const r = S.place(c, ch.rect);
-        const pad = ch.shape === 'op' ? 6 : 0;
-        if (px >= r.x - pad && py >= r.y - pad && px <= r.x + r.w + pad && py <= r.y + r.h + pad) return { node: ch, r };
-      }
-      for (const g of node.grids || []) {
-        const gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr), i = Math.floor((py - gr.y) / ch), j = Math.floor((px - gr.x) / cw);
-        if (py < gr.y || px < gr.x || i >= g.rows || j >= g.cols || (g.skip && g.skip(i, j))) continue;
-        const cell = this.cellNode(node, g, i, j);
-        if (cell) return { node: cell, r: { x: gr.x + j * cw, y: gr.y + i * ch, w: cw, h: ch } };
-      }
-      return null;
+      const kids = () => {
+        for (const ch of node.children || []) {
+          const r = S.place(c, ch.rect);
+          const pad = ch.shape === 'op' ? 6 : 0;
+          if (px >= r.x - pad && py >= r.y - pad && px <= r.x + r.w + pad && py <= r.y + r.h + pad) return { node: ch, r };
+        }
+        return null;
+      };
+      const cells = () => {
+        for (const g of node.grids || []) {
+          const gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr), i = Math.floor((py - gr.y) / ch), j = Math.floor((px - gr.x) / cw);
+          if (py < gr.y || px < gr.x || i >= g.rows || j >= g.cols || (g.skip && g.skip(i, j))) continue;
+          const cell = this.cellNode(node, g, i, j);
+          if (cell) return { node: cell, r: { x: gr.x + j * cw, y: gr.y + i * ch, w: cw, h: ch } };
+        }
+        return null;
+      };
+      // a level drawn as one picture (the network view) has its nodes inside its parts: they come first there
+      return node.gridsFirst ? cells() || kids() : kids() || cells();
     }
     click(e) {
       if (this.zoom.suppressClick || this.anim) return;
@@ -400,7 +413,7 @@
       this.focusKey = key;
       if (this.opts.onFocus) this.opts.onFocus(sel || level, this.path, !sel);
     }
-    refreshFocus() { this.focusKey = null; this.notify(); }
+    refreshFocus() { this.focusKey = null; if (this.dirty) this.focusLater = true; else this.notify(); }
     // what the info panel shows for a part: where it sits, its explanation and its code
     infoFor(node, path) {
       const names = [];

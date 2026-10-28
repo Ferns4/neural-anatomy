@@ -788,6 +788,29 @@ body[data-lab="builder"] .lab-center { overflow: hidden; }
 .bd-nbtn:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-2); }
 .bd-nbtn:disabled { opacity: 0.4; }
 .bd-mini { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 7px 0 0 40px; }
+/* a copy of one of your parts, and the blocks inside it */
+.bd-groupcard { border-style: dashed; border-left-style: solid; background: color-mix(in srgb, var(--ink) 3%, var(--panel)); }
+.bd-gchips { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 0 40px; }
+.bd-gchips-col { flex-direction: column; align-items: stretch; margin: 0; }
+.bd-gchip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 28px; padding: 2px 9px 2px 3px; border: 1px solid color-mix(in srgb, var(--bk) 45%, var(--line-2)); border-radius: 8px; background: color-mix(in srgb, var(--bk) 7%, var(--panel)); color: var(--ink); font: 500 11.5px var(--font-ui); text-align: left; }
+button.bd-gchip:hover { border-color: var(--bk); }
+.bd-gchip.is-selected { box-shadow: 0 0 0 2px color-mix(in srgb, var(--bk) 80%, transparent); }
+.bd-gchip.is-bad { border-color: var(--critical); }
+.bd-gchip .bd-card-ico { width: 22px; height: 22px; border-radius: 6px; }
+.bd-gchip .bd-card-ico .ico { width: 15px; height: 15px; }
+.bd-gchip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-name { width: 100%; height: 32px; padding: 0 9px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); font: 500 13px var(--font-ui); }
+.bd-name:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
+.bd-inpart { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; border: 1px dashed color-mix(in srgb, var(--ink-2) 55%, var(--line-2)); border-radius: 9px; background: color-mix(in srgb, var(--ink) 4%, var(--panel)); font-size: 12.5px; color: var(--ink-2); }
+.bd-inpart > span:nth-child(2) { flex: 1 1 180px; }
+.bd-inpart .bd-card-ico { width: 24px; height: 24px; }
+.bd-inpart .bd-card-ico .ico { width: 16px; height: 16px; }
+.bd-style { flex: none; flex-wrap: nowrap; }
+.bd-style button { padding: 4px 10px; }
+[data-layout="mobile"] .bd-style button { padding: 7px 9px; }
+[data-layout="mobile"] .bd-tool-right { flex-wrap: wrap; }
+@media (pointer: coarse) { .bd-gchip { min-height: 36px; } }
+[data-layout="mobile"] .bd-gchip { min-height: 36px; }
 .bd-mini-part { padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--bk) 12%, var(--panel)); color: var(--ink-2); font-size: 10.5px; }
 .bd-mini-add { color: var(--muted); font: 500 11px var(--font-mono); }
 .bd-res-arc { position: absolute; right: -13px; top: 10px; bottom: 10px; width: 10px; border: 1.5px solid color-mix(in srgb, var(--bk) 70%, transparent); border-left: 0; border-radius: 0 9px 9px 0; pointer-events: none; }
@@ -1539,59 +1562,59 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=2c85cce881"></script>
-<script src="js/engine.js?v=2c85cce881"></script>
-<script src="js/data.js?v=2c85cce881"></script>
-<script src="js/presets.js?v=2c85cce881"></script>
-<script src="js/app.js?v=2c85cce881"></script>
-<script src="js/ui.js?v=2c85cce881"></script>
-<script src="js/network-view.js?v=2c85cce881"></script>
-<script src="js/data-view.js?v=2c85cce881"></script>
-<script src="js/hidden-space.js?v=2c85cce881"></script>
-<script src="js/landscape.js?v=2c85cce881"></script>
-<script src="js/charts.js?v=2c85cce881"></script>
-<script src="js/insights.js?v=2c85cce881"></script>
-<script src="js/inspector.js?v=2c85cce881"></script>
-<script src="js/walkthrough.js?v=2c85cce881"></script>
-<script src="js/lab.js?v=2c85cce881"></script>
-<script src="js/archview.js?v=2c85cce881"></script>
-<script src="js/arch-deep.js?v=2c85cce881"></script>
-<script src="js/net-deep.js?v=2c85cce881"></script>
-<script src="js/lm-data.js?v=2c85cce881"></script>
-<script src="js/transformer.js?v=2c85cce881"></script>
-<script src="js/lm-weights.js?v=2c85cce881"></script>
-<script src="js/arch-transformer.js?v=2c85cce881"></script>
-<script src="js/lab-transformer.js?v=2c85cce881"></script>
-<script src="js/pinn.js?v=2c85cce881"></script>
-<script src="js/pinn-weights.js?v=2c85cce881"></script>
-<script src="js/arch-pinn.js?v=2c85cce881"></script>
-<script src="js/lab-pinn.js?v=2c85cce881"></script>
-<script src="js/diffusion.js?v=2c85cce881"></script>
-<script src="js/diffusion-weights.js?v=2c85cce881"></script>
-<script src="js/arch-diffusion.js?v=2c85cce881"></script>
-<script src="js/lab-diffusion.js?v=2c85cce881"></script>
-<script src="js/yolo.js?v=2c85cce881"></script>
-<script src="js/arch-yolo.js?v=2c85cce881"></script>
-<script src="js/lab-yolo.js?v=2c85cce881"></script>
-<script src="js/radar.js?v=2c85cce881"></script>
-<script src="js/radar-weights.js?v=2c85cce881"></script>
-<script src="js/arch-radar.js?v=2c85cce881"></script>
-<script src="js/lab-radar.js?v=2c85cce881"></script>
-<script src="js/builder-engine.js?v=2c85cce881"></script>
-<script src="js/classic-ml.js?v=2c85cce881"></script>
-<script src="js/builder-tasks.js?v=2c85cce881"></script>
-<script src="js/builder-challenges.js?v=2c85cce881"></script>
-<script src="js/part-guide.js?v=2c85cce881"></script>
-<script src="js/builder-insights.js?v=2c85cce881"></script>
-<script src="js/builder-viz.js?v=2c85cce881"></script>
-<script src="js/builder-py.js?v=2c85cce881"></script>
-<script src="js/arch-builder.js?v=2c85cce881"></script>
-<script src="js/lab-builder.js?v=2c85cce881"></script>
-<script src="js/mobile.js?v=2c85cce881"></script>
-<script src="js/share.js?v=2c85cce881"></script>
-<script src="js/glossary.js?v=2c85cce881"></script>
-<script src="js/tour.js?v=2c85cce881"></script>
-<script src="js/chrome.js?v=2c85cce881"></script>
-<script src="pwa.js?v=2c85cce881"></script>
+<script src="js/core.js?v=5ea9810020"></script>
+<script src="js/engine.js?v=5ea9810020"></script>
+<script src="js/data.js?v=5ea9810020"></script>
+<script src="js/presets.js?v=5ea9810020"></script>
+<script src="js/app.js?v=5ea9810020"></script>
+<script src="js/ui.js?v=5ea9810020"></script>
+<script src="js/network-view.js?v=5ea9810020"></script>
+<script src="js/data-view.js?v=5ea9810020"></script>
+<script src="js/hidden-space.js?v=5ea9810020"></script>
+<script src="js/landscape.js?v=5ea9810020"></script>
+<script src="js/charts.js?v=5ea9810020"></script>
+<script src="js/insights.js?v=5ea9810020"></script>
+<script src="js/inspector.js?v=5ea9810020"></script>
+<script src="js/walkthrough.js?v=5ea9810020"></script>
+<script src="js/lab.js?v=5ea9810020"></script>
+<script src="js/archview.js?v=5ea9810020"></script>
+<script src="js/arch-deep.js?v=5ea9810020"></script>
+<script src="js/net-deep.js?v=5ea9810020"></script>
+<script src="js/lm-data.js?v=5ea9810020"></script>
+<script src="js/transformer.js?v=5ea9810020"></script>
+<script src="js/lm-weights.js?v=5ea9810020"></script>
+<script src="js/arch-transformer.js?v=5ea9810020"></script>
+<script src="js/lab-transformer.js?v=5ea9810020"></script>
+<script src="js/pinn.js?v=5ea9810020"></script>
+<script src="js/pinn-weights.js?v=5ea9810020"></script>
+<script src="js/arch-pinn.js?v=5ea9810020"></script>
+<script src="js/lab-pinn.js?v=5ea9810020"></script>
+<script src="js/diffusion.js?v=5ea9810020"></script>
+<script src="js/diffusion-weights.js?v=5ea9810020"></script>
+<script src="js/arch-diffusion.js?v=5ea9810020"></script>
+<script src="js/lab-diffusion.js?v=5ea9810020"></script>
+<script src="js/yolo.js?v=5ea9810020"></script>
+<script src="js/arch-yolo.js?v=5ea9810020"></script>
+<script src="js/lab-yolo.js?v=5ea9810020"></script>
+<script src="js/radar.js?v=5ea9810020"></script>
+<script src="js/radar-weights.js?v=5ea9810020"></script>
+<script src="js/arch-radar.js?v=5ea9810020"></script>
+<script src="js/lab-radar.js?v=5ea9810020"></script>
+<script src="js/builder-engine.js?v=5ea9810020"></script>
+<script src="js/classic-ml.js?v=5ea9810020"></script>
+<script src="js/builder-tasks.js?v=5ea9810020"></script>
+<script src="js/builder-challenges.js?v=5ea9810020"></script>
+<script src="js/part-guide.js?v=5ea9810020"></script>
+<script src="js/builder-insights.js?v=5ea9810020"></script>
+<script src="js/builder-viz.js?v=5ea9810020"></script>
+<script src="js/builder-py.js?v=5ea9810020"></script>
+<script src="js/arch-builder.js?v=5ea9810020"></script>
+<script src="js/lab-builder.js?v=5ea9810020"></script>
+<script src="js/mobile.js?v=5ea9810020"></script>
+<script src="js/share.js?v=5ea9810020"></script>
+<script src="js/glossary.js?v=5ea9810020"></script>
+<script src="js/tour.js?v=5ea9810020"></script>
+<script src="js/chrome.js?v=5ea9810020"></script>
+<script src="pwa.js?v=5ea9810020"></script>
 </body>
 </html>

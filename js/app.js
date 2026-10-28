@@ -395,6 +395,7 @@
   // Steps per animation frame for each speed; 'max' and fast-forward fill a time budget instead.
   const SPEED_STEPS = { normal: 2, fast: 16 };
   App.frame = function (now) {
+    requestAnimationFrame((t) => this.frame(t)); // first, so that an error below cannot stop the page
     if (this.training) {
       const ff = this.ffTarget !== null;
       if (!ff && this.speed === 'slow') {
@@ -411,8 +412,10 @@
       if (this.ffTarget !== null && this.step >= this.ffTarget) { this.pause(); this.emit('ffdone'); }
       this.emit('weights');
     }
-    for (const c of this.components) if (c.frame) c.frame(now);
-    requestAnimationFrame((t) => this.frame(t));
+    for (const c of this.components) {
+      if (!c.frame) continue;
+      try { c.frame(now); } catch (e) { const k = String(e && e.stack); if (!(this.frameErrors || (this.frameErrors = new Set())).has(k)) { this.frameErrors.add(k); console.error(e); } }
+    }
   };
 
   // ------------------------------------------------------------------ history (time travel)

@@ -127,6 +127,17 @@
     if ((family === 'digits' || family === 'series') && FLAT_TEMPLATES.has(t.id)) blocks.unshift({ type: 'flatten' });
     return blocks;
   };
+  // runs of consecutive blocks that make one copy of a part of your own (they carry the same grp): [{ grp, part, from, to }]
+  BT.groupsOf = (blocks) => {
+    const out = [];
+    (blocks || []).forEach((b, i) => {
+      if (!b || !b.grp) return;
+      const last = out[out.length - 1];
+      if (last && last.grp === b.grp && last.to === i) last.to++;
+      else out.push({ grp: b.grp, part: b.part, from: i, to: i + 1 });
+    });
+    return out;
+  };
 
 
   // ------------------------------------------------------------------ your own table (CSV)

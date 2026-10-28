@@ -127,6 +127,7 @@
     tree: ['M12 4v5', 'M6 15V9h12v6', 'M4 15h4v4H4z', 'M16 15h4v4h-4z', 'C12 4 1.5'],
     forest: ['M6 4v5', 'M3 9h6l-3 6z', 'M18 4v5', 'M15 9h6l-3 6z', 'M12 8v5', 'M9 13h6l-3 6z'],
     boost: ['M4 18h3v-3H4z', 'M10 18h3v-6h-3z', 'M16 18h3V7h-3z', 'M5 12l6-5 6-3'],
+    part: ['M4 8l8-4 8 4v8l-8 4-8-4z', 'M4 8l8 4 8-4', 'M12 12v8'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -157,6 +158,38 @@
   BL.family = function () { return this.problem().family; };
   const bid = () => 'b' + BL.nextId++;
   const withIds = (blocks) => blocks.map((b) => Object.assign({ id: bid() }, b));
+  /* Parts of your own: blocks boxed together under a name, like a function, and added again as copies. The model stays
+     a flat list of blocks (the engine, the checks and every view work on it as before); the blocks of one copy carry
+     the same grp (the copy) and part (the definition in setup.parts), and sit next to each other. A copy has its own
+     weights; changing a block inside one copy changes the definition and every other copy too. */
+  const gid = () => 'g' + BL.nextId++, pid = () => 'p' + BL.nextId++;
+  const cleanSpec = (b) => { const c = JSON.parse(JSON.stringify(b)); delete c.id; delete c.grp; delete c.part; return c; };
+  const cleanName = (s) => String(s || '').replace(/[^\p{L}\p{N} _\-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 32);
+  const runsOf = (s) => BT.groupsOf(s.blocks);
+  const runOf = (s, b) => (b && b.grp ? runsOf(s).find((g) => g.grp === b.grp) : null);
+  const defOf = (s, id) => (s.parts || []).find((p) => p.id === id);
+  function syncPart(s, q) {
+    const run = runOf(s, q), def = defOf(s, q.part);
+    if (!run || !def) return;
+    const k = s.blocks.indexOf(q) - run.from, spec = cleanSpec(q);
+    def.blocks[k] = spec;
+    for (const g of runsOf(s)) {
+      if (g.part !== q.part || g.grp === q.grp) continue;
+      const t = s.blocks[g.from + k];
+      if (!t) continue;
+      for (const key of Object.keys(t)) if (key !== 'id' && key !== 'grp' && key !== 'part') delete t[key];
+      Object.assign(t, JSON.parse(JSON.stringify(spec)));
+    }
+  }
+  // the k-th block of a part: removed, moved or inserted in the definition and in every copy at once
+  function editPart(s, partId, fn) {
+    const def = defOf(s, partId);
+    if (!def) return;
+    const runs = runsOf(s).filter((g) => g.part === partId).reverse(); // from the last copy, so indices stay valid
+    fn(def.blocks, null);
+    for (const g of runs) fn(s.blocks, g);
+    if (!def.blocks.length) s.parts = s.parts.filter((p) => p !== def);
+  }
 
   // The data (and with it the input and output shapes) for the current problem; rebuilt only when it changes.
   BL.dataFor = function () {
@@ -227,12 +260,29 @@
   // A stored or shared setup is usable when its problem, blocks, loss and training settings are all there.
   function usable(S) {
     if (!S || typeof S !== 'object' || !BT.byId[S.problem] || !Array.isArray(S.blocks) || !S.loss || typeof S.loss !== 'object' || !S.train || typeof S.train !== 'object' || !S.ps || typeof S.ps !== 'object') return false;
-    return S.blocks.length <= 40 && S.blocks.every((b) => b && typeof b === 'object' && NA.bx.BLOCKS[b.type]);
+    if (S.parts !== undefined && !(Array.isArray(S.parts) && S.parts.length <= 16 && S.parts.every((p) => p && typeof p.name === 'string' && p.name.length <= 40 && Array.isArray(p.blocks) && p.blocks.length && p.blocks.length <= 12 && p.blocks.every((b) => b && typeof b === 'object' && NA.bx.BLOCKS[b.type])))) return false;
+    return S.blocks.length <= 40 && S.blocks.every((b) => b && typeof b === 'object' && (NA.bx.BLOCKS[b.type] || isClassic(b.type)));
   }
   function tidy(S) {
     S.custom = S.custom && Array.isArray(S.custom.points) ? S.custom : { points: [] };
     S.train = Object.assign({}, DEFAULT_TRAIN, S.train);
-    S.blocks.forEach((b) => { b.id = bid(); });
+    // fresh ids for blocks, copies and parts, so none can clash with ones made later
+    const pmap = {}, gmap = {};
+    S.parts = (S.parts || []).map((p) => { const id = pid(); pmap[p.id] = id; return { id, name: cleanName(p.name) || 'My part', blocks: p.blocks.map(cleanSpec) }; });
+    // a copy is its part's blocks, in order and side by side: anything else becomes ordinary blocks again
+    let prev = null, cur = null;
+    S.blocks.forEach((b) => {
+      b.id = bid();
+      if (b.grp && pmap[b.part]) {
+        if (!(prev && prev.grp === b.grp && prev.part === b.part)) cur = gid();
+        prev = { grp: b.grp, part: b.part };
+        b.grp = cur; b.part = pmap[b.part];
+      } else { prev = null; delete b.grp; delete b.part; }
+    });
+    for (const r of BT.groupsOf(S.blocks)) {
+      const def = S.parts.find((q) => q.id === r.part), inner = S.blocks.slice(r.from, r.to);
+      if (!def || def.blocks.length !== inner.length || inner.some((b, k) => b.type !== def.blocks[k].type)) inner.forEach((b) => { delete b.grp; delete b.part; });
+    }
     return S;
   }
 
@@ -247,7 +297,7 @@
   BL.loadShare = function (S) {
     if (!usable(S)) return false;
     const num = (v, lo, hi) => typeof v === 'number' && isFinite(v) && v >= lo && v <= hi;
-    for (const b of S.blocks) for (const k of Object.keys(b)) if (typeof b[k] === 'number' && !num(b[k], -512, 512)) return false;
+    for (const b of [...S.blocks, ...(S.parts || []).flatMap((p) => p.blocks)]) for (const k of Object.keys(b)) if (typeof b[k] === 'number' && !num(b[k], -512, 512)) return false; // your parts too: a copy is made from them
     for (const ps of Object.values(S.ps)) if (ps && typeof ps === 'object') for (const k of Object.keys(ps)) if (typeof ps[k] === 'number' && !num(ps[k], -1e4, 1e4)) return false;
     const T = Object.assign({}, DEFAULT_TRAIN, S.train);
     if (!num(T.lr, 1e-6, 10) || !num(T.batch, 1, 1024) || (T.steps !== undefined && !num(T.steps, 0, 2e5)) || !OPT_LABEL[T.opt] || !SCHED_LABEL[T.sched || 'const']) return false;
@@ -413,7 +463,7 @@
   // training proceeds (learning rate, optimizer, batch, steps, schedule, weight decay, clipping).
   const TRAINING_ONLY = ['lr', 'opt', 'batch', 'steps', 'sched', 'wd', 'clip'];
   function sameModel(a, b) {
-    const strip = (S) => { const c = JSON.parse(JSON.stringify(S)); for (const k of TRAINING_ONLY) delete c.train[k]; (c.blocks || []).forEach((q) => { delete q.id; }); return JSON.stringify(c); };
+    const strip = (S) => { const c = JSON.parse(JSON.stringify(S)); for (const k of TRAINING_ONLY) delete c.train[k]; delete c.parts; (c.blocks || []).forEach((q) => { delete q.id; delete q.grp; delete q.part; }); return JSON.stringify(c); };
     return strip(a) === strip(b);
   }
   // What changed between two setups, in words: the run list shows it next to each run's result.
@@ -432,7 +482,7 @@
     while (i < n || j < m) {
       if (i < n && j < m && A[i].type === Bb[j].type) {
         const diffs = [];
-        for (const k of new Set([...Object.keys(A[i]), ...Object.keys(Bb[j])])) if (k !== 'id' && JSON.stringify(A[i][k]) !== JSON.stringify(Bb[j][k])) diffs.push(k === 'acts' ? 'neuron activations' : `${k} ${fmtVal(k, A[i][k])} → ${fmtVal(k, Bb[j][k])}`);
+        for (const k of new Set([...Object.keys(A[i]), ...Object.keys(Bb[j])])) if (k !== 'id' && k !== 'grp' && k !== 'part' && JSON.stringify(A[i][k]) !== JSON.stringify(Bb[j][k])) diffs.push(k === 'acts' ? 'neuron activations' : `${k} ${fmtVal(k, A[i][k])} → ${fmtVal(k, Bb[j][k])}`);
         if (diffs.length) out.push(`${blockName(Bb[j])} ${j + 1}: ${diffs.join(', ')}`);
         i++; j++;
       } else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) { out.push(`added ${blockLabel(Bb[j])}`); j++; }
@@ -574,6 +624,8 @@
       }
       this.palette.append(el('div', { class: 'bd-pal-group' }, el('div', { class: 'bd-pal-title', text: g }), grid));
     }
+    this.myParts = el('div', { class: 'bd-pal-group bd-myparts', hidden: '' });
+    this.palette.append(this.myParts);
   };
   BL.renderLeft = function () {
     if (!this.problemSel) return;
@@ -584,7 +636,8 @@
     // which parts fit this problem's kind of data
     const fits = FITS[fam] || FITS.plane;
     const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' }[fam];
-    NA.$$('.bd-part', this.palette).forEach((t) => {
+    this.renderMyParts();
+    NA.$$('.bd-part:not(.bd-part-mine)', this.palette).forEach((t) => {
       const off = !fits.includes(t.dataset.type);
       t.classList.toggle('is-unsuited', off);
       t.title = PART[t.dataset.type].hint + (off ? ` Not useful for ${kind}: the model will say why if you add it.` : '');
@@ -652,19 +705,42 @@
         return;
       }
     }
-    const i = this.sel && this.sel.kind === 'block' ? this.setup.blocks.findIndex((b) => b.id === this.sel.id) + 1 : this.sel && this.sel.kind === 'input' ? 0 : this.setup.blocks.length;
-    if (p.type === 'neuron' && this.sel && this.sel.kind === 'block') { const b = this.setup.blocks.find((q) => q.id === this.sel.id); if (b && b.type === 'dense') { this.addNeuron(b.id); return; } }
-    this.insert(p.make(), i < 0 ? this.setup.blocks.length : i);
+    if (p.custom) { this.addCopy(p.custom); return; }
+    const i = this.insertAt();
+    if (p.type === 'neuron' && this.sel && this.sel.kind === 'block') { const b = this.setup.blocks.find((q) => q.id === this.sel.id); if (b && b.type === 'dense' && !b.grp) { this.addNeuron(b.id); return; } }
+    this.insert(p.make(), i);
     if (NA.mobile && NA.mobile.mobile) NA.ui.toast.show(`Added ${p.name.toLowerCase()} to the model.`);
+  };
+  // where a new part goes: after the selected block (after the whole copy, when it sits in one of your parts), or at the end
+  BL.insertAt = function () {
+    const S = this.setup, sel = this.sel;
+    if (sel && sel.kind === 'input') return 0;
+    if (sel && (sel.kind === 'block' || sel.kind === 'group')) {
+      const run = runsOf(S).find((g) => g.grp === sel.id || S.blocks.slice(g.from, g.to).some((b) => b.id === sel.id));
+      if (run) return run.to;
+      const i = S.blocks.findIndex((b) => b.id === sel.id);
+      if (i >= 0) return i + 1;
+    }
+    return S.blocks.length;
   };
   BL.insert = function (spec, at) {
     if (this.setup.blocks.length >= 24) { NA.ui.toast.show('That is plenty of blocks: remove one first.'); return; }
+    const inside = runsOf(this.setup).find((g) => at > g.from && at < g.to);
+    if (inside) at = inside.to; // never into the middle of a copy of one of your parts
     const b = Object.assign({ id: bid() }, spec);
     this.edit((s) => { s.blocks.splice(at, 0, b); }, { flip: true });
     this.selectBlock({ kind: 'block', id: b.id }, true);
   };
   BL.removeBlock = function (id) {
-    const i = this.setup.blocks.findIndex((b) => b.id === id);
+    const i = this.setup.blocks.findIndex((b) => b.id === id), b = this.setup.blocks[i], run = runOf(this.setup, b);
+    if (run) {
+      // a block inside one of your parts goes from the part, and so from every copy
+      const k = i - run.from, def = defOf(this.setup, run.part), name = def ? def.name : 'the part';
+      this.edit((s) => editPart(s, run.part, (list, g) => list.splice((g ? g.from : 0) + k, 1)), { flip: true });
+      if (this.sel && this.sel.id === id) this.selectBlock(null);
+      NA.ui.toast.show(`Removed ${blockName(b)} from ${name}, in every copy. Undo brings it back.`);
+      return i;
+    }
     this.edit((s) => { s.blocks = s.blocks.filter((b) => b.id !== id); }, { flip: true });
     if (this.sel && this.sel.id === id) this.selectBlock(null);
     return i;
@@ -677,7 +753,16 @@
     });
   };
   BL.moveBlock = function (id, to) {
-    const i = this.setup.blocks.findIndex((b) => b.id === id);
+    const S = this.setup, i = S.blocks.findIndex((b) => b.id === id), run = i >= 0 ? runOf(S, S.blocks[i]) : null;
+    if (run) {
+      // inside one of your parts: it moves within the part, in every copy
+      const k = i - run.from, k2 = to > i ? k + 1 : k - 1;
+      if (k2 < 0 || k2 >= run.to - run.from) return;
+      this.edit((s) => editPart(s, run.part, (list, g) => { const o = g ? g.from : 0, t = list[o + k]; list[o + k] = list[o + k2]; list[o + k2] = t; }), { flip: true });
+      return;
+    }
+    const over = runsOf(S).find((g) => to > g.from && to < g.to);
+    if (over) to = to > i ? over.to : over.from; // a block steps over a copy of one of your parts, not into it
     if (i < 0 || to === i || to === i + 1) return;
     this.edit((s) => { const [b] = s.blocks.splice(i, 1); s.blocks.splice(to > i ? to - 1 : to, 0, b); }, { flip: true });
   };
@@ -688,9 +773,18 @@
       const u = clamp(b.units + delta, 1, 256);
       if (b.acts) { b.acts = b.acts.slice(0, u); while (b.acts.length < u) b.acts.push(b.act); }
       b.units = u;
+      if (b.grp) syncPart(s, b);
     });
   };
   BL.fixBlock = function (i, fix) {
+    const run = runsOf(this.setup).find((g) => i > g.from && i < g.to);
+    if (run) {
+      // inside one of your parts: the fix goes into the part, in every copy
+      const k = i - run.from, def = defOf(this.setup, run.part);
+      this.edit((s) => editPart(s, run.part, (list, g) => list.splice((g ? g.from : 0) + k, 0, ...fix.map((f) => (g ? Object.assign({ id: bid() }, cleanSpec(f), { grp: g.grp, part: run.part }) : cleanSpec(f))))), { flip: true });
+      NA.ui.toast.show(`Added ${fix.map(blockLabel).join(' and ')} inside ${def ? def.name : 'your part'}, in every copy.`);
+      return;
+    }
     this.edit((s) => { s.blocks.splice(i, 0, ...withIds(fix)); }, { flip: true });
     NA.ui.toast.show(`Added ${fix.map(blockLabel).join(' and ')}.`);
   };
@@ -700,7 +794,10 @@
     this.undoBtn = el('button', { class: 'icon-btn', type: 'button', title: 'Undo (Ctrl+Z)', 'aria-label': 'Undo', onclick: () => this.undo() }, '↶');
     this.redoBtn = el('button', { class: 'icon-btn', type: 'button', title: 'Redo (Ctrl+Y)', 'aria-label': 'Redo', onclick: () => this.redo() }, '↷');
     this.viewSeg = UI.seg([{ value: 'model', label: 'Model' }, { value: 'both', label: 'Both' }, { value: 'results', label: 'Results' }, { value: 'arch', label: 'Architecture', title: 'Zoom into your model: blocks, neurons, their sums, down to the transistors' }], this.centerView, (v) => { this.centerView = v; this.layoutCenter(); }, 'Show');
-    root.append(el('div', { class: 'lab-toolbar bd-toolbar' }, this.viewSeg, el('div', { class: 'bd-tool-right' }, this.undoBtn, this.redoBtn,
+    this.archStyle = NA.store.get('builder.archStyle', 'network') === 'blocks' ? 'blocks' : 'network';
+    this.styleSeg = UI.seg([{ value: 'network', label: 'Network', title: 'The model drawn as a network: neurons, their wires and what each one computes' }, { value: 'blocks', label: 'Boxes', title: 'The model as boxes, with the shape of the data between them' }], this.archStyle, (v) => { this.archStyle = v; NA.store.set('builder.archStyle', v); if (this.arch) { this.arch.dirty = true; this.arch.refreshFocus(); } }, 'Architecture drawn as');
+    this.styleSeg.classList.add('bd-style');
+    root.append(el('div', { class: 'lab-toolbar bd-toolbar' }, this.viewSeg, el('div', { class: 'bd-tool-right' }, this.styleSeg, this.undoBtn, this.redoBtn,
       el('button', { class: 'btn btn-quiet', type: 'button', title: 'Remove every block', onclick: () => { if (!this.setup.blocks.length) return; this.edit((s) => { s.blocks = []; }, { flip: true }); this.selectBlock(null); NA.ui.toast.show('Removed every block. Undo brings them back.'); } }, 'Clear model'))));
     this.bench = el('div', { class: 'bd-bench', 'aria-label': 'Your model, from input to output' });
     this.stack = el('div', { class: 'bd-stack' });
@@ -738,6 +835,7 @@
   BL.layoutCenter = function () {
     const arch = this.centerView === 'arch';
     this.split.hidden = arch; this.archBox.hidden = !arch;
+    if (this.styleSeg) this.styleSeg.hidden = !arch;
     if (arch) { this.viewSeg.set('arch'); NA.$$('button', this.viewSeg).forEach((b) => { if (b.dataset.v === 'both') b.hidden = (this.root || this.archBox.parentElement).clientWidth < 600 || !!(NA.mobile && NA.mobile.mobile); }); this.archStale = true; return; }
     const w = this.split.clientWidth, narrow = w < 600 || (NA.mobile && NA.mobile.mobile);
     let v = this.centerView;
@@ -757,11 +855,15 @@
     // input
     const p = this.problem();
     this.stack.append(this.card({ kind: 'input', id: 'input', type: 'input', title: 'Input', sum: `${p.label}${d.error ? '' : ' · ' + inputText(d)}`, sel: this.sel && this.sel.kind === 'input' }));
-    S.blocks.forEach((b, i) => {
-      const sh = chk.shapes[i] || {}, shown = Object.assign({}, b, { residualOk: residualFits(b, sh) });
+    const runs = runsOf(S);
+    for (let i = 0; i < S.blocks.length;) {
+      const b = S.blocks[i], sh = chk.shapes[i] || {}, run = runs.find((g) => g.from === i);
       this.stack.append(this.gap(i, sh.in ? shapeOf(sh.in) : ''));
+      if (run) { this.stack.append(this.groupCard(run, chk)); i = run.to; continue; }
+      const shown = Object.assign({}, b, { residualOk: residualFits(b, sh) });
       this.stack.append(this.card({ kind: 'block', id: b.id, type: b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, b: shown, i, title: blockName(b), sum: blockSummary(shown), params: sh.params, problem: sh.problem, sel: this.sel && this.sel.id === b.id }));
-    });
+      i++;
+    }
     // what flows into the output: the last block's shape, or the input's when there are no blocks
     const last = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : null;
     this.stack.append(this.gap(S.blocks.length, d.error ? '' : shapeOf(last || (d.input.kind === 'tokens' ? [d.input.len, d.input.embed] : d.input.kind === 'series' ? [d.input.len, d.input.dim] : d.input.kind === 'vector' ? [d.input.dim] : [d.input.c, d.input.h, d.input.w]))));
@@ -837,6 +939,80 @@
     });
     return card;
   };
+  // a copy of one of your parts: one card, its blocks as chips (click one to change it, in every copy)
+  BL.groupCard = function (run, chk) {
+    const S = this.setup, def = defOf(S, run.part) || { name: 'Your part' }, inner = S.blocks.slice(run.from, run.to), sh = (chk.shapes || []).slice(run.from, run.to);
+    const params = sh.reduce((s, q) => s + ((q && q.params) || 0), 0), bad = sh.find((q) => q && q.problem), copies = runsOf(S).filter((g) => g.part === run.part).length;
+    const card = el('div', { class: `bd-card bd-block bd-groupcard${this.sel && this.sel.id === run.grp ? ' is-selected' : ''}${bad ? ' is-bad' : ''}`, style: { '--bk': 'var(--ink-2)' }, dataset: { bid: run.grp }, tabindex: '0', role: 'button', title: `${def.name}, a part of your own. Click it to rename it, add copies or take it apart; click a block inside to change it in every copy.`, 'aria-label': `${def.name}: your part, ${inner.length} blocks` });
+    const head = el('div', { class: 'bd-card-head' }, el('span', { class: 'bd-card-ico' }, icon('part')), el('span', { class: 'bd-card-text' }, el('span', { class: 'bd-card-title', text: def.name }), el('span', { class: 'bd-card-sum', text: `your part · ${inner.length} block${inner.length === 1 ? '' : 's'}${copies > 1 ? ` · ${copies} copies` : ''}` })));
+    if (params) head.append(el('span', { class: 'bd-card-params', title: 'learned numbers in this copy', text: fmtInt(params) }));
+    head.append(el('button', { class: 'bd-card-x', type: 'button', title: 'Remove this copy (Delete)', 'aria-label': `Remove ${def.name}`, onclick: (e) => { e.stopPropagation(); this.removeGroup(run.grp); } }, '×'));
+    card.append(head, el('div', { class: 'bd-gchips' }, ...inner.map((b, k) => el('button', { class: 'bd-gchip' + (this.sel && this.sel.id === b.id ? ' is-selected' : '') + (sh[k] && sh[k].problem ? ' is-bad' : ''), type: 'button', style: { '--bk': `var(--${toneOf(b.type)})` }, dataset: { bid: b.id }, title: `${blockLabel(b)}${sh[k] && sh[k].problem ? `: ${sh[k].problem.reason}` : ''}. ${Click()} to change it (in every copy).`,
+      onclick: (e) => { e.stopPropagation(); this.selectBlock({ kind: 'block', id: b.id }); } }, el('span', { class: 'bd-card-ico' }, icon(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type)), el('span', { class: 'bd-gchip-name', text: blockSummaryShort(b) })))));
+    if (bad) card.append(el('div', { class: 'bd-problem' }, el('span', { text: bad.problem.reason })));
+    card.addEventListener('pointerdown', (e) => { if (e.target.closest('button')) return; this.pressStart(e, { kind: 'group', id: run.grp, el: card }); });
+    card.addEventListener('keydown', (e) => {
+      if (e.target !== card) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.selectBlock({ kind: 'group', id: run.grp }); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); this.removeGroup(run.grp); }
+      else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); this.moveGroup(run.grp, e.key === 'ArrowUp' ? run.from - 1 : run.to + 1); this.refocus(run.grp); }
+    });
+    return card;
+  };
+  const blockSummaryShort = (b) => (b.type === 'dense' ? `${b.units === 1 ? 'Neuron' : 'Dense ' + b.units} ${ACTS[b.act].short || ACTS[b.act].label}` : blockLabel(b));
+  // copies of your parts: add one, take one apart, remove one, move one; and the parts themselves: box, rename, delete
+  BL.addCopy = function (partId, at) {
+    if (this.sel && this.sel.kind === 'guide') this.sel = this.guideFrom || null;
+    const S = this.setup, def = defOf(S, partId);
+    if (!def) return;
+    if (S.blocks.length + def.blocks.length > 24) { NA.ui.toast.show('That is plenty of blocks: remove one first.'); return; }
+    if (at === undefined) at = this.insertAt();
+    const inside = runsOf(S).find((g) => at > g.from && at < g.to);
+    if (inside) at = inside.to;
+    const g = gid(), classic = this.isClassicSetup(), copy = def.blocks.map((b) => Object.assign({ id: bid() }, JSON.parse(JSON.stringify(b)), { grp: g, part: def.id }));
+    this.edit((s) => { if (classic) s.blocks = []; s.blocks.splice(classic ? 0 : at, 0, ...copy); }, { flip: true });
+    this.selectBlock({ kind: 'group', id: g }, true);
+    NA.ui.toast.show(`Added a copy of ${def.name}${classic ? ' in place of the classic model' : ''}: same blocks, its own weights.`);
+  };
+  BL.removeGroup = function (grp) {
+    const run = runsOf(this.setup).find((g) => g.grp === grp);
+    if (!run) return;
+    this.edit((s) => { s.blocks = s.blocks.filter((b) => b.grp !== grp); }, { flip: true });
+    if (this.sel && (this.sel.id === grp || this.setup.blocks.every((b) => b.id !== this.sel.id))) this.selectBlock(null);
+    NA.ui.toast.show('Removed the copy. Undo brings it back; the part stays in your palette.');
+  };
+  BL.moveGroup = function (grp, to) {
+    const run = runsOf(this.setup).find((g) => g.grp === grp);
+    if (!run || to < 0 || to > this.setup.blocks.length || (to >= run.from && to <= run.to)) return;
+    const over = runsOf(this.setup).find((g) => g.grp !== grp && to > g.from && to < g.to);
+    if (over) to = to > run.from ? over.to : over.from;
+    this.edit((s) => { const moved = s.blocks.splice(run.from, run.to - run.from); s.blocks.splice(to > run.from ? to - moved.length : to, 0, ...moved); }, { flip: true });
+  };
+  BL.unboxGroup = function (grp) {
+    this.edit((s) => { for (const b of s.blocks) if (b.grp === grp) { delete b.grp; delete b.part; } }, { flip: true });
+    this.selectBlock(null);
+    NA.ui.toast.show('Taken apart: its blocks are ordinary blocks again. The part stays in your palette.');
+  };
+  BL.boxBlocks = function (i, count, name) {
+    const S = this.setup, range = S.blocks.slice(i, i + count);
+    if (!range.length || range.some((b) => b.grp || isClassic(b.type))) return;
+    const def = { id: pid(), name: cleanName(name) || `My part ${(S.parts || []).length + 1}`, blocks: range.map(cleanSpec) }, g = gid();
+    this.edit((s) => { s.parts = [...(s.parts || []), def]; for (let q = i; q < i + count; q++) Object.assign(s.blocks[q], { grp: g, part: def.id }); }, { flip: true });
+    this.selectBlock({ kind: 'group', id: g }, true);
+    NA.ui.toast.show(`Boxed ${count} block${count === 1 ? '' : 's'} into ${def.name}. Add copies of it from Your parts in the palette.`);
+  };
+  BL.renamePart = function (partId, name) {
+    const n = cleanName(name);
+    if (!n) return;
+    this.edit((s) => { const def = defOf(s, partId); if (def) def.name = n; });
+  };
+  BL.deletePart = function (partId) {
+    const def = defOf(this.setup, partId);
+    if (!def) return;
+    this.edit((s) => { s.parts = s.parts.filter((p) => p.id !== partId); for (const b of s.blocks) if (b.part === partId) { delete b.grp; delete b.part; } });
+    this.selectBlock(null);
+    NA.ui.toast.show(`Deleted ${def.name} from your parts. Its copies in the model stay, as ordinary blocks. Undo brings it back.`);
+  };
   // a dense layer's neurons as dots: click one to give it its own activation; − and + remove and add neurons
   BL.neuronRow = function (b) {
     const row = el('div', { class: 'bd-neurons' }), show = Math.min(b.units, 32);
@@ -904,7 +1080,7 @@
   BL.beginDrag = function (src, ev) {
     const isPart = src.kind === 'part', r = src.el.getBoundingClientRect();
     const ghost = isPart
-      ? el('div', { class: 'bd-ghost', style: { '--bk': `var(--${GROUP_TONE[src.part.group]})` } }, el('span', { class: 'bd-card-ico' }, icon(src.part.type)), el('span', { text: src.part.name }))
+      ? el('div', { class: 'bd-ghost', style: { '--bk': `var(--${GROUP_TONE[src.part.group] || 'ink-2'})` } }, el('span', { class: 'bd-card-ico' }, icon(src.part.custom ? 'part' : src.part.type)), el('span', { text: src.part.name }))
       : Object.assign(src.el.cloneNode(true), { className: src.el.className + ' bd-ghost bd-ghost-card' });
     if (!isPart) { ghost.style.width = r.width + 'px'; src.el.classList.add('is-lifted'); }
     document.body.append(ghost);
@@ -931,10 +1107,14 @@
       }
       // scroll the bench when dragging near its edges
       if (y < bench.top + 30) this.bench.scrollTop -= 12; else if (y > bench.bottom - 30) this.bench.scrollTop += 12;
-    } else if (drag.src.kind === 'block') target = { kind: 'remove' };
+    } else if (drag.src.kind === 'block' || drag.src.kind === 'group') target = { kind: 'remove' };
     if (target && drag.src.kind === 'block' && target.kind === 'gap') {
       const i = this.setup.blocks.findIndex((b) => b.id === drag.src.id);
       if (target.at === i || target.at === i + 1) target = { kind: 'stay', el: target.el };
+    }
+    if (target && drag.src.kind === 'group' && target.kind === 'gap') {
+      const run = runsOf(this.setup).find((g) => g.grp === drag.src.id);
+      if (run && target.at >= run.from && target.at <= run.to) target = { kind: 'stay', el: target.el };
     }
     const key = target ? target.kind + (target.at ?? target.id ?? '') : '';
     if (key !== drag.key) {
@@ -953,6 +1133,12 @@
     NA.$$('.bd-gap.is-target, .bd-card.is-drop-into, .bd-card.is-lifted', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into', 'is-lifted'));
     this.drag = null;
     if (!t) return;
+    if (src.kind === 'part' && src.part.custom) { if (t.kind === 'gap') this.addCopy(src.part.custom, t.at); return; }
+    if (src.kind === 'group') {
+      if (t.kind === 'remove') this.removeGroup(src.id);
+      else if (t.kind === 'gap') this.moveGroup(src.id, t.at);
+      return;
+    }
     if (src.kind === 'part') {
       if (t.kind === 'into') this.addNeuron(t.id, 1);
       else if (src.part.classic || this.setup.blocks.some((b) => isClassic(b.type))) this.addPart(src.part);
@@ -981,6 +1167,7 @@
     this.sel = sel;
     if (this.stack) {
       NA.$$('.bd-card', this.stack).forEach((c) => c.classList.toggle('is-selected', !!sel && c.dataset.bid === sel.id));
+      NA.$$('.bd-gchip', this.stack).forEach((c) => c.classList.toggle('is-selected', !!sel && c.dataset.bid === sel.id));
       NA.$$('.bd-dot', this.stack).forEach((dEl) => dEl.classList.toggle('is-selected', !!sel && sel.neuron === +dEl.dataset.j && dEl.closest('.bd-card').dataset.bid === sel.id));
     }
     if (sel && this.tabs && this.tabs.current !== 'block') this.tabs.select('block'); else this.inspDirty = true;
@@ -989,6 +1176,7 @@
   BL.key = function (e) {
     if (e.defaultPrevented) return; // a focused block already handled it
     if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel && this.sel.kind === 'block') { e.preventDefault(); this.removeBlock(this.sel.id); }
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel && this.sel.kind === 'group') { e.preventDefault(); this.removeGroup(this.sel.id); }
   };
   // Ctrl+Z (Cmd+Z) undoes, Ctrl+Shift+Z or Ctrl+Y redoes
   BL.shortcut = function (e) {
@@ -1159,20 +1347,28 @@
     if (sel.kind === 'guide') { this.renderGuide(body, sel.type); return; }
     if (sel.kind === 'input') { this.renderProblemSettings(body); return; }
     if (sel.kind === 'output') { this.renderLossSettings(body); return; }
+    if (sel.kind === 'group') { this.renderGroupTab(body, sel.id); return; }
     const b = S.blocks.find((q) => q.id === sel.id);
     if (!b) { body.append(UI.note('That block is gone.')); return; }
-    const set = (fn) => this.edit((s) => fn(s.blocks.find((q) => q.id === b.id)));
-    const i = S.blocks.indexOf(b), sh = (this.check.shapes || [])[i] || {};
+    // a block inside one of your parts: a change to it changes the part, and every copy of it
+    const set = (fn) => this.edit((s) => { const q = s.blocks.find((x) => x.id === b.id); fn(q); if (q.grp) syncPart(s, q); });
+    const i = S.blocks.indexOf(b), sh = (this.check.shapes || [])[i] || {}, run = runOf(S, b), def = run ? defOf(S, run.part) : null;
     const actSel = (v, fn) => UI.select(ACT_ORDER.map((a) => ({ value: a, label: ACTS[a].label })), v, fn);
     body.append(el('div', { class: 'bd-insp-head', style: { '--bk': `var(--${toneOf(b.type)})` } }, el('span', { class: 'bd-card-ico' }, icon(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type)), el('div', null, el('h3', { class: 'bd-insp-title', text: blockName(b) }), el('div', { class: 'sec-note', text: sh.in ? `${NA.bx.shapeText(sh.in)} → ${NA.bx.shapeText(sh.out)} · ${fmtInt(sh.params || 0)} learned numbers` : '' }))));
     if (sh.problem) body.append(el('div', { class: 'diag bd-warn' }, el('p', { class: 'diag-body', text: sh.problem.reason })));
+    if (def) {
+      const copies = runsOf(S).filter((g) => g.part === run.part).length;
+      body.append(el('div', { class: 'bd-inpart' }, el('span', { class: 'bd-card-ico', style: { '--bk': 'var(--ink-2)' } }, icon('part')),
+        el('span', null, `Inside your part ${def.name}: a change here changes ${copies > 1 ? `all ${copies} copies` : 'the part, and any copy you add'}.`),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock({ kind: 'group', id: run.grp }) }, `Select ${def.name}`)));
+    }
     const sec = [];
     if (b.type === 'dense') {
       if (sel.neuron !== undefined && sel.neuron < b.units) {
         const j = sel.neuron, a = b.acts ? b.acts[j] : b.act;
         sec.push(UI.section(`Neuron ${j + 1}`, UI.field('Its activation', actSel(a, (v) => set((q) => { if (!q.acts) q.acts = new Array(q.units).fill(q.act); q.acts[j] = v; if (q.acts.every((x) => x === q.act)) delete q.acts; }))),
           el('div', { class: 'fx' }, el('div', { class: 'fx-line', text: 'z = Σ wᵢ·xᵢ + b   (its weighted sum)' }), el('div', { class: 'fx-line fx-strong', text: `output = ${ACTS[a].label}(z) = ${ACTS[a].formula.replace(/^.*? = /, '')}` })),
-          el('div', { class: 'btn-row' }, el('button', { class: 'btn', type: 'button', onclick: () => this.selectBlock({ kind: 'block', id: b.id }) }, 'Back to the layer'), el('button', { class: 'btn btn-quiet', type: 'button', disabled: b.units <= 1, onclick: () => { this.edit((s) => { const q = s.blocks.find((x) => x.id === b.id); q.units--; if (q.acts) { q.acts.splice(j, 1); if (q.acts.every((x) => x === q.act)) delete q.acts; } }); this.selectBlock({ kind: 'block', id: b.id }); } }, 'Remove this neuron'))));
+          el('div', { class: 'btn-row' }, el('button', { class: 'btn', type: 'button', onclick: () => this.selectBlock({ kind: 'block', id: b.id }) }, 'Back to the layer'), el('button', { class: 'btn btn-quiet', type: 'button', disabled: b.units <= 1, onclick: () => { set((q) => { q.units--; if (q.acts) { q.acts.splice(j, 1); if (q.acts.every((x) => x === q.act)) delete q.acts; } }); this.selectBlock({ kind: 'block', id: b.id }); } }, 'Remove this neuron'))));
       }
       const resOk = residualFits(b, sh);
       sec.push(UI.section('Layer', UI.slider({ label: 'Neurons', min: 1, max: 256, step: 1, value: b.units, format: (v) => String(v), onChange: (v) => set((q) => { q.units = v; if (q.acts) { q.acts = q.acts.slice(0, v); while (q.acts.length < v) q.acts.push(q.act); } }) }),
@@ -1236,16 +1432,88 @@
     if (this.model && this.model.classic && !this.stale && isClassic(b.type)) sec.push(UI.section('Trained so far', UI.note(`${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'} · ${fmtInt(this.model.paramCount)} learned numbers. Zoom into it in the Architecture view to see ${b.type === 'knn' ? 'its neighbours' : b.type === 'linear' ? 'its weights' : 'its trees'}.`)));
     sec.push(UI.section('What it does', UI.note(ABOUT[b.type] || '')));
     if (NA.partGuide) sec.push(NA.partGuide.details(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, { open: false }));
-    sec.push(el('div', { class: 'btn-row bd-block-actions' },
-      el('button', { class: 'btn', type: 'button', disabled: i === 0, title: 'Move this block up (Alt+↑)', onclick: () => this.moveBlock(b.id, i - 1) }, '↑ Move up'),
-      el('button', { class: 'btn', type: 'button', disabled: i === S.blocks.length - 1, title: 'Move this block down (Alt+↓)', onclick: () => this.moveBlock(b.id, i + 2) }, '↓ Move down'),
-      el('button', { class: 'btn', type: 'button', onclick: () => { const c = JSON.parse(JSON.stringify(b)); delete c.id; this.insert(c, i + 1); } }, 'Duplicate'),
-      el('button', { class: 'btn', type: 'button', onclick: () => this.removeBlock(b.id) }, 'Remove')));
+    if (run) {
+      const k = i - run.from, n = run.to - run.from;
+      sec.push(el('div', { class: 'btn-row bd-block-actions' },
+        el('button', { class: 'btn', type: 'button', disabled: k === 0, title: 'Move it up inside the part (Alt+↑)', onclick: () => this.moveBlock(b.id, i - 1) }, '↑ Move up'),
+        el('button', { class: 'btn', type: 'button', disabled: k === n - 1, title: 'Move it down inside the part (Alt+↓)', onclick: () => this.moveBlock(b.id, i + 2) }, '↓ Move down'),
+        el('button', { class: 'btn', type: 'button', title: 'A second one right after it, in every copy', onclick: () => this.edit((s) => editPart(s, run.part, (list, g) => list.splice((g ? g.from : 0) + k + 1, 0, g ? Object.assign({ id: bid() }, cleanSpec(b), { grp: g.grp, part: run.part }) : cleanSpec(b))), { flip: true }) }, 'Duplicate'),
+        el('button', { class: 'btn', type: 'button', onclick: () => this.removeBlock(b.id) }, 'Remove from the part')));
+    } else {
+      sec.push(el('div', { class: 'btn-row bd-block-actions' },
+        el('button', { class: 'btn', type: 'button', disabled: i === 0, title: 'Move this block up (Alt+↑)', onclick: () => this.moveBlock(b.id, i - 1) }, '↑ Move up'),
+        el('button', { class: 'btn', type: 'button', disabled: i === S.blocks.length - 1, title: 'Move this block down (Alt+↓)', onclick: () => this.moveBlock(b.id, i + 2) }, '↓ Move down'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { const c = JSON.parse(JSON.stringify(b)); delete c.id; this.insert(c, i + 1); } }, 'Duplicate'),
+        el('button', { class: 'btn', type: 'button', onclick: () => this.removeBlock(b.id) }, 'Remove')));
+      // box this block, and the ones after it, into a part of your own
+      if (!isClassic(b.type)) {
+        let limit = 0;
+        for (let q = i; q < S.blocks.length && !S.blocks[q].grp && !isClassic(S.blocks[q].type) && limit < 12; q++) limit++;
+        let count = Math.min(2, limit);
+        const nameIn = el('input', { class: 'bd-name', type: 'text', value: `My part ${(S.parts || []).length + 1}`, maxlength: '32', 'aria-label': 'Name of the new part' });
+        sec.push(UI.section('Make it a part of your own', UI.note('Box this block, and the ones after it if you like, into a part with a name. Like a function, you can then add it again and again from the palette (Your parts): each copy has its own weights, and changing a block inside one changes them all.'),
+          UI.field('Blocks to box', UI.select(NA.range(limit).map((q) => ({ value: q + 1, label: q ? `this one and the next ${q}` : 'just this one' })), count, (v) => { count = +v; })),
+          UI.field('Name', nameIn),
+          el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.boxBlocks(i, count, nameIn.value) }, 'Box them'))));
+      }
+    }
     body.append(...sec);
+  };
+  // a copy of one of your parts, selected: its name, what is inside, and its copies
+  BL.renderGroupTab = function (body, grp) {
+    const S = this.setup, run = runsOf(S).find((g) => g.grp === grp), def = run && defOf(S, run.part);
+    if (!run || !def) { body.append(UI.note('That part is gone.')); return; }
+    const chk = this.check || this.recheck(), sh = (chk.shapes || []).slice(run.from, run.to), params = sh.reduce((s, q) => s + ((q && q.params) || 0), 0), copies = runsOf(S).filter((g) => g.part === def.id).length;
+    const nameIn = el('input', { class: 'bd-name', type: 'text', value: def.name, maxlength: '32', 'aria-label': 'Name of the part' });
+    nameIn.addEventListener('change', () => this.renamePart(def.id, nameIn.value));
+    nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') nameIn.blur(); });
+    body.append(el('div', { class: 'bd-insp-head', style: { '--bk': 'var(--ink-2)' } }, el('span', { class: 'bd-card-ico' }, icon('part')), el('div', null, el('h3', { class: 'bd-insp-title', text: def.name }), el('div', { class: 'sec-note', text: `${sh[0] && sh[0].in && sh[sh.length - 1].out ? `${NA.bx.shapeText(sh[0].in)} → ${NA.bx.shapeText(sh[sh.length - 1].out)} · ` : ''}${fmtInt(params)} learned numbers in this copy${copies > 1 ? ` · ${copies} copies in the model` : ''}` }))),
+      UI.section('Your part', UI.note('Blocks boxed together under one name, like a function you can call again: add more copies from the palette (Your parts) or with the button below. Each copy has its own weights, so two copies can learn different things. Changing a block inside changes every copy, the way editing a function changes every call of it.'), UI.field('Name', nameIn)),
+      UI.section('Inside it', el('div', { class: 'bd-gchips bd-gchips-col' }, ...S.blocks.slice(run.from, run.to).map((b, k) => el('button', { class: 'bd-gchip' + (sh[k] && sh[k].problem ? ' is-bad' : ''), type: 'button', style: { '--bk': `var(--${toneOf(b.type)})` }, onclick: () => this.selectBlock({ kind: 'block', id: b.id }) }, el('span', { class: 'bd-card-ico' }, icon(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type)), el('span', { class: 'bd-gchip-name', text: `${k + 1}. ${blockLabel(b)}${sh[k] && sh[k].out ? ` → ${NA.bx.shapeText(sh[k].out)}` : ''}` })))),
+        UI.note(`${Click()} a block to change it. The Architecture view shows the part as one box (a dashed box in the network view) that opens into these blocks, and the Python tab writes it as a class of its own.`)),
+      UI.section('Copies', el('div', { class: 'btn-row' },
+        el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.addCopy(def.id, run.to) }, 'Add another copy'),
+        el('button', { class: 'btn', type: 'button', title: 'Its blocks become ordinary blocks again', onclick: () => this.unboxGroup(grp) }, 'Take this copy apart'),
+        el('button', { class: 'btn', type: 'button', onclick: () => this.removeGroup(grp) }, 'Remove this copy'))),
+      el('div', { class: 'btn-row bd-block-actions' },
+        el('button', { class: 'btn', type: 'button', disabled: run.from === 0, title: 'Move it up (Alt+↑)', onclick: () => this.moveGroup(grp, run.from - 1) }, '↑ Move up'),
+        el('button', { class: 'btn', type: 'button', disabled: run.to === S.blocks.length, title: 'Move it down (Alt+↓)', onclick: () => this.moveGroup(grp, run.to + 1) }, '↓ Move down')));
+  };
+  // the palette's group of your own parts: drag one onto the model, or click it to see it and add it
+  const partProto = (def) => ({ type: 'part:' + def.id, group: 'Your parts', name: def.name, label: def.name, custom: def.id, hint: '', make: () => null });
+  BL.renderMyParts = function () {
+    if (!this.myParts) return;
+    const parts = this.setup.parts || [], key = JSON.stringify(parts.map((p) => [p.id, p.name, p.blocks.map((b) => b.type)]));
+    if (key === this._myKey) return;
+    this._myKey = key;
+    clear(this.myParts);
+    this.myParts.hidden = !parts.length;
+    if (!parts.length) return;
+    const grid = el('div', { class: 'bd-pal-grid' });
+    for (const def of parts) {
+      const proto = partProto(def), tile = el('button', { class: 'bd-part bd-part-mine', type: 'button', title: `${def.name}: ${def.blocks.map(blockLabel).join(' → ')}. Drag it onto the model, or ${click()} it.`, style: { '--bk': 'var(--ink-2)' }, dataset: { type: proto.type } }, el('span', { class: 'bd-part-ico' }, icon('part')), el('span', { class: 'bd-part-name', text: def.name }));
+      tile.addEventListener('pointerdown', (e) => this.pressStart(e, { kind: 'part', part: proto, el: tile }));
+      tile.addEventListener('click', (e) => { if (e.detail === 0) this.showGuide(proto.type); });
+      grid.append(tile);
+    }
+    this.myParts.append(el('div', { class: 'bd-pal-title', text: 'Your parts' }), grid);
   };
   // the guide to a part, with a button that adds it, and one that switches to a problem it suits when this one does not
   const KIND_TEXT = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' };
   BL.renderGuide = function (body, type) {
+    if (String(type).startsWith('part:')) {
+      const def = defOf(this.setup, type.slice(5));
+      if (!def) { body.append(UI.note('That part is gone.')); return; }
+      const copies = runsOf(this.setup).filter((g) => g.part === def.id).length;
+      const nameIn = el('input', { class: 'bd-name', type: 'text', value: def.name, maxlength: '32', 'aria-label': 'Name of the part' });
+      nameIn.addEventListener('change', () => this.renamePart(def.id, nameIn.value));
+      body.append(el('div', { class: 'bd-insp-head', style: { '--bk': 'var(--ink-2)' } }, el('span', { class: 'bd-card-ico' }, icon('part')), el('div', null, el('h3', { class: 'bd-insp-title', text: def.name }), el('div', { class: 'sec-note', text: `your part · ${def.blocks.length} block${def.blocks.length === 1 ? '' : 's'} · ${copies ? `${copies} cop${copies === 1 ? 'y' : 'ies'} in the model` : 'not in the model now'}` }))),
+        UI.section('Inside it', el('div', { class: 'bd-gchips bd-gchips-col' }, ...def.blocks.map((b, k) => el('span', { class: 'bd-gchip', style: { '--bk': `var(--${toneOf(b.type)})` } }, el('span', { class: 'bd-card-ico' }, icon(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type)), el('span', { class: 'bd-gchip-name', text: `${k + 1}. ${blockLabel(b)}` }))))),
+        UI.section('Your part', UI.note('Blocks you boxed together under one name, like a function. Each copy you add has the same blocks and its own weights.'), UI.field('Name', nameIn)),
+        el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.addCopy(def.id) }, 'Add to the model'), el('button', { class: 'btn', type: 'button', onclick: () => this.deletePart(def.id) }, 'Delete this part')),
+        el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock(this.guideFrom || null) }, '← Back')));
+      return;
+    }
     const p = PART[type];
     if (!p || !NA.partGuide) { body.append(UI.note('No guide for this part.')); return; }
     const fits = this.fitsHere(type), g = NA.partGuide.G[type] || {}, tryId = g.try === 'csv' ? 'csv' : g.try, tp = tryId && BT.byId[tryId];
@@ -1501,7 +1769,7 @@
     const S = BC.setup(ch);
     // the drawn points and every other problem's settings stay as they were; Undo brings back the whole setup
     if (S.custom.table) S.custom.table.stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    this.edit((s) => { const keep = { ps: Object.assign({}, s.ps, S.ps), custom: S.custom.table ? Object.assign({}, s.custom, { table: S.custom.table }) : s.custom }; for (const k of Object.keys(s)) delete s[k]; Object.assign(s, S, keep, { blocks: withIds(S.blocks) }); }, { flip: true });
+    this.edit((s) => { const keep = { ps: Object.assign({}, s.ps, S.ps), custom: S.custom.table ? Object.assign({}, s.custom, { table: S.custom.table }) : s.custom, parts: s.parts || [] }; for (const k of Object.keys(s)) delete s[k]; Object.assign(s, S, keep, { blocks: withIds(S.blocks) }); }, { flip: true });
     this.challenge = id; this._hint = null;
     NA.store.set('builderChallenge', id);
     this.seqView = {};
