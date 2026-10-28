@@ -12,8 +12,11 @@
   BT.FAMILIES = {
     plane: { label: 'Classify points', losses: ['xent', 'mse', 'hinge'], metric: 'accuracy', template: 'mlp', icon: '⁘' },
     curve: { label: 'Fit a curve', losses: ['mse', 'mae', 'huber'], metric: 'r2', template: 'mlp', icon: '∿' },
-    digits: { label: 'Read digits', losses: ['xent', 'mse', 'hinge'], metric: 'accuracy', template: 'cnn', icon: '▦' },
-    sequence: { label: 'Sequences', losses: ['xent'], metric: 'tokens', template: 'transformer', icon: '⋯' },
+    surface: { label: 'Fit a surface', losses: ['mse', 'mae', 'huber'], metric: 'r2', template: 'mlp', icon: '◍' },
+    digits: { label: 'Read pictures', losses: ['xent', 'mse', 'hinge'], metric: 'accuracy', template: 'cnn', icon: '▦' },
+    series: { label: 'Forecast a series', losses: ['mse', 'mae', 'huber'], metric: 'r2', template: 'lstm', icon: '〰' },
+    seqclass: { label: 'Classify sequences', losses: ['xent', 'mse', 'hinge'], metric: 'accuracy', template: 'lstmclass', icon: '⋯' },
+    sequence: { label: 'Write sequences', losses: ['xent'], metric: 'tokens', template: 'transformer', icon: '⋯' },
     // a table of your own: classes or a value, depending on the column it predicts (BT.lossesFor gives the losses)
     table: { label: 'Your data', losses: ['xent', 'mse', 'hinge', 'mae', 'huber'], metric: 'auto', template: 'mlp', icon: '▤' },
   };
@@ -30,7 +33,20 @@
     { id: 'bumps', family: 'curve', dataset: 'bumps', label: 'Bumps', hint: 'Narrow, local features.' },
     { id: 'step', family: 'curve', dataset: 'step', label: 'Step', hint: 'A jump: hard for smooth functions.' },
     { id: 'formula', family: 'curve', custom: true, label: 'Your own function', hint: 'Type any formula in x, for example sin(5x) + x^2.' },
+    { id: 'hill', family: 'surface', task: 'hill', label: 'Two hills', hint: 'A hill and a hollow on a plane: a smooth height to learn from (x, y).' },
+    { id: 'ripples', family: 'surface', task: 'ripples', label: 'Ripples', hint: 'Rings spreading from the middle, like a pebble dropped in a pond.' },
+    { id: 'saddle', family: 'surface', task: 'saddle', label: 'Saddle', hint: 'Up one way, down the other: x² − y².' },
+    { id: 'checker', family: 'surface', task: 'checker', label: 'Checkerboard', hint: 'A smooth checkerboard of highs and lows: many bends in both directions.' },
     { id: 'digits', family: 'digits', label: 'Handwritten digits', hint: '14 × 14 pictures of the digits 0 to 9, drawn with random strokes.' },
+    { id: 'shapes', family: 'digits', task: 'shapes', label: 'Shapes', hint: 'Circles, squares, triangles, crosses and lines, drawn anywhere at any size and angle: what convolutions are for.' },
+    { id: 'waves', family: 'series', task: 'waves', label: 'Two waves', hint: 'Two sine waves added up: predict the next value from the last few.' },
+    { id: 'seasonal', family: 'series', task: 'seasonal', label: 'Seasons and trend', hint: 'A slow rise, a repeating season and noise, like a shop’s sales.' },
+    { id: 'square', family: 'series', task: 'square', label: 'Square wave', hint: 'Flat stretches and sudden jumps: the model has to know when the next jump comes.' },
+    { id: 'chaos', family: 'series', task: 'chaos', label: 'Chaos', hint: 'The logistic map, x → 3.9·x(1 − x): completely determined, yet it never repeats. The next value is a simple curve of the last one.' },
+    { id: 'sentiment', family: 'seqclass', task: 'sentiment', label: 'Tiny reviews', hint: 'Short reviews with good and bad words; “not” flips a word and after “but” the second part decides. Word order matters.' },
+    { id: 'majority', family: 'seqclass', task: 'majority', label: 'Majority vote', hint: 'More 1s or more 0s? Counting is enough: order does not matter.' },
+    { id: 'pattern', family: 'seqclass', task: 'pattern', label: 'Find a pattern', hint: 'Is there a 3 followed straight away by a 7? Only the order of neighbours tells.' },
+    { id: 'parity', family: 'seqclass', task: 'parity', label: 'Parity', hint: 'An odd or even number of 1s? Flipping any one bit changes the answer: famously hard to learn.' },
     { id: 'reverse', family: 'sequence', task: 'reverse', label: 'Reverse a sequence', hint: '3 1 4 → 4 1 3. Each answer digit must look back at a different input position.' },
     { id: 'sort', family: 'sequence', task: 'sort', label: 'Sort digits', hint: '3 1 4 → 1 3 4. Needs to compare all the inputs.' },
     { id: 'copy', family: 'sequence', task: 'copy', label: 'Copy a sequence', hint: '3 1 4 → 3 1 4. The easiest look-back task.' },
@@ -39,6 +55,8 @@
     { id: 'csv', family: 'table', custom: true, label: 'Your table (CSV)', hint: 'A table of numbers from a CSV file, or a sample: the model learns to predict one column from the others.' },
   ];
   BT.byId = Object.fromEntries(BT.PROBLEMS.map((p) => [p.id, p]));
+  // the kinds of data whose answer is a number, scored by R² (a table that predicts a number makes curve-like data)
+  BT.isValue = (family) => family === 'curve' || family === 'surface' || family === 'series';
   BT.CLASS_COLOURS = ['s1', 's2', 's4', 's7'];
 
   // problem settings with their defaults (the inspector shows the ones that apply)
@@ -46,7 +64,10 @@
     const f = p.family;
     if (f === 'plane') return { noise: p.id === 'xor' || p.id === 'blobs' ? 0.1 : 0.15, n: 600 };
     if (f === 'curve') return { noise: 0.05, n: 200, formula: 'sin(5x) + x^2' };
-    if (f === 'digits') return { n: 2000 };
+    if (f === 'digits') return { n: p.task === 'shapes' ? 1500 : 2000 };
+    if (f === 'surface') return { noise: 0.02, n: 800 };
+    if (f === 'series') return { window: 16, n: 1200, noise: p.task === 'chaos' ? 0 : 0.04 };
+    if (f === 'seqclass') return { n: p.task === 'sentiment' ? 2500 : 2000, embed: 16 };
     if (f === 'table') return { target: -1, kind: 'auto' };
     if (p.task === 'language') return { n: 1500, embed: 32 };
     if (p.task === 'sentences') return { window: 8, embed: 32, text: SAMPLE_TEXT };
@@ -60,6 +81,8 @@
     if (p.family === 'sequence') return { lr: 0.003, batch: p.task === 'language' ? 16 : 32, steps: p.task === 'language' ? 3000 : p.task === 'sentences' ? 1500 : 1000, clip: 1 };
     if (p.family === 'digits') return { lr: 0.003, batch: 32, steps: 1500, clip: 0 };
     if (p.family === 'table') return { lr: 0.01, batch: 32, steps: 2000, clip: 0 };
+    if (p.family === 'series') return { lr: 0.003, batch: 32, steps: 2000, clip: 1 };
+    if (p.family === 'seqclass') return { lr: 0.003, batch: 32, steps: 1500, clip: 1 };
     return { lr: 0.01, batch: 32, steps: 3000, clip: 0 };
   };
 
@@ -67,22 +90,41 @@
   const D = (units, act = 'relu') => ({ type: 'dense', units, act });
   BT.TEMPLATES = [
     { id: 'empty', label: 'Empty', hint: 'Just the embedding and the output: build the rest yourself.', families: ['sequence'], blocks: () => [] },
-    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [] },
-    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(16), D(16)] },
-    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
-    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'digits', 'table'], blocks: () => [D(64)] },
+    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [] },
+    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [D(16), D(16)] },
+    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
+    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [D(64)] },
     { id: 'cnn', label: 'Small CNN', hint: 'Two convolution + pooling stages, then a dense layer.', families: ['digits'], blocks: () => [{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'conv', filters: 16, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'flatten' }, D(32)] },
     { id: 'transformer', label: 'Tiny transformer', hint: 'Two transformer blocks with two attention heads each.', families: ['sequence'], blocks: () => [{ type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'layernorm' }] },
     { id: 'attention', label: 'One attention layer', hint: 'A single attention layer and an MLP, the smallest model that can look back.', families: ['sequence'], blocks: () => [{ type: 'attention', heads: 1, causal: true, residual: true }, { type: 'dense', units: 32, act: 'relu', residual: false }] },
     { id: 'noattn', label: 'No attention', hint: 'An MLP applied to each position alone: it cannot look at other positions, so reversing fails.', families: ['sequence'], blocks: () => [D(64), D(32)] },
+    { id: 'fourier', label: 'Fourier MLP', hint: 'Sine and cosine features of the input, then two layers: sharp, wiggly functions come easily.', families: ['curve', 'surface'], blocks: () => [{ type: 'fourier', features: 32, scale: 2 }, D(32), D(32)] },
+    { id: 'lstm', label: 'LSTM', hint: 'A recurrent LSTM reads the window one step at a time, then its last state predicts.', families: ['series'], blocks: () => [{ type: 'rnn', cell: 'lstm', units: 24 }, { type: 'seqpool', mode: 'last' }] },
+    { id: 'gru', label: 'GRU', hint: 'A GRU: like an LSTM with two gates instead of three, and no separate memory.', families: ['series'], blocks: () => [{ type: 'rnn', cell: 'gru', units: 24 }, { type: 'seqpool', mode: 'last' }] },
+    { id: 'tcn', label: '1-D CNN', hint: 'Causal 1-D convolutions with growing dilation, like WaveNet: each layer sees twice as far back.', families: ['series'], blocks: () => [{ type: 'conv1d', filters: 16, k: 3, dilation: 1, causal: true, act: 'relu' }, { type: 'conv1d', filters: 16, k: 3, dilation: 2, causal: true, act: 'relu' }, { type: 'conv1d', filters: 16, k: 3, dilation: 4, causal: true, act: 'relu' }, { type: 'seqpool', mode: 'last' }] },
+    { id: 'seqformer', label: 'Transformer', hint: 'Each value lifted to 16 numbers, positions added, then a transformer block: attention across the whole window.', families: ['series'], blocks: () => [D(16, 'linear'), { type: 'position', mode: 'learned' }, { type: 'transformer', heads: 2, mlp: 2, causal: false }, { type: 'seqpool', mode: 'last' }] },
+    { id: 'bag', label: 'Bag of words', hint: 'Averages the word vectors and decides from that: fast, but blind to word order.', families: ['seqclass'], blocks: () => [{ type: 'gap' }, D(16)] },
+    { id: 'lstmclass', label: 'LSTM', hint: 'An LSTM reads the sequence word by word; its last state decides.', families: ['seqclass'], blocks: () => [{ type: 'rnn', cell: 'lstm', units: 32 }, { type: 'seqpool', mode: 'last' }] },
+    { id: 'convclass', label: '1-D CNN', hint: 'Filters slide along the sequence and look for short patterns; the strongest match anywhere decides.', families: ['seqclass'], blocks: () => [{ type: 'conv1d', filters: 32, k: 3, dilation: 1, causal: false, act: 'relu' }, { type: 'seqpool', mode: 'max' }] },
+    { id: 'attnclass', label: 'Transformer', hint: 'A transformer block over the whole sequence, then the average.', families: ['seqclass'], blocks: () => [{ type: 'transformer', heads: 2, mlp: 2, causal: false }, { type: 'gap' }] },
+    { id: 'vit', label: 'Vision transformer', hint: 'The picture cut into 2 × 2 patches, each a token, and a transformer over them: the CNN-free way to see.', families: ['digits'], blocks: () => [{ type: 'patches', size: 2, dim: 32 }, { type: 'transformer', heads: 2, mlp: 2, causal: false }, { type: 'gap' }] },
+    { id: 'hybrid', label: 'CNN + transformer', hint: 'A convolution finds strokes, then the feature map becomes patches for attention: a hybrid.', families: ['digits'], blocks: () => [{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'patches', size: 1, dim: 32 }, { type: 'transformer', heads: 2, mlp: 2, causal: false }, { type: 'gap' }] },
+    { id: 'c-linear', label: 'Linear / logistic regression', hint: 'The classic: one weight per input. Least squares for numbers (solved in one step), logistic regression for classes.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'linear', lambda: 0 }] },
+    { id: 'c-knn', label: 'k-nearest neighbours', hint: 'No training at all: each answer is a vote of the k most similar training examples.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'knn', k: 5, weights: 'uniform' }] },
+    { id: 'c-tree', label: 'Decision tree', hint: 'A flowchart of yes-or-no questions about the inputs, learned one level at a time.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'tree', depth: 6, minLeaf: 2 }] },
+    { id: 'c-forest', label: 'Random forest', hint: 'Many deep trees, each on a random sample of the data and of the inputs, voting together.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'forest', trees: 50, depth: 8, features: 'sqrt', minLeaf: 1 }] },
+    { id: 'c-boost', label: 'Gradient boosting (XGBoost)', hint: 'Small trees added one after another, each fixing what the others still get wrong: the winner on tables.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'boost', rounds: 100, eta: 0.3, depth: 4, lambda: 1, gamma: 0, subsample: 1, colsample: 1 }] },
   ];
   BT.templatesFor = (family) => BT.TEMPLATES.filter((t) => t.families.includes(family));
   // the losses that suit a problem; a table's depend on whether its data is classes or a value
   BT.lossesFor = (p, d) => (p.family !== 'table' ? BT.FAMILIES[p.family].losses : d && d.output && d.output.kind === 'value' ? ['mse', 'mae', 'huber'] : ['xent', 'mse', 'hinge']);
-  // a template's blocks for a kind of data: dense layers need a flat vector, so on pictures the layer-based templates start with a Flatten
+  // a template's blocks for a kind of data: dense layers need a flat vector, so on pictures and series the plain
+  // layer templates start with a Flatten (classic models read the rows of numbers as they are)
+  const FLAT_TEMPLATES = new Set(['linear', 'mlp', 'deep', 'wide']);
   BT.templateBlocks = (t, family) => {
     const blocks = t.blocks();
-    if (family === 'digits' && (!blocks.length || blocks[0].type === 'dense')) blocks.unshift({ type: 'flatten' });
+    // a window of a series read as one row of numbers, like the pixels of a picture (classic models read rows anyway)
+    if ((family === 'digits' || family === 'series') && FLAT_TEMPLATES.has(t.id)) blocks.unshift({ type: 'flatten' });
     return blocks;
   };
 
@@ -203,6 +245,128 @@
     } },
   };
 
+  // ------------------------------------------------------------------ series to forecast
+  /* A long series of numbers; each example is a window of the last W values and the target is the next one. The
+     first 80% of the windows train and the rest (later in time) validate, as an honest forecast would be judged. */
+  const SERIES = {
+    waves: (t) => Math.sin((2 * Math.PI * t) / 25) + 0.5 * Math.sin((2 * Math.PI * t) / 9.3 + 1),
+    seasonal: (t) => 0.0015 * t + 0.6 * Math.sin((2 * Math.PI * t) / 24) + 0.3 * Math.sin((2 * Math.PI * t) / 7 + 0.5),
+    square: (t) => (Math.sin((2 * Math.PI * t) / 30) >= 0 ? 0.8 : -0.8),
+  };
+  function seriesData(p, s, seed) {
+    const rng = new NA.RNG(seed * 17 + 3), N = s.n, W = s.window, v = new Float64Array(N);
+    if (p.task === 'chaos') { let x = 0.31 + 0.02 * rng.next(); for (let t = 0; t < N; t++) { v[t] = 2 * x - 1; x = 3.9 * x * (1 - x); } }
+    else for (let t = 0; t < N; t++) v[t] = SERIES[p.task](t);
+    for (let t = 0; t < N; t++) v[t] += s.noise * rng.gauss();
+    let m = 0; for (let t = 0; t < N; t++) m += v[t] / N;
+    let top = 1e-9; for (let t = 0; t < N; t++) top = Math.max(top, Math.abs(v[t] - m));
+    for (let t = 0; t < N; t++) v[t] = (v[t] - m) / top;
+    const nWin = N - W, nTr = Math.round(nWin * 0.8), nVa = nWin - nTr, X = new Float32Array(nWin * W), Y = new Float32Array(nWin);
+    for (let i = 0; i < nWin; i++) { for (let j = 0; j < W; j++) X[i * W + j] = v[i + j]; Y[i] = v[i + W]; }
+    return { family: 'series', task: p.task, input: { kind: 'series', len: W, dim: 1 }, output: { kind: 'value', k: 1 }, series: Float32Array.from(v), window: W, splitAt: W + nTr,
+      Xtr: X.slice(0, nTr * W), Ytr: Y.slice(0, nTr), nTr, Xva: X.slice(nTr * W), Yva: Y.slice(nTr), nVa, inOrder: true };
+  }
+
+  // ------------------------------------------------------------------ sequences to classify
+  const REVIEW = {
+    nouns: ['food', 'movie', 'service', 'room', 'music', 'staff'], good: ['good', 'great', 'lovely', 'fine', 'fun'], bad: ['bad', 'awful', 'boring', 'terrible', 'rude'], adv: ['really', 'very', 'quite'],
+  };
+  const REVIEW_VOCAB = ['·', 'the', 'was', 'is', 'not', 'but', 'and', '.', ...REVIEW.nouns, ...REVIEW.good, ...REVIEW.bad, ...REVIEW.adv];
+  /* Tiny reviews: "the food was not bad", "the room was great but the staff was rude". A clause's adjective decides it,
+     "not" flips it, and after "but" the second clause decides the review: bag-of-words models cannot tell. */
+  function review(rng) {
+    const clause = () => {
+      const pos = rng.next() < 0.5, neg = rng.next() < 0.4, w = ['the', REVIEW.nouns[rng.int(REVIEW.nouns.length)], rng.next() < 0.5 ? 'was' : 'is'];
+      if (neg) w.push('not');
+      if (rng.next() < 0.3) w.push(REVIEW.adv[rng.int(REVIEW.adv.length)]);
+      w.push(pos ? REVIEW.good[rng.int(REVIEW.good.length)] : REVIEW.bad[rng.int(REVIEW.bad.length)]);
+      return { w, label: pos !== neg ? 1 : 0 };
+    };
+    const a = clause();
+    if (rng.next() < 0.7) { const b = clause(), but = rng.next() < 0.85; return { words: [...a.w, but ? 'but' : 'and', ...b.w, '.'], label: but ? b.label : a.label === b.label ? a.label : -1 }; }
+    return { words: [...a.w, '.'], label: a.label };
+  }
+  const SEQ_TASKS = {
+    sentiment: { len: 15, vocab: REVIEW_VOCAB, classes: ['negative', 'positive'] },
+    majority: { len: 11, vocab: ['0', '1'], classes: ['more 0s', 'more 1s'] },
+    pattern: { len: 8, vocab: [...'0123456789'], classes: ['no 3 7', 'has 3 7'] },
+    parity: { len: 10, vocab: ['0', '1'], classes: ['even', 'odd'] },
+  };
+  function seqClassData(p, s, seed) {
+    const def = SEQ_TASKS[p.task], T = def.len, rng = new NA.RNG(seed * 23 + 11), id = Object.fromEntries(def.vocab.map((w, i) => [w, i])), rows = [], seen = new Set();
+    let guard = 0;
+    while (rows.length < s.n && guard++ < s.n * 30) {
+      let ids, label;
+      if (p.task === 'sentiment') {
+        const r = review(rng);
+        if (r.label < 0 || r.words.length > T) continue;
+        ids = r.words.map((w) => id[w]); while (ids.length < T) ids.push(0); label = r.label;
+      } else if (p.task === 'majority') { ids = NA.range(T).map(() => rng.int(2)); label = ids.reduce((a, b) => a + b, 0) * 2 > T ? 1 : 0; }
+      else if (p.task === 'parity') { ids = NA.range(T).map(() => rng.int(2)); label = ids.reduce((a, b) => a + b, 0) % 2; }
+      else {
+        // half the sequences get "3 7" planted somewhere; a 3 followed by a 7 anywhere counts
+        ids = NA.range(T).map(() => rng.int(10));
+        if (rng.next() < 0.5) { const at = rng.int(T - 1); ids[at] = 3; ids[at + 1] = 7; }
+        label = ids.some((v, i) => v === 3 && ids[i + 1] === 7) ? 1 : 0;
+      }
+      const key = ids.join(',');
+      if (p.task !== 'sentiment' && seen.has(key)) continue;
+      seen.add(key); rows.push({ ids, label });
+    }
+    const n = rows.length, nVa = Math.max(40, Math.round(n * 0.2)), nTr = n - nVa, X = new Int32Array(n * T), Y = new Int32Array(n);
+    rows.forEach((r, i) => { X.set(r.ids, i * T); Y[i] = r.label; });
+    return { family: 'seqclass', task: p.task, input: { kind: 'tokens', vocab: def.vocab.length, len: T, embed: s.embed }, output: { kind: 'classes', k: def.classes.length },
+      vocab: def.vocab, names: def.classes, classes: def.classes.length, pad: p.task === 'sentiment' ? 0 : -1,
+      Xtr: X.slice(0, nTr * T), Ytr: Y.slice(0, nTr), nTr, Xva: X.slice(nTr * T), Yva: Y.slice(nTr), nVa };
+  }
+
+  // ------------------------------------------------------------------ surfaces to fit
+  const SURFACES = {
+    hill: (x, y) => Math.exp(-((x - 0.35) ** 2 + (y - 0.3) ** 2) / 0.08) - 0.8 * Math.exp(-((x + 0.4) ** 2 + (y + 0.35) ** 2) / 0.12),
+    ripples: (x, y) => { const r = Math.hypot(x, y); return Math.cos(9 * r) * Math.exp(-1.5 * r); },
+    saddle: (x, y) => x * x - y * y,
+    checker: (x, y) => Math.sin(4.5 * x) * Math.sin(4.5 * y),
+  };
+  BT.SURFACES = SURFACES;
+  function surfaceData(p, s, seed) {
+    const rng = new NA.RNG(seed * 29 + 5), n = s.n, f = SURFACES[p.task], X = new Float32Array(n * 2), Y = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = rng.uniform(-1, 1), y = rng.uniform(-1, 1); X[2 * i] = x; X[2 * i + 1] = y; Y[i] = f(x, y) + s.noise * rng.gauss(); }
+    const [tr, va] = split(n, rng, 0.8);
+    return { family: 'surface', task: p.task, input: { kind: 'vector', dim: 2 }, output: { kind: 'value', k: 1 }, truth: f,
+      Xtr: gather(X, 2, tr, Float32Array), Ytr: Float32Array.from(tr.map((k) => Y[k])), nTr: tr.length, Xva: gather(X, 2, va, Float32Array), Yva: Float32Array.from(va.map((k) => Y[k])), nVa: va.length };
+  }
+
+  // ------------------------------------------------------------------ shapes to recognise
+  /* 14 × 14 pictures of five shapes drawn as strokes, anywhere, at any size and angle: circle, square, triangle,
+     cross and line. Ink is 1 near the outline and fades over a pixel, like the digits. */
+  BT.SHAPES = ['circle', 'square', 'triangle', 'cross', 'line'];
+  function segDist(px, py, ax, ay, bx, by) {
+    const vx = bx - ax, vy = by - ay, t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy || 1)));
+    return Math.hypot(px - ax - t * vx, py - ay - t * vy);
+  }
+  function shapeData(s, seed) {
+    const rng = new NA.RNG(seed * 41 + 9), n = s.n, G = 14, P = G * G, X = new Float32Array(n * P), Y = new Int32Array(n);
+    for (let e = 0; e < n; e++) {
+      const k = e % 5, r = rng.uniform(3, 5.2), cx = rng.uniform(r + 0.5, G - r - 1.5), cy = rng.uniform(r + 0.5, G - r - 1.5), a = rng.uniform(0, Math.PI), w = rng.uniform(0.55, 0.95);
+      const pt = (ang, rad) => [cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)];
+      let segs = null;
+      if (k === 1) segs = [0, 1, 2, 3].map((q) => [...pt(a + (q * Math.PI) / 2, r), ...pt(a + ((q + 1) * Math.PI) / 2, r)]);
+      else if (k === 2) segs = [0, 1, 2].map((q) => [...pt(a + (q * 2 * Math.PI) / 3, r), ...pt(a + ((q + 1) * 2 * Math.PI) / 3, r)]);
+      else if (k === 3) segs = [[...pt(a, r), ...pt(a + Math.PI, r)], [...pt(a + Math.PI / 2, r), ...pt(a + 1.5 * Math.PI, r)]];
+      else if (k === 4) segs = [[...pt(a, r), ...pt(a + Math.PI, r)]];
+      for (let p = 0; p < P; p++) {
+        const px = (p % G) + 0.5, py = Math.floor(p / G) + 0.5;
+        const d = segs ? Math.min(...segs.map((q) => segDist(px, py, q[0], q[1], q[2], q[3]))) : Math.abs(Math.hypot(px - cx, py - cy) - r);
+        X[e * P + p] = Math.max(0, Math.min(1, 1 - (d - w / 2))) + 0.04 * rng.gauss();
+      }
+      Y[e] = k;
+    }
+    const order = NA.range(n); rng.shuffle(order);
+    const nTr = Math.round(n * 0.8), tr = order.slice(0, nTr), va = order.slice(nTr);
+    return { family: 'digits', task: 'shapes', input: { kind: 'image', c: 1, h: G, w: G }, output: { kind: 'classes', k: 5 }, classes: 5, names: BT.SHAPES.slice(),
+      Xtr: gather(X, P, tr, Float32Array), Ytr: Int32Array.from(tr.map((i) => Y[i])), nTr, Xva: gather(X, P, va, Float32Array), Yva: Int32Array.from(va.map((i) => Y[i])), nVa: va.length };
+  }
+
   // ------------------------------------------------------------------ making data
   /* Returns { family, input, output, Xtr, Ytr, nTr, Xva, Yva, nVa, classes, names, vocab, ... }: inputs as
      Float32Array (vectors, images) or Int32Array (tokens), targets as Int32Array (classes, tokens; −1 = no
@@ -211,7 +375,10 @@
     const fam = p.family;
     if (fam === 'plane') return p.custom ? drawnPoints(custom.points || [], seed) : planeData(p, s, seed);
     if (fam === 'curve') return curveData(p, s, seed);
-    if (fam === 'digits') return digitData(s, seed);
+    if (fam === 'digits') return p.task === 'shapes' ? shapeData(s, seed) : digitData(s, seed);
+    if (fam === 'series') return seriesData(p, s, seed);
+    if (fam === 'seqclass') return seqClassData(p, s, seed);
+    if (fam === 'surface') return surfaceData(p, s, seed);
     if (fam === 'table') return tableData(custom.table, s, seed);
     if (p.task === 'language') return languageData(s, seed);
     if (p.task === 'sentences') return sentenceData(s, seed);

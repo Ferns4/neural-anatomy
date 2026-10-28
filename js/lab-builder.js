@@ -10,31 +10,62 @@
   const ACTS = NA.engine.ACTIVATIONS, ACT_ORDER = NA.engine.ACTIVATION_ORDER;
 
   // ------------------------------------------------------------------ the parts
-  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6' };
+  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6', 'Classic ML': 's5' };
   const PARTS = [
     { type: 'dense', group: 'Layers', label: 'Dense', name: 'Dense layer', make: () => ({ type: 'dense', units: 16, act: 'relu' }),
       hint: 'Neurons that each weigh every input, add a bias and bend the sum with an activation.' },
     { type: 'neuron', group: 'Layers', label: 'Neuron', name: 'Neuron', make: () => ({ type: 'dense', units: 1, act: 'relu' }),
       hint: 'Drop it on a dense layer to add one neuron, or between blocks for a layer of one.' },
+    { type: 'gated', group: 'Layers', label: 'Gated', name: 'Gated layer (GLU)', make: () => ({ type: 'gated', units: 16, gate: 'swish' }),
+      hint: 'Two projections, one gating the other: the SwiGLU layer inside many large language models.' },
     { type: 'activation', group: 'Layers', label: 'Activation', name: 'Activation', make: () => ({ type: 'activation', act: 'tanh' }),
       hint: 'Bends every number with one function (ReLU, tanh, …).' },
     { type: 'dropout', group: 'Layers', label: 'Dropout', name: 'Dropout', make: () => ({ type: 'dropout', p: 0.2 }),
       hint: 'Randomly switches off some numbers while training, against overfitting.' },
+    { type: 'noise', group: 'Layers', label: 'Noise', name: 'Gaussian noise', make: () => ({ type: 'noise', sigma: 0.1 }),
+      hint: 'Jitters every number a little while training, so the model cannot rely on exact values.' },
     { type: 'layernorm', group: 'Layers', label: 'LayerNorm', name: 'Layer norm', make: () => ({ type: 'layernorm' }),
       hint: 'Rescales each example to mean 0 and spread 1: keeps deep models stable.' },
+    { type: 'batchnorm', group: 'Layers', label: 'BatchNorm', name: 'Batch norm', make: () => ({ type: 'batchnorm' }),
+      hint: 'Rescales each feature over the batch to mean 0 and spread 1: the trick that made deep CNNs trainable.' },
+    { type: 'fourier', group: 'Layers', label: 'Fourier', name: 'Fourier features', make: () => ({ type: 'fourier', features: 16, scale: 1 }),
+      hint: 'Adds sines and cosines of the inputs at random frequencies: sharp, wiggly functions become easy.' },
     { type: 'attention', group: 'Sequences', label: 'Attention', name: 'Self-attention', make: () => ({ type: 'attention', heads: 2, causal: true, residual: true }),
       hint: 'Lets every position look at the others. Needs a sequence.' },
     { type: 'transformer', group: 'Sequences', label: 'Transformer', name: 'Transformer block', make: () => ({ type: 'transformer', heads: 2, mlp: 4, causal: true }),
       hint: 'Attention and an MLP, each with layer norm and a residual: the block GPT is made of.' },
+    { type: 'rnn', group: 'Sequences', label: 'LSTM · GRU', name: 'Recurrent layer', make: () => ({ type: 'rnn', cell: 'lstm', units: 32 }),
+      hint: 'Reads the sequence one step at a time and carries a memory along: LSTM, GRU or a plain RNN.' },
+    { type: 'conv1d', group: 'Sequences', label: 'Conv 1-D', name: '1-D convolution', make: () => ({ type: 'conv1d', filters: 16, k: 3, dilation: 1, causal: false, act: 'relu', residual: false }),
+      hint: 'Filters slid along the sequence, each looking for a short pattern of neighbours.' },
+    { type: 'position', group: 'Sequences', label: 'Positions', name: 'Positions', make: () => ({ type: 'position', mode: 'learned' }),
+      hint: 'Adds a vector for each position, so attention can tell first from last.' },
+    { type: 'seqpool', group: 'Sequences', label: 'Seq. pool', name: 'Sequence pool', make: () => ({ type: 'seqpool', mode: 'last' }),
+      hint: 'Turns a sequence into one vector: its last step, its largest values or the average.' },
     { type: 'conv', group: 'Images', label: 'Conv', name: 'Convolution', make: () => ({ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }),
       hint: 'Small learned filters slid over an image: each finds one local pattern.' },
     { type: 'pool', group: 'Images', label: 'Max pool', name: 'Max pool', make: () => ({ type: 'pool', size: 2 }),
       hint: 'Keeps the largest value of each 2 × 2 patch: halves the picture.' },
+    { type: 'avgpool', group: 'Images', label: 'Avg pool', name: 'Average pool', make: () => ({ type: 'avgpool', size: 2 }),
+      hint: 'Averages each 2 × 2 patch: halves the picture, smoothly.' },
+    { type: 'patches', group: 'Images', label: 'Patches', name: 'Patches', make: () => ({ type: 'patches', size: 2, dim: 32 }),
+      hint: 'Cuts the picture into small squares and turns each into a token: how a vision transformer sees.' },
     { type: 'flatten', group: 'Reshape', label: 'Flatten', name: 'Flatten', make: () => ({ type: 'flatten' }),
       hint: 'Lines all the numbers up into one vector, for dense layers.' },
     { type: 'gap', group: 'Reshape', label: 'Global pool', name: 'Global average pool', make: () => ({ type: 'gap' }),
       hint: 'Averages each channel over every position: one vector, whatever the size.' },
+    { type: 'linear', group: 'Classic ML', label: 'Linear model', name: 'Linear model', make: () => ({ type: 'linear', lambda: 0 }), classic: true,
+      hint: 'Linear regression for numbers, logistic regression for classes: one weight per input, the classic baseline.' },
+    { type: 'knn', group: 'Classic ML', label: 'k-NN', name: 'k-nearest neighbours', make: () => ({ type: 'knn', k: 5, weights: 'uniform' }), classic: true,
+      hint: 'No training: each answer is a vote of the k most similar training examples.' },
+    { type: 'tree', group: 'Classic ML', label: 'Tree', name: 'Decision tree', make: () => ({ type: 'tree', depth: 6, minLeaf: 2 }), classic: true,
+      hint: 'A flowchart of yes-or-no questions about the inputs, grown one level at a time.' },
+    { type: 'forest', group: 'Classic ML', label: 'Forest', name: 'Random forest', make: () => ({ type: 'forest', trees: 50, depth: 8, features: 'sqrt', minLeaf: 1 }), classic: true,
+      hint: 'Many deep trees on random samples of the data and the inputs, voting together.' },
+    { type: 'boost', group: 'Classic ML', label: 'Boosting', name: 'Gradient boosting (XGBoost)', make: () => ({ type: 'boost', rounds: 100, eta: 0.3, depth: 4, lambda: 1, gamma: 0, subsample: 1, colsample: 1 }), classic: true,
+      hint: 'Small trees added one after another, each fixing what the rest still get wrong: the favourite for tables.' },
   ];
+  const isClassic = (type) => !!(PART[type] && PART[type].classic);
   const PART = Object.fromEntries(PARTS.map((p) => [p.type, p]));
   const toneOf = (t) => (t === 'input' ? 's3' : t === 'output' ? 's2' : GROUP_TONE[(PART[t] || PART.dense).group]);
   // what each block does, for the inspector
@@ -49,6 +80,21 @@
     pool: 'Keeps the largest value in each patch. The picture shrinks (and later filters see a wider area), and small shifts of a feature stop mattering.',
     flatten: 'Lines up all the numbers of an image or a sequence into one long vector, so dense layers (and the output) can use them. It keeps every number but forgets which were neighbours.',
     gap: 'Averages each channel over every position, so a whole image or sequence becomes one short vector. Unlike flatten, it works for any size and has no position information left.',
+    gated: 'Two projections of the same input: one carries the values, the other (bent by a gate function) decides how much of each value passes. Gating lets the layer switch features on and off per example.',
+    noise: 'While training, adds a small random jitter to every number. The model learns to ignore tiny differences, which smooths what it learns. Nothing happens when the model is used.',
+    batchnorm: 'Rescales each feature to mean 0 and spread 1 using the statistics of the current batch, then applies a learned scale and shift. Training gets faster and steadier; when the model is used, averages from training replace the batch statistics.',
+    fourier: 'Keeps the inputs and adds sines and cosines of them at random fixed frequencies. A network that has these can build sharp, wiggly shapes directly, instead of bending many neurons into them.',
+    rnn: 'Reads a sequence one step at a time, updating a hidden state that carries what it has seen so far. An LSTM adds gates and a separate memory cell so information can last many steps; a GRU does the same with fewer gates.',
+    conv1d: 'Slides small learned filters along the sequence. Each output position mixes a window of neighbouring positions, so the layer finds short local patterns wherever they occur. Causal windows only look back; dilation spreads the window out.',
+    position: 'Attention treats a sequence as an unordered set. Adding a different vector at each position (learned, or fixed sine waves) lets the next layers tell positions apart.',
+    seqpool: 'Squeezes a sequence into one vector for a class or value output: the last step (what a recurrent layer has gathered), the largest value of each feature (did a pattern appear anywhere?) or the average.',
+    avgpool: 'Averages each small patch of the picture, halving its size. Gentler than max pooling: every pixel counts a little.',
+    patches: 'Cuts the picture into small squares, flattens each, and maps it to a vector with a learned position: the picture becomes a sequence of tokens that attention can work on. This is how a vision transformer starts.',
+    linear: 'The classic baseline. For numbers it is least-squares linear regression, solved exactly in one step; for classes it is logistic regression, trained by gradient steps. One weight per input: it can only draw straight boundaries and flat surfaces.',
+    knn: 'Remembers every training example. To answer, it finds the k most similar examples (smallest distance) and lets them vote, or averages their values. There is no training at all, and it can fit any shape, given enough data.',
+    tree: 'Learns a flowchart of yes-or-no questions such as "is x₁ ≤ 0.3?", choosing at each step the question that best separates the answers. Its boundaries are made of straight, axis-aligned steps.',
+    forest: 'Grows many deep trees, each on a random resample of the data and choosing among a random few inputs at each question, then averages their votes. One tree overfits; the average of many different ones is steady.',
+    boost: 'Adds small trees one at a time, each trained on what the trees so far still get wrong (the gradient of the loss). Shrinkage (η) and penalties (λ, γ) keep each tree modest. This is how XGBoost and LightGBM work, and why they win on tables.',
   };
 
   // small line icons (24 × 24), drawn with the current text colour
@@ -66,6 +112,21 @@
     pool: ['M4 4h16v16H4z', 'M12 4v16', 'M4 12h16', 'M7 7l2 2', 'M15 7l2 2'],
     flatten: ['M4 6h16', 'M4 10h16', 'M4 14h16', 'M4 18h16'],
     gap: ['M4 12h16', 'M8 6l4 6-4 6', 'M14 8h4', 'M14 16h4'],
+    gated: ['M4 8h7', 'M4 16h7', 'M11 8c3 0 3 4 5 4', 'M11 16c3 0 3-4 5-4', 'C18 12 2', 'M20 12h1'],
+    noise: ['M3 12l2-3 2 5 2-6 2 7 2-5 2 4 2-3 2 2 2-1'],
+    batchnorm: ['M5 19V9', 'M10 19V5', 'M15 19v-7', 'M20 19V8', 'M3 12h18'],
+    fourier: ['M3 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0', 'M3 12c1-3 2-3 3 0s2 3 3 0 2-3 3 0 2 3 3 0 2-3 3 0'],
+    rnn: ['M4 14h4v4H4z', 'M10 14h4v4h-4z', 'M16 14h4v4h-4z', 'M8 16h2', 'M14 16h2', 'M6 14V8h12v6', 'M16 10l2-2 2 2'],
+    conv1d: ['M3 12h18', 'M5 9v6', 'M9 9v6', 'M13 9v6', 'M17 9v6', 'M4 7h10v10H4z'],
+    position: ['M4 18V6', 'M4 18h16', 'M7 15c2-6 4-6 6 0', 'M11 12c2-4 4-4 6 0'],
+    seqpool: ['M3 6h4', 'M3 12h4', 'M3 18h4', 'M8 6l6 6-6 6', 'M15 12h6'],
+    avgpool: ['M4 4h16v16H4z', 'M12 4v16', 'M4 12h16', 'M6 8h4', 'M14 16h4'],
+    patches: ['M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M4 13h7v7H4z', 'M13 13h7v7h-7z'],
+    linear: ['M4 19L20 5', 'C7 15 1', 'C10 13 1', 'C14 10 1', 'C17 7 1'],
+    knn: ['C12 12 6', 'C12 12 1.4', 'C9 9 1', 'C15 10 1', 'C11 16 1', 'C19 5 1', 'C4 19 1'],
+    tree: ['M12 4v5', 'M6 15V9h12v6', 'M4 15h4v4H4z', 'M16 15h4v4h-4z', 'C12 4 1.5'],
+    forest: ['M6 4v5', 'M3 9h6l-3 6z', 'M18 4v5', 'M15 9h6l-3 6z', 'M12 8v5', 'M9 13h6l-3 6z'],
+    boost: ['M4 18h3v-3H4z', 'M10 18h3v-6h-3z', 'M16 18h3V7h-3z', 'M5 12l6-5 6-3'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -108,9 +169,11 @@
   };
   BL.recheck = function () {
     const d = this.dataFor();
-    this.check = d.error ? { ok: false, shapes: [], problem: { reason: d.error } } : NA.bx.check(this.setup.blocks, d.input, d.output);
+    this.check = d.error ? { ok: false, shapes: [], problem: { reason: d.error } } : this.isClassicSetup() ? NA.cml.check(this.setup.blocks, d) : NA.bx.check(this.setup.blocks, d.input, d.output);
     return this.check;
   };
+  // a classic model (linear, k-NN, tree, forest, boosting) instead of a network
+  BL.isClassicSetup = function () { return this.setup.blocks.some((b) => isClassic(b.type)); };
 
   // every change goes through edit(): undo history, a fresh check, a new run next time Train is pressed
   BL.snapshot = function () { return JSON.stringify(this.setup); };
@@ -125,19 +188,33 @@
     this.changed();
   };
   BL.changed = function () {
-    this.stale = !!this.run; // the current run used the old setup
-    // a change mid-run pauses it: the next Train starts a new run, so every run has one setup
-    if (this.training) { this.pause(); NA.ui.toast.show('Paused for your change: press Train to start a new run with it.'); }
+    const run = this.run;
+    if (run && !this.stale && sameModel(run.cfg, this.setup)) {
+      // only training settings changed (learning rate, optimizer, batch, steps, schedule…): the run carries on with
+      // them, and the change is written on its timeline
+      const now = JSON.parse(this.snapshot()), what = diffSetups(run.cfg, now).filter((w) => w !== 'same setup, fresh weights');
+      if (what.length) (run.events || (run.events = [])).push({ step: run.step, what });
+      run.cfg = now;
+      const T = this.setup.train;
+      run.limit = T.steps ? Math.max(run.step + (run.done ? 0 : 1), (run.sched0 || 0) + T.steps) : 0;
+      if (run.done && run.status === 'done' && (!run.limit || run.step < run.limit)) { run.done = false; run.status = 'paused'; }
+      if (this.training && what.length) NA.ui.toast.show(`From step ${fmtInt(run.step)}: ${what.join(', ')}. Run ${run.n} carries on.`);
+    } else {
+      this.stale = !!run; // the current run used the old setup
+      // a change to the model, problem, loss or start pauses it: the next Train starts a new run, so every run has one model
+      if (this.training) { this.pause(); NA.ui.toast.show('Paused for your change: press Train to start a new run with it.'); }
+    }
     this.save();
     this.archStale = true;
     this.recheck();
     const T = this.setup.train;
-    if (this.hyperRoot && JSON.stringify([T.opt, T.lr, T.batch]) !== this._hyperKey) this.buildHyper();
+    if (this.hyperRoot && (this.isClassicSetup() ? 'classic' : JSON.stringify([T.opt, T.lr, T.batch, T.steps])) !== this._hyperKey) this.buildHyper();
     this.renderWorkbench(); this.renderLeft(); this.inspDirty = true; this.resultsDirty = true; this.pyDirty = true;
     if (!this.run || this.run.done) this.showDataOnly();
     this.syncUndo();
     this.renderChallenge();
     NA.app.emit('labarch');
+    NA.app.emit('training'); // the play button says Continue or Train
   };
   // The setup is kept in this browser, so a model you were building is still there next time.
   BL.save = function () { clearTimeout(this._saveT); this._saveT = setTimeout(() => NA.store.set('builder', this.setup), 300); };
@@ -186,6 +263,8 @@
 
   // ------------------------------------------------------------------ runs and training
   const RUN_COLOURS = ['s1', 's2', 's4', 's7', 's3', 's5', 's6', 's8'];
+  // steps per press of Train; 0 trains until you pause
+  const STEP_CHOICES = [[300, '300'], [1000, '1,000'], [2000, '2,000'], [3000, '3,000'], [5000, '5,000'], [10000, '10,000'], [0, '∞ until paused']];
   BL.newRun = function () {
     const d = this.dataFor(), chk = this.recheck();
     if (d.error) { NA.ui.toast.show(d.error); return false; }
@@ -193,25 +272,45 @@
     if (!chk.ok) { const p = chk.problem || (chk.shapes.find((s) => s.problem) || {}).problem; NA.ui.toast.show(`The model does not fit together yet: ${p ? p.reason : 'see the red block'}`); return false; }
     const T = this.setup.train, cfg = JSON.parse(this.snapshot());
     let model;
-    try { model = NA.bx.build(this.setup.blocks, d.input, d.output, { seed: T.seed, init: T.init }); }
+    const classic = this.isClassicSetup();
+    try { model = classic ? NA.cml.build(this.setup.blocks, d, { seed: T.seed }) : NA.bx.build(this.setup.blocks, d.input, d.output, { seed: T.seed, init: T.init }); }
     catch (e) { NA.ui.toast.show(e.message); return false; }
     const prev = this.runs[this.runs.length - 1], n = (prev ? prev.n : 0) + 1;
-    const run = { n, colour: RUN_COLOURS[(n - 1) % RUN_COLOURS.length], cfg, changes: prev ? diffSetups(prev.cfg, cfg) : ['first run'], curve: [], step: 0, ema: null, started: performance.now(), seconds: 0, params: model.paramCount, status: 'running', show: true, family: d.family };
+    const run = { n, colour: RUN_COLOURS[(n - 1) % RUN_COLOURS.length], cfg, changes: prev ? diffSetups(prev.cfg, cfg) : ['first run'], curve: [], step: 0, ema: null, started: performance.now(), seconds: 0, params: model.paramCount, status: 'running', show: true, family: d.family, limit: classic ? 0 : T.steps || 0, sched0: 0, events: [], classic };
     this.runs.push(run);
     if (this.runs.length > 12) this.runs.splice(0, this.runs.length - 12);
     this.run = run; this.model = model; this.data = d; this.stale = false; this.step = 0;
     this.order = null; this.epochPos = 0; this.rng = new NA.RNG(T.seed * 977 + n);
     if (this.seqView) this.seqView.cont = null; // written by the new model once it has trained a little
     this.vizVersion = (this.vizVersion || 0) + 1; this._region = null; this.confusion = null; this.lastEval = 0; this.evalMs = 0;
-    this.evalEvery = T.steps ? Math.max(1, Math.round(T.steps / 120)) : 25; // about 120 points on the curves
+    this.evalEvery = classic ? Math.max(1, Math.round(model.target / 60)) : T.steps ? Math.max(1, Math.round(T.steps / 120)) : 25; // about 120 points on the curves
     this.evaluate(true);
     this.inspDirty = true; this.resultsDirty = true; this.renderWorkbench();
     return true;
   };
+  // Train: a run that finished (and has not been edited since) carries on from where it stopped; otherwise a new run.
   BL.play = function () {
-    if (!this.run || this.stale || this.run.done) { if (!this.newRun()) return; }
+    if (this.canContinue()) this.extendRun();
+    else if (!this.run || this.stale || this.run.done) { if (!this.newRun()) return; }
     this.training = true; this.run.status = 'running'; NA.app.emit('training');
   };
+  BL.canContinue = function () { const r = this.run; return !!r && !this.stale && r.done && r.status === 'done' && !!this.model && (!this.model.classic || this.model.canExtend()); };
+  BL.extendRun = function () {
+    const run = this.run, T = this.setup.train;
+    if (this.model.classic) {
+      const m = this.model;
+      m.extend(); run.done = false;
+      (run.events || (run.events = [])).push({ step: run.step, what: ['continued'] });
+      NA.ui.toast.show(`Run ${run.n} carries on: up to ${fmtInt(m.target)} ${m.unit()}s.`);
+      return;
+    }
+    run.done = false; run.sched0 = run.step;
+    run.limit = T.steps ? run.step + T.steps : 0;
+    (run.events || (run.events = [])).push({ step: run.step, what: ['continued'] });
+    NA.ui.toast.show(`Run ${run.n} carries on from step ${fmtInt(run.step)}${run.limit ? ` to ${fmtInt(run.limit)}` : ' until you pause'}${T.sched !== 'const' && T.steps ? '; its learning-rate schedule starts again' : ''}. Reset (↺) starts a new run from fresh weights.`);
+  };
+  // the play button says what it will do
+  Object.defineProperty(BL, 'labels', { get() { return this.canContinue() ? { play: 'Continue', title: 'Keep training this run (Space)' } : {}; } });
   BL.onPause = function () { if (this.run && this.run.status === 'running') this.run.status = 'paused'; this.evaluate(true); this.inspDirty = true; };
   BL.stepOnce = function () { if (this.training) this.pause(); if (!this.run || this.stale || this.run.done) { if (!this.newRun()) return; } this.trainChunk(0, 1); this.evaluate(true); };
   BL.reset = function () { const was = this.training; if (was) this.pause(); this.stale = true; if (this.newRun()) { NA.ui.toast.show(`Run ${this.run.n}: the same setup from fresh weights.`); if (was) this.play(); } };
@@ -242,9 +341,16 @@
     const cap = maxSteps === Infinity ? (T.steps ? Math.max(2, Math.ceil(T.steps / 180)) : 25) : maxSteps;
     let k = 0;
     do {
-      if (T.steps && run.step >= T.steps) { this.finish('done'); break; }
-      opt.lr = this.lrAt(run.step);
-      const [X, Y] = this.batch(B), r = this.model.step(X, Y, B, loss, opt);
+      if (run.limit && run.step >= run.limit) { this.finish('done'); break; }
+      let r;
+      if (this.model.classic) {
+        if (this.model.done()) { this.finish('done'); break; }
+        r = this.model.step();
+      } else {
+        opt.lr = this.lrAt(run.step - (run.sched0 || 0));
+        const [X, Y] = this.batch(B);
+        r = this.model.step(X, Y, B, loss, opt);
+      }
       if (!Number.isFinite(r.loss) || r.loss > 1e6) { this.finish('diverged'); NA.ui.toast.show(`Run ${run.n} blew up: the loss became ${Number.isFinite(r.loss) ? 'enormous' : 'NaN'}. Try a learning rate ten times smaller.`); break; }
       run.ema = run.ema === null ? r.loss : 0.97 * run.ema + 0.03 * r.loss;
       run.step++; this.step = run.step; this.gradNorm = r.gradNorm; k++;
@@ -260,7 +366,9 @@
     run.status = status; run.done = true;
     if (this.training) { this.training = false; NA.app.emit('training'); }
     this.evaluate(true);
-    if (status === 'done') NA.ui.toast.show(`Run ${run.n} finished: ${this.metricText(run)}. Change something and press Train to compare.`);
+    if (status === 'done') NA.ui.toast.show(this.model && this.model.classic
+      ? `Run ${run.n} is complete: ${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'}, ${this.metricText(run)}.${this.model.canExtend() ? ' Continue adds more.' : ''}`
+      : `Run ${run.n} stopped at step ${fmtInt(run.step)}: ${this.metricText(run)}. Press Continue to keep training it, or change the model for a new run to compare.`);
     this.inspDirty = true;
   };
   // validation (and a sample of training) scores, recorded on the run's curve
@@ -275,7 +383,7 @@
     const v = ev(d.Xva, d.Yva, d.nVa, d.nVa, nV), t = ev(d.Xtr, d.Ytr, d.nTr, d.nTr, nT);
     const metric = (r, X, Y, n, nAll) => {
       if (!r) return null;
-      if (d.family === 'curve') return BT.r2(m.predict(X.subarray(0, n * d.input.dim), n), Y, n); // a table's value has several inputs per example
+      if (BT.isValue(d.family)) return BT.r2(m.predict(X.subarray(0, n * (d.Xtr.length / d.nTr)), n), Y, n); // numbers per example: a window, a row of a table
       return r.count ? r.correct / r.count : null;
       void nAll;
     };
@@ -284,7 +392,7 @@
     if (!last || last.step !== pt.step) run.curve.push(pt); else run.curve[run.curve.length - 1] = pt;
     if (run.curve.length > 400) run.curve = run.curve.filter((q, i) => i % 2 === 0 || i === run.curve.length - 1);
     run.last = pt; run.seconds = (performance.now() - run.started) / 1000;
-    if (full && (d.family === 'digits' || (d.table && d.kind === 'classes'))) this.confusion = this.confusionMatrix();
+    if (full && (d.family === 'digits' || d.family === 'seqclass' || (d.table && d.kind === 'classes'))) this.confusion = this.confusionMatrix();
     this.vizVersion++; this.resultsDirty = true; this.inspDirty = true;
     this.lastEval = performance.now(); if (!full) this.evalMs = this.lastEval - t0;
     this.archStale = true;
@@ -296,11 +404,18 @@
     for (let i = 0; i < n; i++) { let b = 0; for (let k = 1; k < K; k++) if (o[i * K + k] > o[i * K + b]) b = k; M[d.Yva[i]][b]++; }
     return M;
   };
-  BL.metricName = function (fam) { fam = fam || this.dataFor().family || this.family(); return fam === 'curve' ? 'R²' : fam === 'sequence' ? 'token accuracy' : 'accuracy'; };
+  BL.metricName = function (fam) { fam = fam || this.dataFor().family || this.family(); return BT.isValue(fam) ? 'R²' : fam === 'sequence' ? 'token accuracy' : 'accuracy'; };
   // whether the current problem predicts a value (scored by R²) rather than classes or tokens
-  BL.valued = function () { return this.dataFor().family === 'curve'; };
-  BL.metricText = function (run) { const v = run && run.last && run.last.vm; return v === null || v === undefined ? '—' : `validation ${this.metricName(run.family)} ${run.family === 'curve' ? fmt(v, 3) : fmtPct(v, 1)}`; };
+  BL.valued = function () { return BT.isValue(this.dataFor().family); };
+  BL.metricText = function (run) { const v = run && run.last && run.last.vm; return v === null || v === undefined ? '—' : `validation ${this.metricName(run.family)} ${BT.isValue(run.family) ? fmt(v, 3) : fmtPct(v, 1)}`; };
 
+  // Whether two setups train the same model on the same data from the same start: they may differ only in how
+  // training proceeds (learning rate, optimizer, batch, steps, schedule, weight decay, clipping).
+  const TRAINING_ONLY = ['lr', 'opt', 'batch', 'steps', 'sched', 'wd', 'clip'];
+  function sameModel(a, b) {
+    const strip = (S) => { const c = JSON.parse(JSON.stringify(S)); for (const k of TRAINING_ONLY) delete c.train[k]; (c.blocks || []).forEach((q) => { delete q.id; }); return JSON.stringify(c); };
+    return strip(a) === strip(b);
+  }
   // What changed between two setups, in words: the run list shows it next to each run's result.
   function diffSetups(a, b) {
     const out = [], P = (id) => BT.byId[id].label;
@@ -348,9 +463,15 @@
     if (b.type === 'transformer') return `Transformer block (${b.heads} heads)`;
     if (b.type === 'dropout') return `Dropout ${b.p}`;
     if (b.type === 'activation') return `${ACTS[b.act].label} activation`;
+    if (b.type === 'rnn') return `${{ rnn: 'RNN', lstm: 'LSTM', gru: 'GRU' }[b.cell] || 'Recurrent'} ${b.units}`;
+    if (b.type === 'conv1d') return `Conv 1-D ${b.filters} × ${b.k}`;
+    if (b.type === 'seqpool') return `Sequence pool (${b.mode})`;
+    if (b.type === 'forest') return `Random forest (${b.trees} trees)`;
+    if (b.type === 'boost') return `Gradient boosting (${b.rounds} rounds)`;
     return blockName(b);
   }
   BL.blockLabel = blockLabel;
+  BL.PARTS = PARTS;
 
   // ------------------------------------------------------------------ lifecycle
   BL.activate = function (preset, ui) {
@@ -392,10 +513,10 @@
       this.lastRo = now;
       const r = this.run, p = r && !this.stale && r.last;
       this.ro.set('run', r ? `${r.n}` : '—');
-      this.ro.set('step', r ? fmtInt(r.step) + (this.setup.train.steps && !(NA.mobile && NA.mobile.mobile) ? ` / ${fmtInt(this.setup.train.steps)}` : '') : '0');
+      this.ro.set('step', r ? fmtInt(r.step) + (r.limit && !this.stale && !(NA.mobile && NA.mobile.mobile) ? ` / ${fmtInt(r.limit)}` : '') : '0');
       this.ro.set('loss', r && !this.stale && r.ema !== null ? fmt(r.ema, 4) : '—');
       this.ro.set('val', p && p.val !== null ? fmt(p.val, 4) : '—');
-      this.ro.set('metric', p && p.vm !== null && p.vm !== undefined ? (r.family === 'curve' ? `R² ${fmt(p.vm, 3)}` : fmtPct(p.vm, 1)) : '—');
+      this.ro.set('metric', p && p.vm !== null && p.vm !== undefined ? (BT.isValue(r.family) ? `R² ${fmt(p.vm, 3)}` : fmtPct(p.vm, 1)) : '—');
       this.ro.set('params', this.check && this.check.ok ? fmtInt(this.check.params) : '—');
     }
     if (this.resultsDirty && this.resCanvas.offsetParent && (!this.training || now - (this.lastRes || 0) > (this.vizMs > 25 ? 700 : 280))) { this.lastRes = now; this.resultsDirty = false; this.drawResults(); }
@@ -412,12 +533,19 @@
   BL.buildHyper = function (root) {
     if (root) this.hyperRoot = root;
     const T = this.setup.train, rates = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1];
+    if (this.isClassicSetup()) {
+      this._hyperKey = 'classic';
+      const b = this.setup.blocks.find((q) => isClassic(q.type));
+      clear(this.hyperRoot).append(el('p', { class: 'sec-note bd-hyper-note', text: `A ${PART[b.type].name.toLowerCase()} needs no optimizer, learning rate or batches: it trains on all the data, a ${{ linear: 'step', knn: 'look-up', tree: 'level', forest: 'tree', boost: 'round' }[b.type]} at a time. Its settings are on the model block.` }));
+      return;
+    }
     if (!rates.includes(T.lr)) { rates.push(T.lr); rates.sort((a, b) => a - b); } // a rate set on the slider
-    this._hyperKey = JSON.stringify([T.opt, T.lr, T.batch]);
+    this._hyperKey = JSON.stringify([T.opt, T.lr, T.batch, T.steps]);
     clear(this.hyperRoot).append(
       UI.field('Optimizer', UI.select(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => this.edit((s) => { s.train.opt = v; }))),
       UI.field('Learning rate', UI.select(rates.map((v) => ({ value: v, label: String(v) })), T.lr, (v) => this.edit((s) => { s.train.lr = +v; }))),
-      UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))));
+      UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))),
+      UI.field('Steps', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => this.edit((s) => { s.train.steps = +v; })), 'How many steps each press of Train runs: ∞ trains until you pause'));
   };
 
   // ------------------------------------------------------------------ left: problem and parts
@@ -435,13 +563,13 @@
     body.append(
       UI.section('1 · Problem', this.problemSel, this.problemHint, el('div', { class: 'bd-preview-box' }, this.preview)),
       UI.section('2 · Start from', this.tplRow),
-      UI.section('3 · Parts', UI.note(NA.mobile && NA.mobile.mobile ? 'Tap a part to add it to the model, below the selected block.' : 'Drag a part onto the model, or click it to add it below the selected block.'), this.palette));
+      UI.section('3 · Parts', UI.note(NA.mobile && NA.mobile.mobile ? 'Tap a part to see how it works and add it to the model.' : 'Drag a part onto the model, or click it to see how it works and add it.'), this.palette));
     for (const g of Object.keys(GROUP_TONE)) {
       const grid = el('div', { class: 'bd-pal-grid' });
       for (const p of PARTS.filter((q) => q.group === g)) {
         const tile = el('button', { class: 'bd-part', type: 'button', title: p.hint, style: { '--bk': `var(--${GROUP_TONE[g]})` }, dataset: { type: p.type } }, el('span', { class: 'bd-part-ico' }, icon(p.type)), el('span', { class: 'bd-part-name', text: p.label }));
         tile.addEventListener('pointerdown', (e) => this.pressStart(e, { kind: 'part', part: p, el: tile }));
-        tile.addEventListener('click', (e) => { if (e.detail === 0) this.addPart(p); }); // keyboard
+        tile.addEventListener('click', (e) => { if (e.detail === 0) this.showGuide(p.type); }); // keyboard
         grid.append(tile);
       }
       this.palette.append(el('div', { class: 'bd-pal-group' }, el('div', { class: 'bd-pal-title', text: g }), grid));
@@ -454,8 +582,8 @@
     this.problemHint.textContent = p.hint;
     clear(this.tplRow).append(...BT.templatesFor(fam).map((t) => el('button', { class: 'chip bd-tpl', type: 'button', title: t.hint, onclick: () => this.applyTemplate(t) }, t.label)));
     // which parts fit this problem's kind of data
-    const fits = { plane: ['dense', 'neuron', 'activation', 'dropout', 'layernorm'], curve: ['dense', 'neuron', 'activation', 'dropout', 'layernorm'], table: ['dense', 'neuron', 'activation', 'dropout', 'layernorm'], digits: ['dense', 'neuron', 'activation', 'dropout', 'conv', 'pool', 'flatten', 'gap'], sequence: ['dense', 'neuron', 'activation', 'dropout', 'layernorm', 'attention', 'transformer'] }[fam];
-    const kind = { plane: 'points', curve: 'a curve', digits: 'pictures', sequence: 'sequences', table: 'a table' }[fam];
+    const fits = FITS[fam] || FITS.plane;
+    const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' }[fam];
     NA.$$('.bd-part', this.palette).forEach((t) => {
       const off = !fits.includes(t.dataset.type);
       t.classList.toggle('is-unsuited', off);
@@ -467,6 +595,15 @@
     const ctx = NA.fitCanvas(this.preview, W, Hh);
     BV.preview(ctx, W, Hh, this.dataFor());
   };
+  // the parts that suit each kind of data (the others still work where shapes allow, or say why not)
+  const VECTOR_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'fourier'], CLASSIC_PARTS = ['linear', 'knn', 'tree', 'forest', 'boost'];
+  const SEQ_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'attention', 'transformer', 'rnn', 'conv1d', 'position', 'seqpool', 'flatten', 'gap'];
+  const FITS = {
+    plane: [...VECTOR_PARTS, ...CLASSIC_PARTS], curve: [...VECTOR_PARTS, ...CLASSIC_PARTS], surface: [...VECTOR_PARTS, ...CLASSIC_PARTS], table: [...VECTOR_PARTS, ...CLASSIC_PARTS],
+    digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'conv', 'pool', 'avgpool', 'patches', 'flatten', 'gap', 'attention', 'transformer', 'position', 'seqpool', ...CLASSIC_PARTS],
+    series: [...SEQ_PARTS, ...CLASSIC_PARTS], seqclass: SEQ_PARTS, sequence: SEQ_PARTS.filter((t) => t !== 'seqpool' && t !== 'gap' && t !== 'flatten'),
+  };
+  BL.fitsHere = function (type) { return (FITS[this.family()] || FITS.plane).includes(type); };
   BL.setProblem = function (id) {
     if (id === this.setup.problem) return;
     const fam0 = this.family(), fam1 = BT.byId[id].family;
@@ -498,7 +635,23 @@
     NA.ui.toast.show(`${t.label} template. ${t.hint}`);
   };
   // add a part below the selected block (or at the end)
+  // the guide to a part, in the Part tab, with a button that adds it (below the block selected before)
+  BL.showGuide = function (type) {
+    if (!(this.sel && this.sel.kind === 'guide')) this.guideFrom = this.sel;
+    this.selectBlock({ kind: 'guide', id: 'guide:' + type, type });
+  };
   BL.addPart = function (p) {
+    if (this.sel && this.sel.kind === 'guide') this.sel = this.guideFrom || null;
+    if (p.classic || this.setup.blocks.some((b) => isClassic(b.type))) {
+      const had = this.setup.blocks.length, was = had ? (this.setup.blocks.some((b) => isClassic(b.type)) ? 'classic' : 'network') : null;
+      if (p.classic || was === 'classic') {
+        const b = Object.assign({ id: bid() }, p.make());
+        this.edit((s) => { s.blocks = [b]; }, { flip: true });
+        this.selectBlock({ kind: 'block', id: b.id }, true);
+        if (had) NA.ui.toast.show(p.classic ? `A ${p.name.toLowerCase()} is a whole model on its own, so it replaces the ${was === 'classic' ? 'other one' : 'network'}. Undo brings ${was === 'classic' ? 'it' : 'the network'} back.` : `A layer starts a new network in place of the classic model. Undo brings the model back.`);
+        return;
+      }
+    }
     const i = this.sel && this.sel.kind === 'block' ? this.setup.blocks.findIndex((b) => b.id === this.sel.id) + 1 : this.sel && this.sel.kind === 'input' ? 0 : this.setup.blocks.length;
     if (p.type === 'neuron' && this.sel && this.sel.kind === 'block') { const b = this.setup.blocks.find((q) => q.id === this.sel.id); if (b && b.type === 'dense') { this.addNeuron(b.id); return; } }
     this.insert(p.make(), i < 0 ? this.setup.blocks.length : i);
@@ -611,7 +764,7 @@
     });
     // what flows into the output: the last block's shape, or the input's when there are no blocks
     const last = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : null;
-    this.stack.append(this.gap(S.blocks.length, d.error ? '' : shapeOf(last || (d.input.kind === 'tokens' ? [d.input.len, d.input.embed] : d.input.kind === 'vector' ? [d.input.dim] : [d.input.c, d.input.h, d.input.w]))));
+    this.stack.append(this.gap(S.blocks.length, d.error ? '' : shapeOf(last || (d.input.kind === 'tokens' ? [d.input.len, d.input.embed] : d.input.kind === 'series' ? [d.input.len, d.input.dim] : d.input.kind === 'vector' ? [d.input.dim] : [d.input.c, d.input.h, d.input.w]))));
     this.stack.append(this.card({ kind: 'output', id: 'output', type: 'output', title: 'Output', sum: d.error ? '' : outputText(d, S.loss), problem: chk.problem && !d.error ? chk.problem : null, sel: this.sel && this.sel.kind === 'output' }));
     if (!S.blocks.length) this.stack.insertBefore(el('div', { class: 'bd-empty' }, touch() ? 'No hidden layers: the input goes straight to the output. Tap parts on the Parts screen to add some.' : 'No hidden layers: the input goes straight to the output. Drag parts here from the palette to add some.'), this.stack.children[2]);
     this.bench.scrollTop = scroll;
@@ -624,6 +777,7 @@
     if (i.kind === 'vector' && d.table) return `${i.dim} number${i.dim > 1 ? 's' : ''} (${d.featNames.length > 3 ? d.featNames.slice(0, 3).join(', ') + ', …' : d.featNames.join(', ')})`;
     if (i.kind === 'vector') return i.dim === 2 ? '2 numbers (x, y)' : '1 number (x)';
     if (i.kind === 'image') return `${i.h} × ${i.w} picture`;
+    if (i.kind === 'series') return `the last ${i.len} values, in order`;
     return `${i.len} tokens → embedding ${i.embed}`;
   }
   function outputText(d, loss) {
@@ -638,7 +792,21 @@
     if (b.type === 'attention') return `${b.heads} head${b.heads > 1 ? 's' : ''}${b.causal !== false ? ' · causal' : ' · sees the future'}${b.residual !== false ? ' · residual' : ''}`;
     if (b.type === 'transformer') return `${b.heads} heads · MLP ×${b.mlp || 4}${b.causal === false ? ' · sees the future' : ''}`;
     if (b.type === 'conv') return `${b.filters} filters · ${b.k}×${b.k}${b.stride > 1 ? ' · stride ' + b.stride : ''} · ${ACTS[b.act].label}`;
-    if (b.type === 'pool') return `${b.size}×${b.size}`;
+    if (b.type === 'pool' || b.type === 'avgpool') return `${b.size}×${b.size}`;
+    if (b.type === 'gated') return `${b.units} units · ${{ swish: 'SwiGLU', sigmoid: 'GLU', gelu: 'GEGLU' }[b.gate] || b.gate}`;
+    if (b.type === 'noise') return `σ ${b.sigma} while training`;
+    if (b.type === 'batchnorm') return 'per feature, over the batch';
+    if (b.type === 'fourier') return `${b.features} frequencies · σ ${b.scale}`;
+    if (b.type === 'rnn') return `${{ rnn: 'RNN', lstm: 'LSTM', gru: 'GRU' }[b.cell] || b.cell} · ${b.units} units`;
+    if (b.type === 'conv1d') return `${b.filters} filters · window ${b.k}${b.dilation > 1 ? ' · dilation ' + b.dilation : ''}${b.causal ? ' · causal' : ''}${b.residual ? ' · residual' : ''}`;
+    if (b.type === 'position') return b.mode === 'sine' ? 'fixed sine waves' : 'learned';
+    if (b.type === 'seqpool') return { last: 'the last step', max: 'the largest of each feature', mean: 'the average' }[b.mode] || b.mode;
+    if (b.type === 'patches') return `${b.size}×${b.size} patches → ${b.dim} numbers each`;
+    if (b.type === 'linear') return b.lambda ? `ridge λ ${b.lambda}` : 'least squares or logistic';
+    if (b.type === 'knn') return `k = ${b.k}${b.weights === 'distance' ? ' · weighted by distance' : ''}`;
+    if (b.type === 'tree') return `depth ${b.depth}`;
+    if (b.type === 'forest') return `${b.trees} trees · depth ${b.depth}`;
+    if (b.type === 'boost') return `${b.rounds} rounds · depth ${b.depth} · η ${b.eta}`;
     return '';
   }
   BL.gap = function (i, label) {
@@ -646,7 +814,9 @@
   };
   BL.card = function (o) {
     const tone = toneOf(o.type), io = o.kind !== 'block';
-    const card = el('div', { class: `bd-card bd-${o.kind}${o.sel ? ' is-selected' : ''}${o.problem ? ' is-bad' : ''}`, style: { '--bk': `var(--${tone})` }, dataset: { bid: o.id }, tabindex: '0', role: 'button', 'aria-label': `${o.title}${o.sum ? ': ' + o.sum : ''}` });
+    // hovering a block says in a sentence what it is; clicking it opens the whole guide and its settings
+    const guide = NA.partGuide && NA.partGuide.G[o.type], gist = guide ? (guide.what.match(/^.*?\.(\s|$)/) || [guide.what])[0].trim() : null;
+    const card = el('div', { class: `bd-card bd-${o.kind}${o.sel ? ' is-selected' : ''}${o.problem ? ' is-bad' : ''}`, style: { '--bk': `var(--${tone})` }, dataset: { bid: o.id }, tabindex: '0', role: 'button', title: gist ? `${gist} Click for more.` : null, 'aria-label': `${o.title}${o.sum ? ': ' + o.sum : ''}` });
     const head = el('div', { class: 'bd-card-head' }, el('span', { class: 'bd-card-ico' }, icon(o.type)), el('span', { class: 'bd-card-text' }, el('span', { class: 'bd-card-title', text: o.title }), o.sum ? el('span', { class: 'bd-card-sum', text: o.sum }) : null));
     if (o.params) head.append(el('span', { class: 'bd-card-params', title: 'learned numbers in this block', text: fmtInt(o.params) }));
     if (!io) head.append(el('button', { class: 'bd-card-x', type: 'button', title: 'Remove (Delete)', 'aria-label': `Remove ${o.title}`, onclick: (e) => { e.stopPropagation(); this.removeBlock(o.id); } }, '×'));
@@ -725,7 +895,7 @@
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
       this._unbind = null;
       if (drag) this.dragEnd(drag, ev.type === 'pointercancel');
-      else if (src.kind === 'part') this.addPart(src.part);
+      else if (src.kind === 'part') this.showGuide(src.part.type);
       else this.selectBlock({ kind: src.kind, id: src.id });
     };
     window.addEventListener('pointermove', move, { passive: false }); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
@@ -785,6 +955,7 @@
     if (!t) return;
     if (src.kind === 'part') {
       if (t.kind === 'into') this.addNeuron(t.id, 1);
+      else if (src.part.classic || this.setup.blocks.some((b) => isClassic(b.type))) this.addPart(src.part);
       else if (t.kind === 'gap') this.insert(src.part.make(), t.at);
     } else if (src.kind === 'block') {
       if (t.kind === 'remove') { this.removeBlock(src.id); NA.ui.toast.show('Removed. Undo with Ctrl+Z.'); }
@@ -845,15 +1016,28 @@
   };
   BL.renderResHead = function (live) {
     const d = live ? this.data : this.dataFor(), p = this.problem(), run = live ? this.run : null, S = this.seqView || (this.seqView = {});
-    const key = JSON.stringify([p.id, !!live, run && run.n, run && run.last && run.last.vm, d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error]);
+    const key = JSON.stringify([p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok]);
     if (key === this._headKey) return;
     this._headKey = key;
     const parts = [];
-    const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (d.family === 'curve' ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
+    const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (BT.isValue(d.family) ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
     if (d.error) parts.push(el('div', { class: 'bd-res-error', role: 'alert', text: d.error }));
     parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · validation ${this.metricName()}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
     const lg = legendFor(d, live);
     if (lg) parts.push(lg);
+    const ins = NA.builderInsights;
+    if (ins) {
+      // the most pressing thing about the run, in one line, with the fixes to try; the Training tab has the whole story
+      const top = ins.diagnose(this)[0];
+      if (top) parts.push(this.insightEl(top, true));
+      const howTo = ins.read(d, live);
+      if (howTo.length) {
+        const det = el('details', { class: 'bd-read' }, el('summary', { text: 'How to read this' }), ...howTo.map((t) => el('p', { text: t })));
+        det.open = !!NA.store.get('builder.readOpen', false);
+        det.addEventListener('toggle', () => NA.store.set('builder.readOpen', det.open));
+        parts.push(det);
+      }
+    }
     if (p.id === 'draw') {
       this.drawClass = this.drawClass || 0;
       const pick = (c, erase) => { this.drawClass = c; this.drawErase = erase; this._headKey = null; this.resultsDirty = true; };
@@ -879,12 +1063,29 @@
     }
     clear(this.resHead).append(...parts);
   };
+  // one finding about the run: an icon for its level, its title, what it means and buttons that try a fix
+  const INS_ICON = { critical: '!', warn: '!', good: '✓', info: 'i' };
+  BL.insightEl = function (it, brief) {
+    const body = brief ? (it.body.match(/^.*?[.:](\s|$)/) || [it.body])[0].trim() : it.body;
+    return el('div', { class: `bd-ins is-${it.level}`, role: it.level === 'critical' ? 'alert' : null },
+      el('span', { class: 'bd-ins-ico', 'aria-hidden': 'true', text: INS_ICON[it.level] }),
+      el('div', { class: 'bd-ins-text' }, el('strong', { class: 'bd-ins-title', text: it.title }), ' ', el('span', { class: 'bd-ins-body', text: body }),
+        brief && body !== it.body ? el('button', { class: 'bd-ins-more', type: 'button', onclick: () => { this.tabs.select('train'); } }, 'Why?') : null),
+      it.actions.length ? el('div', { class: 'bd-ins-acts' }, ...it.actions.map((a) => el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { a.run(); this._headKey = null; this._trainKey = null; } }, a.label))) : null);
+  };
+  BL.insightsSection = function () {
+    const list = NA.builderInsights ? NA.builderInsights.diagnose(this) : [];
+    return list.length ? UI.section('What is happening', el('div', { class: 'bd-ins-list' }, ...list.map((it) => this.insightEl(it, false)))) : null;
+  };
   // what the marks in the results mean
   function legendFor(d, live) {
     if (!d || d.error) return null;
     const item = (cls, c, label) => el('span', null, el('i', { class: cls, style: c ? { '--c': `var(--${c})` } : null }), label);
     let items = [];
-    if (d.table) {
+    if (d.family === 'series') items = [item('bd-lg-line', 's1', 'the series'), live ? item('bd-lg-line', 's2', 'one step ahead (true values fed in)') : null, live ? item('bd-lg-dash', 's7', 'on its own (its predictions fed back)') : null];
+    else if (d.family === 'surface') items = [el('span', { text: 'blue high, orange low; the dots are the training points' }), live ? el('span', { text: 'error: darker where the model misses more' }) : null];
+    else if (d.family === 'seqclass') items = [el('span', { text: live ? 'validation examples, with the model’s answer (✓ right, ✗ wrong)' : 'validation examples with their class' })];
+    else if (d.table) {
       if (d.kind === 'classes' && live) items = [el('span', { text: `rows: the true ${d.targetName}; columns: the model’s answer. Green squares are right answers, red ones mistakes.` })];
       else if (d.kind === 'classes') items = [...d.names.slice(0, 8).map((name, k) => item('bd-lg-dot', BV.classColour(d, k), name)), d.names.length > 8 ? el('span', { text: `+${d.names.length - 8} more` }) : null, el('span', { text: d.featNames.length > 1 ? `the rows on ${d.featNames[0]} and ${d.featNames[1]}, scaled` : `the rows on ${d.featNames[0]}, scaled` })];
       else if (live) items = [item('bd-lg-ring', 's2', 'validation rows'), el('span', { text: `across: the true ${d.targetName}; up: the model’s answer. On the diagonal is right.` })];
@@ -892,7 +1093,7 @@
     } else if (d.family === 'plane') {
       items = [...d.names.map((name, k) => item('bd-lg-dot', BV.classColour(d, k), name)), item('bd-lg-dot', null, 'training'), item('bd-lg-ring', null, 'validation')];
       if (live) items.push(el('span', { text: 'shading: the model’s answer, stronger where it is sure' }));
-    } else if (d.family === 'curve') items = [item('bd-lg-dot', 's1', 'training'), item('bd-lg-ring', 's2', 'validation'), live ? item('bd-lg-line', null, 'the model') : null, d.truth ? item('bd-lg-dash', null, 'your formula') : null];
+    } else if (BT.isValue(d.family)) items = [item('bd-lg-dot', 's1', 'training'), item('bd-lg-ring', 's2', 'validation'), live ? item('bd-lg-line', null, 'the model') : null, d.truth ? item('bd-lg-dash', null, 'your formula') : null];
     else if (d.family === 'digits' && live) items = [item('bd-lg-box', 'good', 'read right'), item('bd-lg-box', 'critical', 'read wrong'), el('span', { text: 'the small number is the model’s answer' })];
     else if (d.noHoldout) items = [el('span', { class: 'lm-warn', text: 'Scored on the training text itself: there is too little text to hold some back.' })];
     items = items.filter(Boolean);
@@ -945,7 +1146,7 @@
     if (id === 'block') this.renderBlockTab(P.body);
     else if (id === 'train') this.renderTrainTab(P.body);
     else if (id === 'runs') this.renderRunsTab();
-    else if (id === 'python' && (this.pyDirty || !P.code.firstChild)) { this.pyDirty = false; clear(P.code).append(NA.builderPy ? UI.codeBox(NA.builderPy.code(this.setup, this.dataFor()), 'Python · PyTorch') : UI.note('Loading…')); }
+    else if (id === 'python' && (this.pyDirty || !P.code.firstChild)) { this.pyDirty = false; clear(P.code).append(NA.builderPy ? UI.codeBox(NA.builderPy.code(this.setup, this.dataFor()), this.isClassicSetup() ? `Python · ${this.setup.blocks.some((b) => b.type === 'boost') ? 'XGBoost' : 'scikit-learn'}` : 'Python · PyTorch') : UI.note('Loading…')); }
   };
 
   // settings of the selected part, written as controls that edit the setup
@@ -955,6 +1156,7 @@
     this._blockKey = JSON.stringify([sel, this.snapshot()]);
     clear(body);
     if (!sel) { body.append(UI.section('How to build', UI.note(touch() ? 'Tap parts on the Parts screen to add them to the model. Tap a block to see what it does and change it, move it or remove it: the Input block holds the problem and the Output block the loss. Then press Train.' : 'Drag parts from the palette onto the model (or click them), drag blocks to reorder them, and drag one off the model to remove it. Click a block to see what it does and change it: the Input block holds the problem and the Output block the loss. Then press Train.')), UI.modelCard(this.preset, (t) => this.runTry(t))); return; }
+    if (sel.kind === 'guide') { this.renderGuide(body, sel.type); return; }
     if (sel.kind === 'input') { this.renderProblemSettings(body); return; }
     if (sel.kind === 'output') { this.renderLossSettings(body); return; }
     const b = S.blocks.find((q) => q.id === sel.id);
@@ -994,14 +1196,63 @@
         UI.field('Filter size', UI.seg([{ value: 3, label: '3×3' }, { value: 5, label: '5×5' }], b.k, (v) => set((q) => { q.k = +v; }), 'Filter size')),
         UI.field('Stride', UI.seg([{ value: 1, label: '1' }, { value: 2, label: '2 (halves it)' }], b.stride, (v) => set((q) => { q.stride = +v; }), 'Stride')),
         UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; })))));
-    } else if (b.type === 'pool') sec.push(UI.section('Settings', UI.field('Patch', UI.seg([{ value: 2, label: '2×2' }, { value: 3, label: '3×3' }], b.size, (v) => set((q) => { q.size = +v; }), 'Patch'))));
+    } else if (b.type === 'pool' || b.type === 'avgpool') sec.push(UI.section('Settings', UI.field('Patch', UI.seg([{ value: 2, label: '2×2' }, { value: 3, label: '3×3' }], b.size, (v) => set((q) => { q.size = +v; }), 'Patch'))));
+    else if (b.type === 'gated') sec.push(UI.section('Settings', UI.slider({ label: 'Units', min: 1, max: 128, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+      UI.field('Gate', UI.seg([{ value: 'sigmoid', label: 'GLU (sigmoid)' }, { value: 'swish', label: 'SwiGLU' }, { value: 'gelu', label: 'GEGLU' }], b.gate, (v) => set((q) => { q.gate = v; }), 'Gate'))));
+    else if (b.type === 'noise') sec.push(UI.section('Settings', UI.slider({ label: 'Spread σ while training', min: 0, max: 1, step: 0.05, value: b.sigma, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.sigma = v; }) })));
+    else if (b.type === 'fourier') sec.push(UI.section('Settings', UI.slider({ label: 'Frequencies', min: 1, max: 64, step: 1, value: b.features, format: String, onChange: (v) => set((q) => { q.features = v; }) }),
+      UI.slider({ label: 'Frequency spread σ', min: 0.25, max: 10, step: 0.25, value: b.scale, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.scale = v; }) }),
+      UI.note('Higher σ: faster wiggles. Too high and the model fits noise; too low and it is no help.')));
+    else if (b.type === 'rnn') sec.push(UI.section('Settings', UI.field('Cell', UI.seg([{ value: 'rnn', label: 'RNN' }, { value: 'lstm', label: 'LSTM' }, { value: 'gru', label: 'GRU' }], b.cell, (v) => set((q) => { q.cell = v; }), 'Cell')),
+      UI.slider({ label: 'Units (size of the state)', min: 1, max: 128, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+      UI.note('The layer outputs its state at every step. Follow it with Sequence pool (last step) for one answer per sequence.')));
+    else if (b.type === 'conv1d') sec.push(UI.section('Settings', UI.slider({ label: 'Filters', min: 1, max: 64, step: 1, value: b.filters, format: String, onChange: (v) => set((q) => { q.filters = v; }) }),
+      UI.field('Window', UI.seg([2, 3, 5, 7].map((k) => ({ value: k, label: String(k) })), b.k, (v) => set((q) => { q.k = +v; }), 'Window')),
+      UI.field('Dilation', UI.seg([1, 2, 4, 8].map((k) => ({ value: k, label: String(k) })), b.dilation || 1, (v) => set((q) => { q.dilation = +v; }), 'Dilation')),
+      UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; }))),
+      el('div', { class: 'chip-row' }, UI.chip('Causal (only look back)', !!b.causal, (on) => set((q) => { q.causal = on; })), UI.chip('Residual', !!b.residual, (on) => set((q) => { q.residual = on; }), 'Adds the input back when the filters match its features'))));
+    else if (b.type === 'position') sec.push(UI.section('Settings', UI.field('Kind', UI.seg([{ value: 'learned', label: 'Learned' }, { value: 'sine', label: 'Sine waves (fixed)' }], b.mode, (v) => set((q) => { q.mode = v; }), 'Kind'))));
+    else if (b.type === 'seqpool') sec.push(UI.section('Settings', UI.field('Keep', UI.seg([{ value: 'last', label: 'Last step' }, { value: 'max', label: 'Largest' }, { value: 'mean', label: 'Average' }], b.mode, (v) => set((q) => { q.mode = v; }), 'Keep'))));
+    else if (b.type === 'patches') sec.push(UI.section('Settings', UI.field('Patch size', UI.seg([1, 2, 3, 7].map((k) => ({ value: k, label: `${k}×${k}` })), b.size, (v) => set((q) => { q.size = +v; }), 'Patch size')),
+      UI.slider({ label: 'Numbers per patch (token width)', min: 4, max: 64, step: 4, value: b.dim, format: String, onChange: (v) => set((q) => { q.dim = v; }) }),
+      sh.out ? UI.note(`${sh.out[0]} patches, each a token of ${sh.out[1]} numbers. Attention heads must divide ${sh.out[1]}.`) : null));
+    else if (b.type === 'linear') sec.push(UI.section('Settings', UI.field('Ridge penalty λ (shrinks the weights)', UI.select([0, 0.01, 0.1, 1, 10].map((v) => ({ value: v, label: v ? String(v) : 'none' })), b.lambda, (v) => set((q) => { q.lambda = +v; })))));
+    else if (b.type === 'knn') sec.push(UI.section('Settings', UI.slider({ label: 'Neighbours k', min: 1, max: 25, step: 1, value: b.k, format: String, onChange: (v) => set((q) => { q.k = v; }) }),
+      UI.field('Votes', UI.seg([{ value: 'uniform', label: 'Equal' }, { value: 'distance', label: 'Closer counts more' }], b.weights, (v) => set((q) => { q.weights = v; }), 'Votes'))));
+    else if (b.type === 'tree') sec.push(UI.section('Settings', UI.slider({ label: 'Maximum depth', min: 1, max: 16, step: 1, value: b.depth, format: String, onChange: (v) => set((q) => { q.depth = v; }) }),
+      UI.slider({ label: 'Fewest examples in a leaf', min: 1, max: 30, step: 1, value: b.minLeaf, format: String, onChange: (v) => set((q) => { q.minLeaf = v; }) })));
+    else if (b.type === 'forest') sec.push(UI.section('Settings', UI.slider({ label: 'Trees', min: 1, max: 200, step: 1, value: b.trees, format: String, onChange: (v) => set((q) => { q.trees = v; }) }),
+      UI.slider({ label: 'Maximum depth', min: 1, max: 16, step: 1, value: b.depth, format: String, onChange: (v) => set((q) => { q.depth = v; }) }),
+      UI.field('Inputs tried at each question', UI.seg([{ value: 'sqrt', label: '√ of all' }, { value: 'third', label: 'a third' }, { value: 'all', label: 'all' }], b.features, (v) => set((q) => { q.features = v; }), 'Inputs tried')),
+      UI.slider({ label: 'Fewest examples in a leaf', min: 1, max: 30, step: 1, value: b.minLeaf, format: String, onChange: (v) => set((q) => { q.minLeaf = v; }) })));
+    else if (b.type === 'boost') sec.push(UI.section('Settings', UI.slider({ label: 'Rounds (trees)', min: 5, max: 500, step: 5, value: b.rounds, format: String, onChange: (v) => set((q) => { q.rounds = v; }) }),
+      UI.field('Learning rate η', UI.select([0.01, 0.03, 0.1, 0.3, 1].map((v) => ({ value: v, label: String(v) })), b.eta, (v) => set((q) => { q.eta = +v; }))),
+      UI.slider({ label: 'Tree depth', min: 1, max: 8, step: 1, value: b.depth, format: String, onChange: (v) => set((q) => { q.depth = v; }) }),
+      UI.field('Leaf penalty λ', UI.select([0, 0.1, 1, 10].map((v) => ({ value: v, label: String(v) })), b.lambda, (v) => set((q) => { q.lambda = +v; }))),
+      UI.field('Split penalty γ', UI.select([0, 0.1, 1, 5].map((v) => ({ value: v, label: String(v) })), b.gamma, (v) => set((q) => { q.gamma = +v; }))),
+      UI.field('Rows per tree', UI.select([0.5, 0.8, 1].map((v) => ({ value: v, label: fmtPct(v, 0) })), b.subsample, (v) => set((q) => { q.subsample = +v; }))),
+      UI.field('Inputs per tree', UI.select([0.5, 0.8, 1].map((v) => ({ value: v, label: fmtPct(v, 0) })), b.colsample, (v) => set((q) => { q.colsample = +v; })))));
+    if (b.type === 'conv') sec.push(el('div', { class: 'chip-row' }, UI.chip('Residual (ResNet-style)', !!b.residual, (on) => set((q) => { q.residual = on; }), 'Adds the input back: needs as many filters as input channels and stride 1')));
+    if (this.model && this.model.classic && !this.stale && isClassic(b.type)) sec.push(UI.section('Trained so far', UI.note(`${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'} · ${fmtInt(this.model.paramCount)} learned numbers. Zoom into it in the Architecture view to see ${b.type === 'knn' ? 'its neighbours' : b.type === 'linear' ? 'its weights' : 'its trees'}.`)));
     sec.push(UI.section('What it does', UI.note(ABOUT[b.type] || '')));
+    if (NA.partGuide) sec.push(NA.partGuide.details(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, { open: false }));
     sec.push(el('div', { class: 'btn-row bd-block-actions' },
       el('button', { class: 'btn', type: 'button', disabled: i === 0, title: 'Move this block up (Alt+↑)', onclick: () => this.moveBlock(b.id, i - 1) }, '↑ Move up'),
       el('button', { class: 'btn', type: 'button', disabled: i === S.blocks.length - 1, title: 'Move this block down (Alt+↓)', onclick: () => this.moveBlock(b.id, i + 2) }, '↓ Move down'),
       el('button', { class: 'btn', type: 'button', onclick: () => { const c = JSON.parse(JSON.stringify(b)); delete c.id; this.insert(c, i + 1); } }, 'Duplicate'),
       el('button', { class: 'btn', type: 'button', onclick: () => this.removeBlock(b.id) }, 'Remove')));
     body.append(...sec);
+  };
+  // the guide to a part, with a button that adds it, and one that switches to a problem it suits when this one does not
+  const KIND_TEXT = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' };
+  BL.renderGuide = function (body, type) {
+    const p = PART[type];
+    if (!p || !NA.partGuide) { body.append(UI.note('No guide for this part.')); return; }
+    const fits = this.fitsHere(type), g = NA.partGuide.G[type] || {}, tryId = g.try === 'csv' ? 'csv' : g.try, tp = tryId && BT.byId[tryId];
+    const add = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.addPart(p) }, p.classic ? `Use a ${p.name.toLowerCase()}` : 'Add to the model');
+    const switchTo = !fits && tp ? el('button', { class: 'btn', type: 'button', onclick: () => { this.setProblem(tryId); if (tryId === 'csv' && !this.setup.custom.table) this.setTable(BT.SAMPLES.houses.make()); this.showGuide(type); } }, `Switch to ${tp.label.toLowerCase()}`) : null;
+    body.append(NA.partGuide.render(type, { part: p, fits, kind: KIND_TEXT[this.family()], add, switchTo }),
+      el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock(this.guideFrom || null) }, '← Back')));
   };
   BL.renderProblemSettings = function (body) {
     const p = this.problem(), s = this.ps(), fam = p.family, set = (fn) => this.edit((S) => fn(S.ps[S.problem]));
@@ -1026,6 +1277,14 @@
     }
     if (fam === 'digits') ctl.push(UI.slider({ label: 'Examples', min: 300, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
     if (fam === 'table') ctl.push(...tableControls(this, s));
+    if (fam === 'surface') ctl.push(UI.slider({ label: 'Noise', min: 0, max: 0.3, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }), UI.slider({ label: 'Examples', min: 200, max: 3000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
+    if (fam === 'series') ctl.push(UI.slider({ label: 'Window (values the model sees)', min: 1, max: 48, step: 1, value: s.window, format: String, onChange: (v) => set((q) => { q.window = v; }) }),
+      UI.slider({ label: 'Length of the series', min: 400, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
+      UI.slider({ label: 'Noise', min: 0, max: 0.3, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }),
+      UI.note('The first 80% of the series trains and the last 20% validates: the model is judged on a future it has not seen.'));
+    if (fam === 'seqclass') ctl.push(UI.slider({ label: 'Examples', min: 500, max: 5000, step: 250, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
+      UI.field('Embedding size', UI.seg([8, 16, 32, 64].map((v) => ({ value: v, label: String(v) })), s.embed, (v) => set((q) => { q.embed = +v; }), 'Embedding size')),
+      UI.note('Each token becomes a learned vector of this many numbers, plus one for its position.'));
     if (fam === 'sequence') {
       if (p.task === 'sentences') {
         const ta = el('textarea', { class: 'bd-text', rows: '7', spellcheck: 'false', 'aria-label': 'Your text' });
@@ -1111,19 +1370,41 @@
       UI.section('Loss function', UI.seg(ids.map((id) => ({ value: id, label: NA.bx.LOSSES[id].label })), L.id, (v) => set((q) => { q.id = v; }), 'Loss'), UI.note(EXPLAIN[L.id] || ''),
         L.id === 'xent' ? UI.slider({ label: 'Label smoothing', min: 0, max: 0.3, step: 0.05, value: L.smooth || 0, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.smooth = v; }) }) : null,
         L.id === 'huber' ? UI.slider({ label: 'Huber δ', min: 0.05, max: 1, step: 0.05, value: L.delta || 0.2, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.delta = v; }) }) : null),
+      this.isClassicSetup() ? UI.section('Classic models', UI.note('A classic model has its own way to learn: squared error for numbers; for classes, log loss (boosting and logistic regression) or the purity of each tree leaf (trees and forests). The loss chosen above is used by networks.')) : null,
       UI.section('The output layer', UI.note(value ? 'One linear neuron: any number can come out.' : fam === 'sequence' ? 'At every position, one score per token in the vocabulary; softmax turns them into the probability of each next token.' : L.id === 'hinge' ? 'One score per class, used as it is: the hinge loss asks the right class to beat the others by a margin. The added dense layer is built for you, sized to the problem.' : 'One score per class; softmax turns the scores into probabilities that add up to 1. The added dense layer is built for you, sized to the problem.')));
   };
 
   BL.renderTrainTab = function (body) {
-    const key = JSON.stringify([this.setup.train, this.run && this.run.n, this.run && this.run.step, this.stale]);
+    const key = JSON.stringify([this.setup.train, this.run && this.run.n, this.run && this.run.step, this.stale, this.isClassicSetup() && this.snapshot()]);
     if (key === this._trainKey && body.firstChild) { this.updateTrainLive(); return; }
     this._trainKey = key;
+    if (this.isClassicSetup()) {
+      const b = this.setup.blocks.find((q) => isClassic(q.type)), m = this.model && this.model.classic && !this.stale ? this.model : null, run = this.run;
+      clear(body);
+      this.parts.live = null;
+      const story = this.insightsSection();
+      if (story) body.append(story);
+      body.append(el('div', { class: 'tiles' }, UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'),
+        UI.tile('Trained', m ? `${fmtInt(m.rounds)} ${m.unit()}${m.rounds === 1 ? '' : 's'}` : '—', m ? `of ${fmtInt(m.target)}` : null), UI.tile('Learned numbers', m ? fmtInt(m.paramCount) : '—'),
+        UI.tile(`Val. ${this.metricName()}`, run && run.last && run.last.vm !== null && run.last.vm !== undefined && !this.stale ? scoreText(run.family, run.last.vm) : '—')),
+        UI.section('How it trains', UI.note({
+          linear: 'For numbers, least squares has an exact answer: one solve, no steps, no learning rate. For classes, logistic regression has none, so it takes gradient steps (300 by default; Continue takes more).',
+          knn: 'It does not train: the training examples are the model. Each answer looks up the k nearest ones, which is why answering is slow and training is instant.',
+          tree: 'One level per step: at each leaf, every input and threshold is tried and the question that best separates the answers is kept. It stops at the maximum depth, or when no question helps.',
+          forest: 'One tree per step, each on a bootstrap sample (the training rows drawn at random with repeats) and choosing among a random few inputs at every question. Continue grows more.',
+          boost: 'One round per step: the gradient and curvature of the loss at every training example, then a small tree fitted to them, scaled by η and added on. Continue adds more rounds.',
+        }[b.type])),
+        UI.section('Settings', UI.note('A classic model’s settings are on its block: select it in the model.')));
+      return;
+    }
     const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train));
     clear(body);
     const lr = UI.slider({ label: 'Learning rate', min: -4, max: 0, step: 0.05, value: Math.log10(T.lr), format: (v) => fmtLr(Math.pow(10, v)), onChange: (v) => set((t) => { t.lr = +Math.pow(10, v).toPrecision(2); }) });
     const P = this.parts;
     P.live = el('div', { class: 'tiles' });
     P.grad = el('canvas');
+    const story = this.insightsSection();
+    if (story) body.append(story);
     body.append(P.live,
       UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
         UI.note({ sgd: 'Plain gradient descent: step downhill by learning rate × gradient.', momentum: 'Keeps a running velocity (0.9 of the last one plus the new gradient): faster along consistent directions, damped zig-zags.', adam: 'Adapts the step for every weight from running averages of its gradient and squared gradient. Usually the easiest to tune.', adamw: 'Adam with weight decay applied directly to the weights (decoupled), the usual choice for transformers.' }[T.opt]),
@@ -1131,9 +1412,9 @@
       UI.section('Find a learning rate', P.sweep = el('div', { class: 'bd-sweep' })),
       UI.section('Batches and schedule',
         UI.field('Batch size', UI.seg([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => set((t) => { t.batch = +v; }), 'Batch size')),
-        UI.field('Steps', UI.select([[300, '300'], [1000, '1,000'], [2000, '2,000'], [3000, '3,000'], [5000, '5,000'], [10000, '10,000'], [0, 'until I pause']].map(([value, label]) => ({ value, label })), T.steps, (v) => set((t) => { t.steps = +v; }))),
+        UI.field('Steps per press of Train', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => set((t) => { t.steps = +v; }))),
         UI.field('Learning-rate schedule', UI.select(Object.entries(SCHED_LABEL).map(([value, label]) => ({ value, label })), T.sched, (v) => set((t) => { t.sched = v; }))),
-        UI.note(T.steps ? 'Cosine and step schedules lower the learning rate as training goes on, for a finer finish.' : 'Schedules need a fixed number of steps.')),
+        UI.note(T.steps ? 'Train runs this many steps; Continue then runs as many again, so a run can go on as long as you like. Cosine and step schedules lower the learning rate over each stretch, for a finer finish.' : 'Training goes on until you pause. Schedules need a fixed number of steps, so the learning rate stays as set.')),
       UI.section('Regularisation and stability',
         UI.field('Weight decay', UI.select([0, 0.0001, 0.001, 0.01, 0.05].map((v) => ({ value: v, label: v ? String(v) : 'none' })), T.wd, (v) => set((t) => { t.wd = +v; }))),
         UI.field('Gradient clipping', UI.select([[0, 'off'], [0.5, '0.5'], [1, '1'], [5, '5']].map(([value, label]) => ({ value, label })), T.clip, (v) => set((t) => { t.clip = +v; }))),
@@ -1151,8 +1432,8 @@
     const P = this.parts, run = this.run;
     if (!P || !P.live) return;
     const p = run && run.last;
-    clear(P.live).append(UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'), UI.tile('Step', run ? fmtInt(run.step) : '0', this.setup.train.steps ? `of ${fmtInt(this.setup.train.steps)}` : 'until paused'),
-      UI.tile('Learning rate now', fmtLr(this.lrAt(run ? run.step : 0))), UI.tile(`Val. ${this.metricName()}`, p && p.vm !== null && p.vm !== undefined ? (run.family === 'curve' ? fmt(p.vm, 3) : fmtPct(p.vm, 1)) : '—', p && p.tm !== null && p.tm !== undefined ? `training ${run.family === 'curve' ? fmt(p.tm, 3) : fmtPct(p.tm, 1)}` : null));
+    clear(P.live).append(UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'), UI.tile('Step', run ? fmtInt(run.step) : '0', run && run.limit && !this.stale ? `of ${fmtInt(run.limit)}` : this.setup.train.steps ? `${fmtInt(this.setup.train.steps)} a press` : 'until you pause'),
+      UI.tile('Learning rate now', fmtLr(this.lrAt(run ? run.step : 0))), UI.tile(`Val. ${this.metricName()}`, p && p.vm !== null && p.vm !== undefined ? (BT.isValue(run.family) ? fmt(p.vm, 3) : fmtPct(p.vm, 1)) : '—', p && p.tm !== null && p.tm !== undefined ? `training ${BT.isValue(run.family) ? fmt(p.tm, 3) : fmtPct(p.tm, 1)}` : null));
     // gradient size of each layer, log scale
     const c = P.grad, W = Math.max(200, c.parentElement.clientWidth), Hh = 110, ctx = NA.fitCanvas(c, W, Hh);
     ctx.clearRect(0, 0, W, Hh);
@@ -1177,7 +1458,7 @@
     P.chartBox.hidden = !series.length;
     if (series.length) { P.chart.frame(); P.chart.set({ series, yFixed: this.valued() ? null : [0, 1] }); }
     P.chartNote.textContent = series.length ? 'Every press of Train after a change starts a new run from fresh weights, so you can compare. Tick runs to show them on the chart.' : `No runs on ${this.problem().label.toLowerCase()} yet: press Train, then change something and train again to compare.`;
-    const key = JSON.stringify([pid, this.runs.map((r) => [r.n, r.status, r.show, r.last && r.last.vm, r.step]), this.cmp]);
+    const key = JSON.stringify([pid, this.runs.map((r) => [r.n, r.status, r.show, r.last && r.last.vm, r.step, (r.events || []).length]), this.cmp]);
     if (key === this._runsKey) return;
     this._runsKey = key;
     this.renderCompare(P.cmp, runs);
@@ -1185,7 +1466,7 @@
     if (!this.runs.length) { P.list.append(UI.note('No runs yet. Press Train.')); return; }
     const best = runs.reduce((b, r) => (r.last && r.last.vm !== null && r.last.vm !== undefined && (!b || r.last.vm >= b.last.vm) ? r : b), null); // ties: the newer run
     for (const r of this.runs.slice().reverse()) {
-      const v = r.last && r.last.vm, vt = v === null || v === undefined ? '—' : r.family === 'curve' ? `R² ${fmt(v, 3)}` : fmtPct(v, 1);
+      const v = r.last && r.last.vm, vt = v === null || v === undefined ? '—' : BT.isValue(r.family) ? `R² ${fmt(v, 3)}` : fmtPct(v, 1);
       const cb = el('input', { type: 'checkbox', checked: r.show, 'aria-label': `Show run ${r.n} on the chart` });
       cb.addEventListener('change', () => { r.show = cb.checked; this._runsKey = null; this.renderRunsTab(); });
       P.list.append(el('div', { class: 'bd-run' + (r === this.run ? ' is-current' : '') + (r.cfg.problem !== pid ? ' is-other' : '') },
@@ -1193,6 +1474,7 @@
           r.cfg.problem !== pid ? el('span', { class: 'bd-run-prob', text: BT.byId[r.cfg.problem].label }) : null,
           el('span', { class: 'bd-run-v', text: vt }), r === best && runs.length > 1 ? UI.pill('good', 'Best') : null, r.status === 'diverged' ? UI.pill('warn', 'Diverged') : null),
         el('div', { class: 'bd-run-changes' }, ...r.changes.slice(0, 5).map((c) => el('span', { class: 'bd-change', text: c })), r.changes.length > 5 ? el('span', { class: 'bd-change', text: `+${r.changes.length - 5} more` }) : null),
+        r.events && r.events.length ? el('div', { class: 'bd-run-events' }, ...r.events.slice(-4).map((e) => el('span', { class: 'bd-event', text: `step ${fmtInt(e.step)}: ${e.what.join(', ')}` })), r.events.length > 4 ? el('span', { class: 'bd-event', text: `${r.events.length - 4} earlier` }) : null) : null,
         el('div', { class: 'bd-run-meta' }, el('span', { text: `${fmtInt(r.step)} steps · ${fmtInt(r.params)} parameters · ${r.seconds < 10 ? r.seconds.toFixed(1) : Math.round(r.seconds)} s${r.last && r.last.val !== null ? ` · val. loss ${fmt(r.last.val, 4)}` : ''}` }),
           el('button', { class: 'btn btn-quiet', type: 'button', title: 'Load this run’s setup (the model, problem and settings) to change it again', onclick: () => this.restoreRun(r) }, 'Use this setup'))));
     }
@@ -1211,14 +1493,15 @@
      run reaches the goal. The active challenge and the ones completed are kept in this browser. */
   const BC = NA.builderChallenges;
   const doneSet = () => new Set(NA.store.get('builderDone', []));
-  const scoreText = (fam, v) => (fam === 'curve' ? fmt(v, 2) : fmtPct(v, 0));
+  const scoreText = (fam, v) => (BT.isValue(fam) ? fmt(v, 2) : fmtPct(v, 0));
   BL.startChallenge = function (id) {
     const ch = BC.byId[id];
     if (!ch) return;
     if (this.training) this.pause();
     const S = BC.setup(ch);
     // the drawn points and every other problem's settings stay as they were; Undo brings back the whole setup
-    this.edit((s) => { const keep = { ps: Object.assign({}, s.ps, S.ps), custom: s.custom }; for (const k of Object.keys(s)) delete s[k]; Object.assign(s, S, keep, { blocks: withIds(S.blocks) }); }, { flip: true });
+    if (S.custom.table) S.custom.table.stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    this.edit((s) => { const keep = { ps: Object.assign({}, s.ps, S.ps), custom: S.custom.table ? Object.assign({}, s.custom, { table: S.custom.table }) : s.custom }; for (const k of Object.keys(s)) delete s[k]; Object.assign(s, S, keep, { blocks: withIds(S.blocks) }); }, { flip: true });
     this.challenge = id; this._hint = null;
     NA.store.set('builderChallenge', id);
     this.seqView = {};
@@ -1246,17 +1529,17 @@
     const root = this.chRoot;
     if (!root) return;
     const ch = this.challenge && BC.byId[this.challenge], done = doneSet();
-    const fam = ch ? BT.byId[ch.problem].family : null, here = ch && this.setup.problem === ch.problem;
+    const fam = ch ? BC.family(ch) : null, here = ch && this.setup.problem === ch.problem;
     const run = ch && this.run && this.run.cfg.problem === ch.problem ? this.run : null, vm = run && run.last ? run.last.vm : null;
-    const params = this.check && this.check.ok ? this.check.params : null;
-    const key = JSON.stringify([ch && ch.id, [...done], run && run.n, vm, params, this.setup.train.opt, here, this._hint]);
+    const params = this.check && this.check.ok ? this.check.params : null, ownData = !ch || BC.sameData(ch, this.setup);
+    const key = JSON.stringify([ch && ch.id, [...done], run && run.n, vm, params, this.setup.train.opt, here, this._hint, ownData, ch && ch.goals.some((g) => g.steps !== undefined) && run ? run.step : 0, this.setup.blocks.map((b) => b.type).join()]);
     if (key === this._chKey) return;
     this._chKey = key;
     clear(root);
     if (!ch) {
       root.append(el('div', { class: 'bd-ch-row' },
         el('button', { class: 'btn', type: 'button', onclick: () => this.openChallenges() }, 'Challenges'),
-        el('span', { class: 'sec-note', text: done.size ? `${done.size} of ${BC.LIST.length} done` : `${BC.LIST.length} goals to reach, from easy to tricky` })));
+        el('span', { class: 'sec-note', text: done.size ? `${done.size} of ${BC.LIST.length} done` : `${BC.LIST.length} goals to reach, from beginner to expert` })));
       return;
     }
     const won = done.has(ch.id);
@@ -1270,6 +1553,20 @@
         label = `At most ${fmtInt(g.params)} parameters`;
         now = params === null ? '' : `now ${fmtInt(params)}`;
         ok = params !== null && params <= g.params;
+      } else if (g.steps !== undefined) {
+        label = `Within the first ${fmtInt(g.steps)} training steps of a run`;
+        now = run ? `run ${run.n}: step ${fmtInt(run.step)}${run.step > g.steps ? ' (past it: ↺ starts a new run)' : ''}` : 'not trained yet';
+        ok = !!run && run.step <= g.steps;
+      } else if (g.classic !== undefined) {
+        const classic = this.isClassicSetup();
+        label = g.classic ? 'With a classic model, not a network' : 'With a neural network, not a classic model';
+        now = `now ${classic ? 'a classic model' : 'a network'}`;
+        ok = classic === g.classic;
+      } else if (g.dense !== undefined) {
+        const n = this.setup.blocks.filter((b) => b.type === 'dense').length;
+        label = `Keep at least ${g.dense} dense layers`;
+        now = `now ${n}`;
+        ok = n >= g.dense;
       } else {
         label = `Keep ${OPT_LABEL[g.opt]} as the optimizer`;
         now = `now ${OPT_LABEL[this.setup.train.opt]}`;
@@ -1280,12 +1577,13 @@
     });
     const hint = this._hint === ch.id;
     root.append(el('div', { class: 'bd-ch-card' + (won ? ' is-won' : '') },
-      el('div', { class: 'eyebrow', text: `Challenge · ${ch.level}` }),
+      el('div', { class: 'eyebrow', text: `Challenge · ${ch.level}${ch.topic ? ' · ' + ch.topic : ''}` }),
       el('h3', { class: 'bd-ch-title' }, won ? el('span', { class: 'bd-ch-tick', 'aria-hidden': 'true', text: '✓' }) : null, ch.title),
       el('p', { class: 'bd-ch-brief', text: ch.brief }),
       el('ul', { class: 'bd-ch-goals', 'aria-label': 'Goals' }, ...goals),
       won ? el('p', { class: 'bd-ch-won', text: 'Completed. Try another challenge, or keep going with this one.' }) : null,
       !here ? el('p', { class: 'bd-ch-away', text: `This challenge is on ${BT.byId[ch.problem].label.toLowerCase()}: switch back to it, or start over.` }) : null,
+      here && !ownData ? el('p', { class: 'bd-ch-away', text: `The data has been changed${ch.free ? ` beyond the ${ch.free.join(' and ')}` : ''}: a run only counts on the challenge’s own data. Start over to put it back.` }) : null,
       hint ? el('p', { class: 'bd-ch-hint' }, el('strong', { text: 'Hint. ' }), ch.hint) : null,
       el('div', { class: 'bd-ch-actions' },
         hint || won ? null : el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { this._hint = ch.id; this.renderChallenge(); } }, 'Show a hint'),
@@ -1312,12 +1610,17 @@
     clear(this.chList);
     let level = null;
     for (const ch of BC.LIST) {
-      if (ch.level !== level) { level = ch.level; this.chList.append(el('h3', { class: 'zoo-group', text: level })); }
-      const fam = BT.byId[ch.problem].family, won = done.has(ch.id);
-      const goals = ch.goals.map((g) => (g.metric !== undefined ? `${this.metricName(fam)} ≥ ${scoreText(fam, g.metric)}` : g.params !== undefined ? `≤ ${fmtInt(g.params)} parameters` : `keep ${OPT_LABEL[g.opt]}`)).join(' · ');
+      if (ch.level !== level) {
+        level = ch.level;
+        const all = BC.LIST.filter((q) => q.level === level), got = all.filter((q) => done.has(q.id)).length;
+        this.chList.append(el('h3', { class: 'zoo-group', text: `${level} · ${got} of ${all.length} done` }));
+      }
+      const fam = BC.family(ch), won = done.has(ch.id);
+      const goals = ch.goals.map((g) => (g.metric !== undefined ? `${this.metricName(fam)} ≥ ${scoreText(fam, g.metric)}` : g.params !== undefined ? `≤ ${fmtInt(g.params)} parameters` : g.steps !== undefined ? `within ${fmtInt(g.steps)} steps`
+        : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `keep ${g.dense} dense layers` : `keep ${OPT_LABEL[g.opt]}`)).join(' · ');
       this.chList.append(el('div', { class: 'bd-ch-item' + (won ? ' is-won' : '') + (ch.id === this.challenge ? ' is-active' : '') },
         el('div', { class: 'bd-ch-item-text' },
-          el('div', { class: 'bd-ch-item-title' }, won ? el('span', { class: 'bd-ch-tick', text: '✓' }) : null, ch.title, el('span', { class: 'bd-ch-item-prob', text: BT.byId[ch.problem].label })),
+          el('div', { class: 'bd-ch-item-title' }, won ? el('span', { class: 'bd-ch-tick', text: '✓' }) : null, ch.title, el('span', { class: 'bd-ch-item-prob', text: `${ch.topic ? ch.topic + ' · ' : ''}${ch.table ? `${ch.table} table` : BT.byId[ch.problem].label}` })),
           el('p', { class: 'bd-ch-item-brief', text: ch.brief }),
           el('div', { class: 'bd-ch-item-goals', text: 'Goal: ' + goals + (won ? ' · completed' : '') })),
         el('button', { class: 'btn' + (won ? '' : ' btn-primary'), type: 'button', 'aria-label': `${won ? 'Play again' : 'Start'}: ${ch.title}`, onclick: () => this.startChallenge(ch.id) }, won ? 'Play again' : 'Start')));
@@ -1337,6 +1640,7 @@
   // the setup a sweep belongs to: everything but the learning rate it is choosing
   BL.sweepKey = function () { const S = JSON.parse(this.snapshot()); delete S.train.lr; return JSON.stringify(S); };
   BL.startSweep = function () {
+    if (this.isClassicSetup()) return;
     if (this.training) this.pause();
     const d = this.dataFor(), chk = this.recheck();
     if (d.error || d.tooFew || !chk.ok) { NA.ui.toast.show('The model has to fit together, with data to learn, before a sweep.'); return; }
@@ -1380,7 +1684,7 @@
           const per = d.input.kind === 'tokens' ? d.input.len : 1, n = Math.min(d.nVa, Math.max(50, Math.round(600 / per)));
           const v = sw.model.evaluate(d.Xva.subarray(0, n * inSize), d.Yva.subarray(0, n * ySize), n, loss);
           val = Number.isFinite(v.loss) ? v.loss : null;
-          vm = d.family === 'curve' ? BT.r2(sw.model.predict(d.Xva.subarray(0, n * inSize), n), d.Yva, n) : v.count ? v.correct / v.count : null;
+          vm = BT.isValue(d.family) ? BT.r2(sw.model.predict(d.Xva.subarray(0, n * inSize), n), d.Yva, n) : v.count ? v.correct / v.count : null;
           if (val === null) sw.diverged = true;
         }
         sw.results.push({ lr: SWEEP_LRS[sw.i], val, vm, diverged: sw.diverged });
@@ -1472,7 +1776,7 @@
       const good = better === 'up' ? dv > 0 : dv < 0;
       return `${dv > 0 ? '+' : '−'}${f(Math.abs(dv))}${better ? (good ? ' better' : ' worse') : ''}`;
     };
-    const score = (v) => (fam === 'curve' ? fmt(v, 3) : fmtPct(v, 1)), scoreD = (v) => (fam === 'curve' ? fmt(v, 3) : `${fmt(v * 100, 1)} pts`);
+    const vfam = BT.isValue(this.dataFor().family), score = (v) => (vfam ? fmt(v, 3) : fmtPct(v, 1)), scoreD = (v) => (vfam ? fmt(v, 3) : `${fmt(v * 100, 1)} pts`);
     const rows = [
       [`Validation ${this.metricName()}`, L(a).vm, L(b).vm, score, scoreD, 'up', 5e-4],
       ['Validation loss', L(a).val, L(b).val, (v) => fmt(v, 4), (v) => fmt(v, 4), 'down', 5e-5],

@@ -820,6 +820,26 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .bd-lg-dash { width: 16px; border-top: 2px dashed var(--ink-2); }
 .bd-lg-box { width: 11px; height: 11px; border-radius: 2px; border: 1.6px solid var(--c); }
 .bd-res-box { position: relative; flex: 1 1 0; min-height: 200px; }
+.bd-ins { display: grid; grid-template-columns: auto 1fr; gap: 4px 9px; align-items: start; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); font-size: 12.5px; line-height: 1.45; }
+.bd-ins-ico { display: inline-grid; place-items: center; width: 17px; height: 17px; margin-top: 1px; border-radius: 50%; font: 700 11px var(--font-ui); background: var(--muted); color: var(--panel); }
+.bd-ins.is-critical { border-color: color-mix(in srgb, var(--critical) 55%, var(--line)); background: color-mix(in srgb, var(--critical) 7%, var(--panel-2)); }
+.bd-ins.is-critical .bd-ins-ico { background: var(--critical); color: #fff; }
+.bd-ins.is-warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); background: color-mix(in srgb, var(--warn) 7%, var(--panel-2)); }
+.bd-ins.is-warn .bd-ins-ico { background: var(--warn); color: #121519; }
+.bd-ins.is-good .bd-ins-ico { background: var(--good); color: #fff; }
+.bd-ins.is-info .bd-ins-ico { background: var(--s1); color: #fff; font-style: italic; font-family: Georgia, serif; }
+.bd-ins-title { font-weight: 650; color: var(--ink); }
+.bd-ins-body { color: var(--ink-2); }
+.bd-ins-more { display: inline-flex; align-items: center; min-height: 24px; margin: -5px 0 -5px 2px; padding: 0 5px; border: 0; border-radius: 6px; background: none; color: var(--s1); font: 600 12px var(--font-ui); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; vertical-align: baseline; }
+.bd-ins-more:hover { background: color-mix(in srgb, var(--s1) 10%, transparent); }
+@media (pointer: coarse) { .bd-ins-more { min-height: 32px; min-width: 40px; justify-content: center; margin: -9px 0 -9px 0; } }
+.bd-ins-acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; }
+.bd-ins-acts .btn { min-height: 28px; padding: 3px 10px; font-size: 12px; }
+.bd-ins-list { display: flex; flex-direction: column; gap: 8px; }
+.bd-read { font-size: 12.5px; color: var(--ink-2); }
+.bd-read summary { cursor: pointer; width: fit-content; color: var(--muted); font-weight: 600; font-size: 12px; }
+.bd-read summary:hover { color: var(--ink); }
+.bd-read p { margin: 5px 0 0; line-height: 1.5; max-width: 72ch; }
 .bd-res-box canvas { position: absolute; inset: 0; }
 .bd-res-foot { padding: 4px 12px 8px; border-top: 1px solid var(--line); }
 .bd-res-foot .mini-legend { margin-top: 2px; }
@@ -848,6 +868,8 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .bd-run-name { font: 600 13px var(--font-ui); }
 .bd-run-v { margin-left: auto; font: 600 13px var(--font-mono); font-variant-numeric: tabular-nums; }
 .bd-run-changes { display: flex; flex-wrap: wrap; gap: 4px; }
+.bd-run-events { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.bd-event { font: 11px var(--font-mono); color: var(--muted); }
 .bd-change { padding: 1px 8px; border-radius: 999px; background: var(--panel-2); color: var(--ink-2); font-size: 11px; line-height: 1.6; }
 .bd-run-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; font-size: 11px; color: var(--muted); }
 @media (max-width: 860px) {
@@ -1163,6 +1185,20 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
 .bd-cmp-changes .sec-note { margin: 0; }
 [data-layout="mobile"] .bd-ch-item { flex-direction: column; align-items: stretch; }
 [data-layout="mobile"] .bd-ch-item .btn { height: 40px; }
+/* model builder: the part guide */
+.pg-head .eyebrow { margin: 0; }
+.pg-title { margin: 2px 0 0; font: 400 23px/1.15 var(--font-display); }
+.pg-hint { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.pg-visual { margin: 10px 0 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); overflow: hidden; }
+.pg-canvas { display: block; width: 100%; }
+.pg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
+.pg-actions .sec-note { flex-basis: 100%; margin: 0; }
+.pg-p { margin: 4px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--ink-2); }
+.pg-list { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; color: var(--ink-2); }
+.pg-list li + li { margin-top: 3px; }
+.pg-details { margin-top: 6px; border-top: 1px solid var(--line); }
+.pg-details > summary { cursor: pointer; padding: 9px 0 4px; font: 600 12.5px var(--font-ui); color: var(--ink); }
+.bd-hyper-note { margin: 0; max-width: 46ch; font-size: 12px; }
 /* model builder: your table */
 .bd-samples { align-items: center; margin-top: 6px; }
 .bd-samples .sec-note { margin: 0 2px 0 0; }
@@ -1503,56 +1539,59 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=8d39981d0b"></script>
-<script src="js/engine.js?v=8d39981d0b"></script>
-<script src="js/data.js?v=8d39981d0b"></script>
-<script src="js/presets.js?v=8d39981d0b"></script>
-<script src="js/app.js?v=8d39981d0b"></script>
-<script src="js/ui.js?v=8d39981d0b"></script>
-<script src="js/network-view.js?v=8d39981d0b"></script>
-<script src="js/data-view.js?v=8d39981d0b"></script>
-<script src="js/hidden-space.js?v=8d39981d0b"></script>
-<script src="js/landscape.js?v=8d39981d0b"></script>
-<script src="js/charts.js?v=8d39981d0b"></script>
-<script src="js/insights.js?v=8d39981d0b"></script>
-<script src="js/inspector.js?v=8d39981d0b"></script>
-<script src="js/walkthrough.js?v=8d39981d0b"></script>
-<script src="js/lab.js?v=8d39981d0b"></script>
-<script src="js/archview.js?v=8d39981d0b"></script>
-<script src="js/arch-deep.js?v=8d39981d0b"></script>
-<script src="js/net-deep.js?v=8d39981d0b"></script>
-<script src="js/lm-data.js?v=8d39981d0b"></script>
-<script src="js/transformer.js?v=8d39981d0b"></script>
-<script src="js/lm-weights.js?v=8d39981d0b"></script>
-<script src="js/arch-transformer.js?v=8d39981d0b"></script>
-<script src="js/lab-transformer.js?v=8d39981d0b"></script>
-<script src="js/pinn.js?v=8d39981d0b"></script>
-<script src="js/pinn-weights.js?v=8d39981d0b"></script>
-<script src="js/arch-pinn.js?v=8d39981d0b"></script>
-<script src="js/lab-pinn.js?v=8d39981d0b"></script>
-<script src="js/diffusion.js?v=8d39981d0b"></script>
-<script src="js/diffusion-weights.js?v=8d39981d0b"></script>
-<script src="js/arch-diffusion.js?v=8d39981d0b"></script>
-<script src="js/lab-diffusion.js?v=8d39981d0b"></script>
-<script src="js/yolo.js?v=8d39981d0b"></script>
-<script src="js/arch-yolo.js?v=8d39981d0b"></script>
-<script src="js/lab-yolo.js?v=8d39981d0b"></script>
-<script src="js/radar.js?v=8d39981d0b"></script>
-<script src="js/radar-weights.js?v=8d39981d0b"></script>
-<script src="js/arch-radar.js?v=8d39981d0b"></script>
-<script src="js/lab-radar.js?v=8d39981d0b"></script>
-<script src="js/builder-engine.js?v=8d39981d0b"></script>
-<script src="js/builder-tasks.js?v=8d39981d0b"></script>
-<script src="js/builder-challenges.js?v=8d39981d0b"></script>
-<script src="js/builder-viz.js?v=8d39981d0b"></script>
-<script src="js/builder-py.js?v=8d39981d0b"></script>
-<script src="js/arch-builder.js?v=8d39981d0b"></script>
-<script src="js/lab-builder.js?v=8d39981d0b"></script>
-<script src="js/mobile.js?v=8d39981d0b"></script>
-<script src="js/share.js?v=8d39981d0b"></script>
-<script src="js/glossary.js?v=8d39981d0b"></script>
-<script src="js/tour.js?v=8d39981d0b"></script>
-<script src="js/chrome.js?v=8d39981d0b"></script>
-<script src="pwa.js?v=8d39981d0b"></script>
+<script src="js/core.js?v=2c85cce881"></script>
+<script src="js/engine.js?v=2c85cce881"></script>
+<script src="js/data.js?v=2c85cce881"></script>
+<script src="js/presets.js?v=2c85cce881"></script>
+<script src="js/app.js?v=2c85cce881"></script>
+<script src="js/ui.js?v=2c85cce881"></script>
+<script src="js/network-view.js?v=2c85cce881"></script>
+<script src="js/data-view.js?v=2c85cce881"></script>
+<script src="js/hidden-space.js?v=2c85cce881"></script>
+<script src="js/landscape.js?v=2c85cce881"></script>
+<script src="js/charts.js?v=2c85cce881"></script>
+<script src="js/insights.js?v=2c85cce881"></script>
+<script src="js/inspector.js?v=2c85cce881"></script>
+<script src="js/walkthrough.js?v=2c85cce881"></script>
+<script src="js/lab.js?v=2c85cce881"></script>
+<script src="js/archview.js?v=2c85cce881"></script>
+<script src="js/arch-deep.js?v=2c85cce881"></script>
+<script src="js/net-deep.js?v=2c85cce881"></script>
+<script src="js/lm-data.js?v=2c85cce881"></script>
+<script src="js/transformer.js?v=2c85cce881"></script>
+<script src="js/lm-weights.js?v=2c85cce881"></script>
+<script src="js/arch-transformer.js?v=2c85cce881"></script>
+<script src="js/lab-transformer.js?v=2c85cce881"></script>
+<script src="js/pinn.js?v=2c85cce881"></script>
+<script src="js/pinn-weights.js?v=2c85cce881"></script>
+<script src="js/arch-pinn.js?v=2c85cce881"></script>
+<script src="js/lab-pinn.js?v=2c85cce881"></script>
+<script src="js/diffusion.js?v=2c85cce881"></script>
+<script src="js/diffusion-weights.js?v=2c85cce881"></script>
+<script src="js/arch-diffusion.js?v=2c85cce881"></script>
+<script src="js/lab-diffusion.js?v=2c85cce881"></script>
+<script src="js/yolo.js?v=2c85cce881"></script>
+<script src="js/arch-yolo.js?v=2c85cce881"></script>
+<script src="js/lab-yolo.js?v=2c85cce881"></script>
+<script src="js/radar.js?v=2c85cce881"></script>
+<script src="js/radar-weights.js?v=2c85cce881"></script>
+<script src="js/arch-radar.js?v=2c85cce881"></script>
+<script src="js/lab-radar.js?v=2c85cce881"></script>
+<script src="js/builder-engine.js?v=2c85cce881"></script>
+<script src="js/classic-ml.js?v=2c85cce881"></script>
+<script src="js/builder-tasks.js?v=2c85cce881"></script>
+<script src="js/builder-challenges.js?v=2c85cce881"></script>
+<script src="js/part-guide.js?v=2c85cce881"></script>
+<script src="js/builder-insights.js?v=2c85cce881"></script>
+<script src="js/builder-viz.js?v=2c85cce881"></script>
+<script src="js/builder-py.js?v=2c85cce881"></script>
+<script src="js/arch-builder.js?v=2c85cce881"></script>
+<script src="js/lab-builder.js?v=2c85cce881"></script>
+<script src="js/mobile.js?v=2c85cce881"></script>
+<script src="js/share.js?v=2c85cce881"></script>
+<script src="js/glossary.js?v=2c85cce881"></script>
+<script src="js/tour.js?v=2c85cce881"></script>
+<script src="js/chrome.js?v=2c85cce881"></script>
+<script src="pwa.js?v=2c85cce881"></script>
 </body>
 </html>

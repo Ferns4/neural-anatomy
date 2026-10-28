@@ -106,12 +106,14 @@
       const x = r.x + (i % cols) * cell, y = r.y + Math.floor(i / cols) * cell;
       ctx.imageSmoothingEnabled = true; ctx.drawImage(c, x + 2, y + 2, img, img);
       if (preds) {
-        let b = 0; for (let k = 1; k < 10; k++) if (preds[i * 10 + k] > preds[i * 10 + b]) b = k;
+        const K = d.classes || 10;
+        let b = 0; for (let k = 1; k < K; k++) if (preds[i * K + k] > preds[i * K + b]) b = k;
         const ok = b === d.Yva[i];
         ctx.strokeStyle = theme.c(ok ? 'good' : 'critical', 0.9); ctx.lineWidth = 1.6; ctx.strokeRect(x + 1.5, y + 1.5, img + 1, img + 1);
-        text(ctx, String(b), x + img + 6, y + img * 0.5, { size: clamp(cell * 0.3, 10, 16), w: 700, color: theme.c(ok ? 'good' : 'critical'), mono: true });
+        text(ctx, d.task === 'shapes' ? d.names[b].slice(0, 3) : String(b), x + img + 4, y + img * 0.5, { size: clamp(cell * (d.task === 'shapes' ? 0.2 : 0.3), 9, 16), w: 700, color: theme.c(ok ? 'good' : 'critical'), mono: true, align: 'left' });
       }
     }
+    if ((cm || below) && d.task === 'shapes') { const bx = cm ? r.x + r.w - cm.w : below.x, bw = cm ? cm.w : below.w; drawConfusion(ctx, { x: bx, y: cm ? r.y : below.y, w: bw, h: bw }, L.confusion, d.names, 'true shape (rows) × answer (columns)'); return; }
     if (cm || below) {
       const top = cm ? r.y : below.y, bx = cm ? r.x + r.w - cm.w : below.x, bw = cm ? cm.w : below.w;
       const q = { x: bx + 14, y: top + 30, w: bw - 14, h: bw - 30 }, cs = Math.min(q.w, q.h) / 10, M = L.confusion;
@@ -287,12 +289,116 @@
     }
   }
 
+  // ------------------------------------------------------------------ series: forecasts
+  /* The series (validation part shaded), the model's one-step-ahead predictions on the validation part, and a
+     forecast that runs on its own: from where validation starts, each prediction is fed back in as the newest value,
+     so small errors compound. */
+  function drawSeries(ctx, r, L) {
+    const d = L.data, v = d.series, W = d.window, m = L.model, chaos = d.task === 'chaos';
+    // about 80 values before validation and 140 after; for chaos, room on the right for its return map
+    const from = Math.max(0, d.splitAt - 80), N = Math.min(v.length, d.splitAt + (chaos ? 60 : 140)), mapW = chaos && r.w > 380 ? Math.min(r.h - 34, r.w * 0.36) : 0;
+    const q = { x: r.x + 34, y: r.y + 8, w: r.w - 42 - (mapW ? mapW + 16 : 0), h: r.h - 34 };
+    let lo = Infinity, hi = -Infinity;
+    for (let t = from; t < N; t++) { lo = Math.min(lo, v[t]); hi = Math.max(hi, v[t]); }
+    const sp = hi - lo || 1; lo -= sp * 0.15; hi += sp * 0.15;
+    const X = (t) => q.x + ((t - from) / Math.max(1, N - 1 - from)) * q.w, Y = (y) => q.y + q.h - ((clamp(y, lo, hi) - lo) / (hi - lo)) * q.h;
+    ctx.fillStyle = theme.c('panel-2'); ctx.beginPath(); NA.rr(ctx, q.x, q.y, q.w, q.h, 8); ctx.fill();
+    ctx.fillStyle = theme.c('s2', 0.07); ctx.fillRect(X(d.splitAt), q.y, q.x + q.w - X(d.splitAt), q.h);
+    text(ctx, 'training', X(from) + 6, q.y + 10, { size: 10, align: 'left', color: theme.c('muted') });
+    text(ctx, 'validation: the future', X(d.splitAt) + 6, q.y + 10, { size: 10, align: 'left', color: theme.c('muted') });
+    const path = (ts, ys, col, w, dash) => { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.setLineDash(dash || []); ctx.beginPath(); ts.forEach((t, i) => (i ? ctx.lineTo(X(t), Y(ys[i])) : ctx.moveTo(X(t), Y(ys[i])))); ctx.stroke(); ctx.setLineDash([]); };
+    const ts = []; for (let t = from; t < N; t++) ts.push(t);
+    path(ts, ts.map((t) => v[t]), theme.c('s1', 0.85), 1.6);
+    if (m) {
+      const key = `${L.vizVersion}`;
+      if (!L._series || L._series.key !== key) {
+        const n = d.nVa, one = m.predict(d.Xva, n), R = Math.min(n, 140), win = new Float32Array(W), roll = [];
+        for (let j = 0; j < W; j++) win[j] = v[d.splitAt - W + j];
+        for (let k = 0; k < R; k++) { const y = m.predict(win, 1)[0]; roll.push(y); win.copyWithin(0, 1); win[W - 1] = y; }
+        L._series = { key, one: Array.from(one), roll };
+      }
+      const S = L._series;
+      path(S.one.map((_, i) => d.splitAt + i), S.one, theme.c('s2'), 1.8);
+      path(S.roll.map((_, i) => d.splitAt + i), S.roll, theme.c('s7'), 1.8, [5, 4]);
+    }
+    for (const t of [from, d.splitAt, N - 1]) text(ctx, `t ${t}`, X(t), q.y + q.h + 12, { size: 10, align: t === from ? 'left' : t === N - 1 ? 'right' : 'center', color: theme.c('muted'), mono: true });
+    if (!mapW) return;
+    // the return map: each value against the one before. Chaos hides a simple parabola here, which the model must find.
+    const b = { x: q.x + q.w + 16, y: q.y, w: mapW, h: mapW };
+    ctx.fillStyle = theme.c('panel-2'); ctx.beginPath(); NA.rr(ctx, b.x, b.y, b.w, b.h, 8); ctx.fill();
+    const MX = (a) => b.x + ((a + 1.1) / 2.2) * b.w, MY = (a) => b.y + b.h - ((a + 1.1) / 2.2) * b.h;
+    for (let t = 1; t < v.length; t++) { ctx.fillStyle = theme.c('s1', 0.5); ctx.fillRect(MX(v[t - 1]) - 1, MY(v[t]) - 1, 2, 2); }
+    if (m && L._series) L._series.one.forEach((y, i) => { const t = d.splitAt + i; ctx.fillStyle = theme.c('s2', 0.9); ctx.fillRect(MX(v[t - 1]) - 1.5, MY(y) - 1.5, 3, 3); });
+    text(ctx, 'next value against the last', b.x + b.w / 2, b.y + b.h + 12, { size: 10, align: 'center', color: theme.c('muted') });
+  }
+
+  // ------------------------------------------------------------------ surfaces: truth, model, error
+  function surfaceGrid(L, G) {
+    const key = `${L.vizVersion}:${G}`;
+    if (L._surf && L._surf.key === key) return L._surf.z;
+    const X = new Float32Array(G * G * 2);
+    for (let i = 0; i < G; i++) for (let j = 0; j < G; j++) { X[(i * G + j) * 2] = -1 + ((j + 0.5) / G) * 2; X[(i * G + j) * 2 + 1] = 1 - ((i + 0.5) / G) * 2; }
+    const z = L.model.predict(X, G * G);
+    L._surf = { key, z };
+    return z;
+  }
+  function drawSurface(ctx, r, L) {
+    // in a row when the area is wide, two over one when it is tall
+    const d = L.data, G = 48, f = d.truth, panels = L.model ? 3 : 1, gap = 14, th = 18;
+    const rowSide = Math.min((r.w - gap * (panels - 1)) / panels, r.h - th - 6), gridSide = panels > 1 ? Math.min((r.w - gap) / 2, (r.h - 2 * th - gap) / 2) : 0;
+    const grid = gridSide > rowSide * 1.15, side = grid ? gridSide : rowSide;
+    const place = (k) => (grid ? { x: r.x + (r.w - 2 * side - gap) / 2 + (k % 2) * (side + gap), y: r.y + 4 + Math.floor(k / 2) * (side + th + gap) } : { x: r.x + (r.w - (side * panels + gap * (panels - 1))) / 2 + k * (side + gap), y: r.y + 4 });
+    const truth = new Float32Array(G * G);
+    let top = 1e-9;
+    for (let i = 0; i < G; i++) for (let j = 0; j < G; j++) { const v = f(-1 + ((j + 0.5) / G) * 2, 1 - ((i + 0.5) / G) * 2); truth[i * G + j] = v; top = Math.max(top, Math.abs(v)); }
+    const model = L.model ? surfaceGrid(L, G) : null;
+    const paint = (k, val, title, err) => {
+      const c = document.createElement('canvas'); c.width = c.height = G;
+      const g = c.getContext('2d'), img = g.createImageData(G, G);
+      for (let p = 0; p < G * G; p++) {
+        // colours straight from the theme's lookup tables: diverging for heights, sequential for the error
+        const lut = err ? theme.gradLUT : theme.div, o = err ? Math.round(clamp(val(p) / top, 0, 1) * 255) * 3 : Math.round((clamp(val(p) / top, -1, 1) + 1) * 128) * 3;
+        img.data[p * 4] = lut[o]; img.data[p * 4 + 1] = lut[o + 1]; img.data[p * 4 + 2] = lut[o + 2]; img.data[p * 4 + 3] = 255;
+      }
+      g.putImageData(img, 0, 0);
+      const { x, y } = place(k);
+      ctx.imageSmoothingEnabled = true; ctx.drawImage(c, x, y, side, side);
+      ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, side - 1, side - 1);
+      text(ctx, fit(ctx, title, side + gap - 2, 10.5), x + side / 2, y + side + 11, { size: 10.5, align: 'center', color: theme.c('ink-2'), w: 600 });
+      return { x, y };
+    };
+    const tp = paint(0, (p) => truth[p], 'the surface and its points');
+    for (let i = 0; i < Math.min(d.nTr, 400); i++) { const px = tp.x + ((d.Xtr[2 * i] + 1) / 2) * side, py = tp.y + ((1 - d.Xtr[2 * i + 1]) / 2) * side; ctx.fillStyle = theme.c('ink', 0.5); ctx.fillRect(px - 1, py - 1, 2, 2); }
+    if (model) { paint(1, (p) => model[p], 'what the model learned'); paint(2, (p) => Math.abs(model[p] - truth[p]), 'its error', true); }
+  }
+
+  // ------------------------------------------------------------------ sequences: examples and answers
+  function drawSeqClass(ctx, r, L) {
+    const d = L.data, T = d.input.len, K = d.classes, m = L.model, n = Math.min(d.nVa, 12);
+    const side = m && L.confusion && r.w > 520, cmW = side ? Math.min(r.h, r.w * 0.36) : 0, lw = r.w - (side ? cmW + 18 : 0);
+    const out = m ? m.predict(d.Xva.subarray(0, n * T), n) : null, rowH = clamp((r.h - 10) / n, 16, 26);
+    for (let i = 0; i < n; i++) {
+      const ids = Array.from(d.Xva.subarray(i * T, (i + 1) * T)), words = ids.map((t) => d.vocab[t]).filter((w, k) => !(d.pad === 0 && ids[k] === 0));
+      const textOf = words.join(d.vocab.every((w) => w.length === 1) ? '' : ' ');
+      const y = r.y + 8 + i * rowH, truth = d.Yva[i];
+      let pred = null;
+      if (out) { pred = 0; for (let k = 1; k < K; k++) if (out[i * K + k] > out[i * K + pred]) pred = k; }
+      const ok = pred === truth;
+      text(ctx, fit(ctx, textOf, lw - 150, 11.5, 500), r.x + 4, y + rowH / 2, { size: 11.5, mono: true, color: theme.c('ink') });
+      text(ctx, out ? `${ok ? '✓' : '✗'} ${d.names[pred]}` : d.names[truth], r.x + lw - 4, y + rowH / 2, { size: 11, align: 'right', w: 700, color: out ? theme.c(ok ? 'good' : 'critical') : theme.c('muted') });
+    }
+    if (side) drawConfusion(ctx, { x: r.x + lw + 18, y: r.y, w: cmW, h: r.h }, L.confusion, d.names, 'true class (rows) × the model’s answer (columns)');
+  }
+
   // ------------------------------------------------------------------ entry points
   V.draw = function (ctx, r, L) {
     const d = L.data;
     if (!d) return;
     if (d.error) return; // the lab shows the problem's error as text above the picture
     if (d.table) return drawTable(ctx, r, L);
+    if (d.family === 'series') return drawSeries(ctx, r, L);
+    if (d.family === 'surface') return drawSurface(ctx, r, L);
+    if (d.family === 'seqclass') return drawSeqClass(ctx, r, L);
     if (d.family === 'plane') return drawPlane(ctx, r, L);
     if (d.family === 'curve') return drawCurve(ctx, r, L);
     if (d.family === 'digits') return drawDigits(ctx, r, L);
@@ -306,6 +412,9 @@
     ctx.clearRect(0, 0, W, Hh);
     if (!d || d.error) return;
     if (d.table) { drawTable(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }); return; }
+    if (d.family === 'series') { drawSeries(ctx, { x: 0, y: 0, w: W, h: Hh + 14 }, { data: d, model: null }); return; }
+    if (d.family === 'surface') { drawSurface(ctx, { x: 0, y: 0, w: W, h: Hh + 10 }, { data: d, model: null }); return; }
+    if (d.family === 'seqclass') { drawSeqClass(ctx, { x: 0, y: -4, w: W, h: Hh }, { data: Object.assign({}, d, { nVa: 4 }), model: null }); return; }
     if (d.family === 'plane') { drawPlane(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }, { dataOnly: true }); return; }
     if (d.family === 'curve') { drawCurve(ctx, { x: 0, y: 0, w: W, h: Hh + 18 }, { data: d, model: null }); return; }
     if (d.family === 'digits') { drawDigits(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: { ...d, nVa: 12 }, model: null }); return; }

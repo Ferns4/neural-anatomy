@@ -1,6 +1,7 @@
 /* builder-py.js — what you built in the model builder, written out as one PyTorch script you can run: the data
    (the same generators as the page, in Python), the model, the loss, the optimizer and its schedule, and the
-   training loop with the same measures the page shows. Only torch is needed. */
+   training loop with the same measures the page shows. Only torch is needed. A classic model (linear, k-NN,
+   trees, a forest, boosting) is written with scikit-learn, or XGBoost for boosting, on the same data. */
 (function (NA) {
   'use strict';
   const BT = NA.builderTasks;
@@ -31,6 +32,90 @@
     `k = round(${frac} * ${n})`,
     'Xtr, Ytr, Xva, Yva = X[perm[:k]], Y[perm[:k]], X[perm[k:]], Y[perm[k:]]',
   ];
+  const SURFACE_PY = {
+    hill: 'torch.exp(-((x - 0.35) ** 2 + (y - 0.3) ** 2) / 0.08) - 0.8 * torch.exp(-((x + 0.4) ** 2 + (y + 0.35) ** 2) / 0.12)',
+    ripples: 'torch.cos(9 * torch.hypot(x, y)) * torch.exp(-1.5 * torch.hypot(x, y))',
+    saddle: 'x * x - y * y',
+    checker: 'torch.sin(4.5 * x) * torch.sin(4.5 * y)',
+  };
+  const SERIES_PY = {
+    waves: 'torch.sin(2 * math.pi * t / 25) + 0.5 * torch.sin(2 * math.pi * t / 9.3 + 1)',
+    seasonal: '0.0015 * t + 0.6 * torch.sin(2 * math.pi * t / 24) + 0.3 * torch.sin(2 * math.pi * t / 7 + 0.5)',
+    square: 'torch.where(torch.sin(2 * math.pi * t / 30) >= 0, 0.8, -0.8)',
+  };
+  // the sequence classes of js/builder-tasks.js, in Python: each example() gives (token ids, class), or (None, -1) to skip
+  const SEQCLASS_PY = {
+    sentiment: (d) => String.raw`NOUNS, GOOD = ${JSON.stringify(d.vocab.slice(8, 14))}, ${JSON.stringify(d.vocab.slice(14, 19))}
+BAD, ADV = ${JSON.stringify(d.vocab.slice(19, 24))}, ${JSON.stringify(d.vocab.slice(24, 27))}
+
+def clause():
+    pos, neg = random.random() < 0.5, random.random() < 0.4
+    w = ["the", random.choice(NOUNS), "was" if random.random() < 0.5 else "is"]
+    if neg:
+        w.append("not")                           # "not" flips the clause
+    if random.random() < 0.3:
+        w.append(random.choice(ADV))
+    w.append(random.choice(GOOD if pos else BAD))
+    return w, int(pos != neg)
+
+def example():
+    """A tiny review: after "but" the second clause decides, which a bag of words cannot tell."""
+    a, la = clause()
+    if random.random() < 0.7:
+        b, lb = clause()
+        if random.random() < 0.85:
+            words, label = a + ["but"] + b + ["."], lb
+        else:
+            words, label = a + ["and"] + b + ["."], la if la == lb else -1
+    else:
+        words, label = a + ["."], la
+    if label < 0 or len(words) > T:
+        return None, -1
+    return [ID[w] for w in words] + [0] * (T - len(words)), label   # padded with "·"`,
+    majority: () => String.raw`def example():
+    """Bits; class 1 when more than half are 1."""
+    ids = [random.randrange(2) for _ in range(T)]
+    return ids, int(2 * sum(ids) > T)`,
+    parity: () => String.raw`def example():
+    """Bits; class 1 when the number of 1s is odd: every bit matters, which is hard to learn."""
+    ids = [random.randrange(2) for _ in range(T)]
+    return ids, sum(ids) % 2`,
+    pattern: () => String.raw`def example():
+    """Digits; half get "3 7" planted somewhere. Class 1: a 3 followed by a 7 anywhere."""
+    ids = [random.randrange(10) for _ in range(T)]
+    if random.random() < 0.5:
+        at = random.randrange(T - 1)
+        ids[at], ids[at + 1] = 3, 7
+    return ids, int(any(a == 3 and b == 7 for a, b in zip(ids, ids[1:])))`,
+  };
+  // the shapes of js/builder-tasks.js, in Python
+  const SHAPES_PY = String.raw`G = 14                                        # pictures are G x G pixels
+SHAPES = ["circle", "square", "triangle", "cross", "line"]
+centres = torch.stack(torch.meshgrid(torch.arange(G), torch.arange(G), indexing="ij"), -1).flip(-1).reshape(-1, 2) + 0.5
+
+def seg_dist(p, a, b):
+    """Distance from each point p to the line segment a-b."""
+    ab = b - a
+    t = (((p - a) * ab).sum(1) / (ab * ab).sum().clamp(min=1e-12)).clamp(0, 1)
+    return (a + t[:, None] * ab - p).norm(dim=1)
+
+def draw_shape(k):
+    """One shape anywhere in the picture, at any size and angle, as a pen stroke about a pixel wide."""
+    r = random.uniform(3, 5.2)
+    cx, cy = random.uniform(r + 0.5, G - r - 1.5), random.uniform(r + 0.5, G - r - 1.5)
+    a, w = random.uniform(0, math.pi), random.uniform(0.55, 0.95)
+    pt = lambda ang, rad: torch.tensor([cx + rad * math.cos(ang), cy + rad * math.sin(ang)])
+    if k == 0:
+        d = ((centres - torch.tensor([cx, cy])).norm(dim=1) - r).abs()
+    else:
+        corners = {1: 4, 2: 3}.get(k)
+        if corners:
+            segs = [(pt(a + q * 2 * math.pi / corners, r), pt(a + (q + 1) * 2 * math.pi / corners, r)) for q in range(corners)]
+        else:
+            segs = [(pt(a, r), pt(a + math.pi, r))] + ([(pt(a + math.pi / 2, r), pt(a + 1.5 * math.pi, r))] if k == 3 else [])
+        d = torch.stack([seg_dist(centres, p, q) for p, q in segs]).min(0).values
+    img = (1 - (d - w / 2)).clamp(0, 1) + 0.04 * torch.randn(G * G)
+    return img.view(1, G, G)`;
   // the digit strokes of js/data.js, in Python
   const DIGITS_PY = String.raw`G = 14                                        # pictures are G x G pixels
 TAU = 2 * math.pi
@@ -196,9 +281,29 @@ def story():
         else out.push(`CLASSES = [${d.names.map((v) => JSON.stringify(v)).join(', ')}]`, 'Y = torch.tensor([CLASSES.index(r[TARGET].strip()) for r in rows])');
         out.push(...SPLIT(0.8));
       }
+    } else if (fam === 'digits' && p.task === 'shapes') {
+      out.push(SHAPES_PY, '', `n = ${s.n}`, 'X = torch.stack([draw_shape(i % 5) for i in range(n)])      # (n, 1, 14, 14), ink in [0, 1]',
+        'Y = torch.arange(n) % 5', ...SPLIT(0.8));
     } else if (fam === 'digits') {
       out.push(DIGITS_PY, '', `n = ${s.n}`, 'X = torch.stack([draw_digit(i % 10) for i in range(n)])     # (n, 1, 14, 14), ink in [0, 1]',
         'Y = torch.arange(n) % 10', ...SPLIT(0.8));
+    } else if (fam === 'surface') {
+      out.push('def surface(x, y):', `    return ${SURFACE_PY[p.task]}`, '',
+        `X = 2 * torch.rand(${s.n}, 2) - 1                     # points spread over the square [-1, 1]²`,
+        `Y = surface(X[:, 0], X[:, 1]) + ${num(s.noise)} * torch.randn(${s.n})     # the height there, plus noise`, ...SPLIT(0.8));
+    } else if (fam === 'series') {
+      if (p.task === 'chaos') out.push(`v, x = torch.empty(${s.n}), 0.31 + 0.02 * random.random()`, 'for i in range(len(v)):                           # the logistic map: fully determined, yet chaotic', '    v[i] = 2 * x - 1', '    x = 3.9 * x * (1 - x)');
+      else out.push(`t = torch.arange(${s.n}, dtype=torch.float32)`, `v = ${SERIES_PY[p.task]}`);
+      out.push(`v = v + ${num(s.noise)} * torch.randn(len(v))`, 'v = (v - v.mean()) / (v - v.mean()).abs().max()     # centred, the largest value 1 (the page does too)', '',
+        `W = ${s.window}                                          # the model sees the last W values`,
+        'X = torch.stack([v[i:i + W] for i in range(len(v) - W)])[:, :, None]   # (windows, W, 1)', 'Y = v[W:].clone()                                  # the value after each window',
+        'k = round(0.8 * len(X))                            # the first 80% train; the rest, the future, validates', 'Xtr, Ytr, Xva, Yva = X[:k], Y[:k], X[k:], Y[k:]');
+    } else if (fam === 'seqclass') {
+      out.push(`VOCAB = ${JSON.stringify(d.vocab)}`, 'ID = {w: i for i, w in enumerate(VOCAB)}', `CLASSES = ${JSON.stringify(d.names)}`, `T = ${d.input.len}                                         # tokens per sequence`, '',
+        SEQCLASS_PY[p.task](d), '',
+        `rows, seen, tries = [], set(), 0`, `while len(rows) < ${s.n} and tries < ${30 * s.n}:`, '    tries += 1', '    ids, label = example()',
+        `    if ids is None${p.task === 'sentiment' ? '' : ' or tuple(ids) in seen'}:${p.task === 'sentiment' ? '' : '                # every sequence once'}`, '        continue', '    seen.add(tuple(ids))', '    rows.append((ids, label))',
+        'X, Y = torch.tensor([r[0] for r in rows]), torch.tensor([r[1] for r in rows])', 'k = len(X) - max(40, round(0.2 * len(X)))', 'Xtr, Ytr, Xva, Yva = X[:k], Y[:k], X[k:], Y[k:]');
     } else if (p.task === 'language') {
       out.push(LANGUAGE_PY, '', `T = ${d.input.len}                                        # every story is padded or cut to T tokens`,
         `def make_stories(n):`, `    X, Y = torch.full((n, T), ID["."]), torch.full((n, T), -1)       # -1: no target (padding)`, '    for i in range(n):',
@@ -232,6 +337,29 @@ def story():
   };
   const ACT_FN = { relu: 'F.relu', leaky: 'lambda z: F.leaky_relu(z, 0.05)', elu: 'F.elu', gelu: 'lambda z: F.gelu(z, approximate="tanh")', swish: 'F.silu', softplus: 'F.softplus', tanh: 'torch.tanh', sigmoid: 'torch.sigmoid', sine: 'torch.sin', gaussian: 'lambda z: torch.exp(-z ** 2)', linear: 'lambda z: z' };
   const shp = (s) => (s ? '(batch, ' + s.join(', ') + ')' : '');
+  const GATED_PY = String.raw`class Gated(nn.Module):
+    """A gated linear unit: two weighted sums of the same input, out = value(x) * act(gate(x)) (with Swish: SwiGLU)."""
+    def __init__(self, d_in, units, act):
+        super().__init__()
+        self.value, self.gate, self.act = nn.Linear(d_in, units), nn.Linear(d_in, units), act
+
+    def forward(self, x):
+        return self.value(x) * self.act(self.gate(x))`;
+  const NOISE_PY = String.raw`class GaussianNoise(nn.Module):
+    """Adds sigma * a standard normal draw to every number while training; nothing when the model is used."""
+    def __init__(self, sigma):
+        super().__init__()
+        self.sigma = sigma
+
+    def forward(self, x):
+        return x + self.sigma * torch.randn_like(x) if self.training else x`;
+  const SINE_PY = String.raw`def sine_positions(T, D):
+    """The original transformer's positions: PE[t, 2i] = sin(t / 10000^(2i/D)), PE[t, 2i + 1] = cos(...)."""
+    t, i = torch.arange(T)[:, None], torch.arange(D)[None, :]
+    angle = t / 10000 ** (2 * (i // 2) / D)
+    return torch.where(i % 2 == 0, torch.sin(angle), torch.cos(angle))`;
+  // a block's settings with the engine's defaults filled in
+  const cfg = (b) => Object.assign({}, (NA.bx.BLOCKS[b.type] || {}).defaults, ...Object.keys(b).filter((k) => b[k] !== undefined && b[k] !== null).map((k) => ({ [k]: b[k] })));
   const MIXED_PY = String.raw`class MixedActivation(nn.Module):
     """A different activation for each neuron of a layer (the dots you changed on the page)."""
     def __init__(self, acts):
@@ -301,12 +429,36 @@ def story():
         put(`x = self.block${n}(x)`);
       } else if (b.type === 'conv') {
         init.push(`self.conv${n} = nn.Conv2d(${si[0]}, ${b.filters}, ${b.k}, stride=${b.stride || 1}, padding=${(b.k - 1) >> 1})`);
-        put(`x = ${ACT_PY[b.act](`self.conv${n}(x)`)}`);
+        const z = ACT_PY[b.act](`self.conv${n}(x)`);
+        put(b.residual && b.filters === si[0] && (b.stride || 1) === 1 ? `x = x + ${z}` : `x = ${z}`); // the engine adds the input back only when the shape is kept
       } else if (b.type === 'pool') put(`x = F.max_pool2d(x, ${b.size})                     # leftover rows and columns are dropped`);
       else if (b.type === 'flatten') put('x = x.flatten(1)');
       else if (b.type === 'gap') put(si.length === 3 ? 'x = x.mean((2, 3))' : 'x = x.mean(1)');
+      else {
+        const c = cfg(b);
+        if (b.type === 'gated') { helpers.add('gated'); init.push(`self.glu${n} = Gated(${last}, ${c.units}, ${ACT_FN[c.gate] || 'F.silu'})`); put(`x = self.glu${n}(x)`); }
+        else if (b.type === 'batchnorm') { init.push(`self.bn${n} = nn.BatchNorm${si.length === 3 ? '2d' : '1d'}(${si.length === 3 ? si[0] : last})`); put(si.length === 2 ? `x = self.bn${n}(x.transpose(1, 2)).transpose(1, 2)` : `x = self.bn${n}(x)`); }
+        else if (b.type === 'noise') { helpers.add('noise'); init.push(`self.noise${n} = GaussianNoise(${num(c.sigma)})`); put(`x = self.noise${n}(x)`); }
+        else if (b.type === 'fourier') {
+          init.push(`self.register_buffer("B${n}", ${num(c.scale)} * torch.randn(${c.features}, ${last}))   # random frequencies, never trained`);
+          fwd.push(`a = 2 * math.pi * x @ self.B${n}.T`); put('x = torch.cat([x, torch.sin(a), torch.cos(a)], -1)');
+        } else if (b.type === 'rnn') { init.push(`self.rnn${n} = nn.${{ lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' }[c.cell] || 'LSTM'}(${last}, ${c.units}, batch_first=True)`); put(`x, _ = self.rnn${n}(x)`); }
+        else if (b.type === 'conv1d') {
+          const reach = (c.k - 1) * (c.dilation || 1), left = c.causal ? reach : Math.floor(reach / 2);
+          init.push(`self.conv${n} = nn.Conv1d(${last}, ${c.filters}, ${c.k}${c.dilation > 1 ? `, dilation=${c.dilation}` : ''})`);
+          const z = `${ACT_PY[c.act](`self.conv${n}(F.pad(x.transpose(1, 2), (${left}, ${reach - left})))`)}.transpose(1, 2)`;
+          put(c.residual && c.filters === last ? `x = x + ${z}` : `x = ${z}`);
+        } else if (b.type === 'position') {
+          if (c.mode === 'sine') { helpers.add('sine'); init.push(`self.register_buffer("pe${n}", sine_positions(${si[0]}, ${last}))   # fixed waves, one row per position`); put(`x = x + self.pe${n}`); }
+          else { init.push(`self.pos${n} = nn.Parameter(0.02 * torch.randn(${si[0]}, ${last}))   # a learned vector for each position`); put(`x = x + self.pos${n}`); }
+        } else if (b.type === 'seqpool') put(c.mode === 'max' ? 'x = x.max(1).values' : c.mode === 'mean' ? 'x = x.mean(1)' : 'x = x[:, -1]                                  # the last position');
+        else if (b.type === 'patches') {
+          init.push(`self.patch${n} = nn.Conv2d(${si[0]}, ${c.dim}, ${c.size}, stride=${c.size})   # one projection for every ${c.size}×${c.size} patch`, `self.pos${n} = nn.Parameter(0.02 * torch.randn(${so[0]}, ${c.dim}))   # each patch's learned place`);
+          put(`x = self.patch${n}(x).flatten(2).transpose(1, 2) + self.pos${n}`);
+        } else if (b.type === 'avgpool') put(`x = F.avg_pool2d(x, ${c.size})`);
+      }
     });
-    const fin = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : inp.kind === 'tokens' ? [inp.len, inp.embed] : inp.kind === 'vector' ? [inp.dim] : [inp.c, inp.h, inp.w];
+    const fin = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : inp.kind === 'tokens' ? [inp.len, inp.embed] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w];
     const dIn = fin ? fin[fin.length - 1] : 1, K = out.kind === 'tokens' ? out.vocab : out.k;
     init.push(`self.out = nn.Linear(${dIn}, ${K})${out.kind === 'classes' ? '                # one score per class' : out.kind === 'tokens' ? '                # a score for every possible next token' : ''}`);
     fwd.push(`return self.out(x)`.padEnd(54) + `# ${shp(out.kind === 'tokens' ? [inp.len, K] : [K])}`);
@@ -314,9 +466,12 @@ def story():
     if (helpers.has('mixed')) pre.push(`ACT = {${Object.keys(ACT_FN).map((a) => `"${a}": ${ACT_FN[a]}`).join(', ')}}`, '', MIXED_PY, '', '');
     if (helpers.has('attn')) pre.push(ATTN_PY, '', '');
     if (helpers.has('block')) pre.push(BLOCK_PY, '', '');
+    if (helpers.has('gated')) pre.push(GATED_PY, '', '');
+    if (helpers.has('noise')) pre.push(NOISE_PY, '', '');
+    if (helpers.has('sine')) pre.push(SINE_PY, '', '');
     return lines('# ---------------------------------------------------------------- the model', ...pre,
       'class Model(nn.Module):', '    def __init__(self):', '        super().__init__()', init.map((l) => '        ' + l), '',
-      '    def forward(self, x):' + `                                   # x: ${shp(inp.kind === 'tokens' ? [inp.len] : inp.kind === 'vector' ? [inp.dim] : [inp.c, inp.h, inp.w])}`, fwd.map((l) => '        ' + l));
+      '    def forward(self, x):' + `                                   # x: ${shp(inp.kind === 'tokens' ? [inp.len] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w])}`, fwd.map((l) => '        ' + l));
   }
 
   // ------------------------------------------------------------------ loss, optimizer, training
@@ -359,6 +514,14 @@ def story():
       const n = i + 1, attn = (m) => `for layer in (${['q', 'k', 'v', 'o'].map((x) => `${m}.${x}`).join(', ')}):`;
       if (b.type === 'dense') out.push(call(`model.dense${n}`, b.acts && !small ? b.acts.map((a) => gain(HE(a))) : gain(HE(b.act))));
       else if (b.type === 'conv') out.push(call(`model.conv${n}`, gain(HE(b.act))));
+      else if (b.type === 'conv1d') out.push(call(`model.conv${n}`, gain(HE(cfg(b).act))));
+      else if (b.type === 'gated') out.push(call(`model.glu${n}.value`, 1), call(`model.glu${n}.gate`, gain(HE(cfg(b).gate))));
+      else if (b.type === 'patches') out.push(call(`model.patch${n}`, 1));
+      else if (b.type === 'rnn') {
+        // as on the page: normal weights with sd √(1 / inputs) (0.02 for tiny), zero biases, an LSTM's forget gates open
+        out.push('with torch.no_grad():', `    r = model.rnn${n}`, small ? '    r.weight_ih_l0.normal_(0.0, 0.02), r.weight_hh_l0.normal_(0.0, 0.02)' : '    r.weight_ih_l0.normal_(0.0, math.sqrt(1 / r.input_size)), r.weight_hh_l0.normal_(0.0, math.sqrt(1 / r.hidden_size))',
+          '    r.bias_ih_l0.zero_(), r.bias_hh_l0.zero_()', ...(cfg(b).cell === 'lstm' ? ['    r.bias_ih_l0[r.hidden_size:2 * r.hidden_size] = 1.0     # forget gates start open: the memory lasts from the start'] : []));
+      }
       else if (b.type === 'attention') out.push(attn(`model.attn${n}`), '    init_(layer)');
       else if (b.type === 'transformer') out.push(attn(`model.block${n}.attn`), '    init_(layer)', call(`model.block${n}.mlp[0]`, gain(true)), call(`model.block${n}.mlp[2]`, mode === 'he' ? 2 : 1));
     });
@@ -391,12 +554,78 @@ def story():
     return [...(d.input.kind === 'tokens' ? ['embedding'] : []), ...setup.blocks.map(L), end].join(' → ');
   }
 
+  // ------------------------------------------------------------------ classic models: scikit-learn, and XGBoost for boosting
+  function classicModel(b, d, seed) {
+    const s = NA.cml.withDefaults(b), cls = d.output.kind === 'classes', n = d.nTr, CR = cls ? 'Classifier' : 'Regressor';
+    const sk = (imp, make) => ({ imp, fit: [`model = ${make}`, 'model.fit(Xtr_, ytr_)'], predict: 'predict = model.predict', proba: 'model.predict_proba(x)' });
+    if (b.type === 'linear') {
+      if (cls) return sk('from sklearn.linear_model import LogisticRegression', s.lambda ? `LogisticRegression(C=${num(1 / (s.lambda * n))}, max_iter=2000)   # C = 1 / (λ × examples): the page's λ = ${num(s.lambda)}` : 'LogisticRegression(penalty=None, max_iter=2000)');
+      return s.lambda ? sk('from sklearn.linear_model import Ridge', `Ridge(alpha=${num(s.lambda)})                         # least squares plus λ|w|²`) : sk('from sklearn.linear_model import LinearRegression', 'LinearRegression()                                 # least squares, solved exactly');
+    }
+    if (b.type === 'knn') return sk(`from sklearn.neighbors import KNeighbors${CR}`, `KNeighbors${CR}(n_neighbors=${s.k}, weights="${s.weights === 'distance' ? 'distance' : 'uniform'}")`);
+    if (b.type === 'tree') return sk(`from sklearn.tree import DecisionTree${CR}`, `DecisionTree${CR}(max_depth=${s.depth}, min_samples_leaf=${s.minLeaf}, random_state=${seed})`);
+    if (b.type === 'forest') return sk(`from sklearn.ensemble import RandomForest${CR}`, `RandomForest${CR}(n_estimators=${s.trees}, max_depth=${s.depth}, max_features=${s.features === 'all' ? 'None' : s.features === 'third' ? '1 / 3' : '"sqrt"'}, min_samples_leaf=${s.minLeaf}, random_state=${seed})`);
+    // boosting with XGBoost's own interface: its settings carry the same names as on the page (eta, lambda, gamma)
+    const K = d.output.k, obj = !cls ? 'reg:squarederror' : K === 2 ? 'binary:logistic' : 'multi:softprob';
+    return {
+      imp: 'import xgboost as xgb',
+      fit: ['params = {', `    "objective": "${obj}",${cls && K > 2 ? ` "num_class": ${K},` : ''}`,
+        `    "eta": ${num(s.eta)}, "max_depth": ${s.depth}, "lambda": ${num(s.lambda)}, "gamma": ${num(s.gamma)},`,
+        `    "subsample": ${num(s.subsample)}, "colsample_bytree": ${num(s.colsample)}, "tree_method": "hist", "max_bin": 48, "seed": ${seed},`, '}',
+        `model = xgb.train(params, xgb.DMatrix(Xtr_, label=ytr_), num_boost_round=${s.rounds})   # one small tree per round${cls && K > 2 ? ' and class' : ''}`],
+      predict: !cls ? 'predict = lambda X_: model.predict(xgb.DMatrix(X_))' : K === 2 ? 'predict = lambda X_: (model.predict(xgb.DMatrix(X_)) > 0.5).astype(int)   # p(class 1) over a half' : 'predict = lambda X_: model.predict(xgb.DMatrix(X_)).argmax(1)',
+      proba: 'model.predict(xgb.DMatrix(x))',
+    };
+  }
+  // what to print to look inside each kind of model, for the first validation example x
+  function classicLook(b, d) {
+    const s = NA.cml.withDefaults(b), cls = d.output.kind === 'classes';
+    if (b.type === 'linear') return ['print("weights:", model.coef_.round(3), "bias:", model.intercept_.round(3))'];
+    if (b.type === 'knn') return ['dist, idx = model.kneighbors(x)                    # its nearest training examples', `print("the ${s.k} nearest:", idx[0], "at distances", dist[0].round(3), "with targets", ytr_[idx[0]])`];
+    if (b.type === 'tree') return ['from sklearn.tree import export_text', 'print(export_text(model, max_depth=3))             # the first questions, as text', 'print("nodes on this example\'s path:", model.decision_path(x).indices)'];
+    if (b.type === 'forest') return [`print("the first trees' answers:", [${cls ? 'int(t.predict(x)[0])' : 'round(float(t.predict(x)[0]), 3)'} for t in model.estimators_[:8]])`];
+    return ['print(model.get_dump()[0])                         # the first tree, as text', 'print("score:", model.predict(xgb.DMatrix(x), output_margin=True))   # before the sigmoid or softmax'];
+  }
+  PY.classicSnippet = function (b, d) {
+    if (!d || d.error || !d.output) return '';
+    const M = classicModel(b, d, 1), cls = d.output.kind === 'classes';
+    return lines(M.imp, 'Xtr_, ytr_ = Xtr.flatten(1).numpy(), Ytr.numpy()     # classic models read flat rows of numbers', M.fit, M.predict,
+      'x = Xva[:1].flatten(1).numpy()                     # the first validation example, as here', cls ? `print(${M.proba})                     # a probability for each class` : 'print(predict(x))                                  # the answer', classicLook(b, d));
+  };
+  function classicCode(setup, d) {
+    const p = BT.byId[setup.problem], b = setup.blocks.find((q) => NA.cml.isClassic(q.type)), T = setup.train, M = classicModel(b, d, T.seed), cls = d.output.kind === 'classes';
+    const lib = b.type === 'boost' ? 'xgboost' : 'scikit-learn', rnd = needsRandom(p, d);
+    return lines(
+      `# Built in Neural Anatomy's model builder: ${p.label}.`,
+      `# Model:     ${NA.cml.KINDS[b.type].label}, with ${b.type === 'boost' ? 'XGBoost' : 'scikit-learn'}`,
+      `# Needs torch (for the data, made as on the page) and ${lib}: pip install ${lib}`,
+      'import math', rnd ? 'import random' : null, d.table && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null,
+      'import torch', M.imp, '',
+      `torch.manual_seed(${T.seed})`, rnd ? `random.seed(${T.seed})` : null, '',
+      dataCode(setup, d), '', '',
+      '# ---------------------------------------------------------------- the model',
+      '# classic models read flat rows of numbers: a picture, or a window of a series, becomes one long row',
+      'Xtr_, Xva_ = Xtr.flatten(1).numpy(), Xva.flatten(1).numpy()', 'ytr_, yva_ = Ytr.numpy(), Yva.numpy()',
+      M.fit, M.predict, '',
+      '# ---------------------------------------------------------------- how good it is',
+      cls ? ['for name, X_, y_ in (("training", Xtr_, ytr_), ("validation", Xva_, yva_)):', '    print(f"{name} accuracy {(predict(X_) == y_).mean():.3f}")']
+        : ['def r2(pred, y):                                  # R²: 1 is perfect, 0 is no better than the mean', '    return 1 - ((pred - y) ** 2).sum() / ((y - y.mean()) ** 2).sum()', '', 'for name, X_, y_ in (("training", Xtr_, ytr_), ("validation", Xva_, yva_)):', '    print(f"{name} R² {r2(predict(X_), y_):.3f}")'],
+      '', '# ---------------------------------------------------------------- inside it, for the first validation example', 'x = Xva_[:1]',
+      cls ? `print("probabilities:", ${M.proba}.round(3), "true class:", yva_[0])` : 'print("answer:", predict(x), "target:", yva_[0])', classicLook(b, d));
+  }
+  // the scripts that use random (the stroke drawings, the stories, the chaotic series, the sequence classes)
+  const needsRandom = (p, d) => d.family === 'digits' || p.task === 'language' || p.task === 'chaos' || d.family === 'seqclass';
   PY.code = function (setup, d) {
     const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || 3000;
     if (!d || d.error) return `# ${d && d.error ? d.error : 'Pick a problem first.'}`;
+    if (NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) {
+      const cc = NA.cml.check(setup.blocks, d);
+      if (!cc.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((cc.shapes.find((s) => s && s.problem) || {}).problem || { reason: 'See the block marked in red.' }).reason}`);
+      return classicCode(setup, d);
+    }
     const chk = NA.bx ? NA.bx.check(setup.blocks, d.input, d.output) : { ok: false, shapes: [] };
     if (!chk.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((chk.problem || (chk.shapes.find((s) => s && s.problem) || {}).problem) || { reason: 'See the block marked in red.' }).reason}`);
-    const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, d.family === 'digits' || p.task === 'language' ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
+    const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, needsRandom(p, d) ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
     const lossName = NA.bx.LOSSES[setup.loss.id] ? NA.bx.LOSSES[setup.loss.id].label : setup.loss.id;
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt];
     const evalEvery = Math.max(50, Math.round(steps / 10 / 50) * 50);
@@ -405,7 +634,7 @@ def story():
       `# Model:     ${summary(setup, d)}`,
       `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}`,
       ...needs.filter(Boolean), 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
-      `torch.manual_seed(${T.seed})`, d.family === 'digits' || p.task === 'language' ? `random.seed(${T.seed})` : null, '',
+      `torch.manual_seed(${T.seed})`, needsRandom(p, d) ? `random.seed(${T.seed})` : null, '',
       dataCode(setup, d), '', '',
       modelCode(setup, d, chk), '', '',
       'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '',

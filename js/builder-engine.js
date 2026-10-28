@@ -1,7 +1,8 @@
-/* builder-engine.js — the engine behind "build a model from scratch". A model is a list of blocks (dense,
-   activation, dropout, LayerNorm, self-attention, transformer, convolution, max pool, flatten, global average
-   pool) between an input (a vector, an image or a sequence of token ids) and an output head (classes, a value,
-   or a token at every position). Shapes are plain arrays per example: [F] a vector, [C, H, W] an image, [T, D] a
+/* builder-engine.js — the engine behind "build a model from scratch". A model is a list of blocks (dense, gated,
+   activation, dropout, noise, LayerNorm, batch norm, Fourier features, self-attention, transformer, recurrent
+   (RNN, LSTM, GRU), 1-D convolution, positions, sequence pooling, image patches, convolution, max and average
+   pool, flatten, global average pool) between an input (a vector, an image, a sequence of token ids or of numbers)
+   and an output head (classes, a value, or a token at every position). Shapes are plain arrays per example: [F] a vector, [C, H, W] an image, [T, D] a
    sequence. Every buffer holds the whole batch, one example after another, so a layer is a few large matrix
    products rather than many small ones. Forward and backward passes are written out by hand and checked against
    finite differences in tools/builder-gradcheck.js. Needs core.js (NA.RNG) and engine.js (the activations). */
@@ -278,6 +279,16 @@
     pool: { label: 'Max pool', defaults: { size: 2 } },
     flatten: { label: 'Flatten', defaults: {} },
     gap: { label: 'Global average pool', defaults: {} },
+    gated: { label: 'Gated (GLU)', defaults: { units: 16, gate: 'swish' } },
+    batchnorm: { label: 'Batch norm', defaults: {} },
+    noise: { label: 'Gaussian noise', defaults: { sigma: 0.1 } },
+    fourier: { label: 'Fourier features', defaults: { features: 16, scale: 1 } },
+    rnn: { label: 'Recurrent', defaults: { cell: 'lstm', units: 32 } },
+    conv1d: { label: '1-D convolution', defaults: { filters: 16, k: 3, dilation: 1, causal: false, act: 'relu', residual: false } },
+    position: { label: 'Positions', defaults: { mode: 'learned' } },
+    seqpool: { label: 'Sequence pool', defaults: { mode: 'last' } },
+    patches: { label: 'Patches', defaults: { size: 2, dim: 32 } },
+    avgpool: { label: 'Average pool', defaults: { size: 2 } },
   };
   const LOSSES = {
     xent: { id: 'xent', label: 'Cross-entropy', outputs: ['classes', 'tokens'] },
@@ -331,6 +342,7 @@
     if (input.kind === 'vector') return { kind: 'vector', dim: +input.dim };
     if (input.kind === 'image') return { kind: 'image', c: +input.c, h: +input.h, w: +input.w };
     if (input.kind === 'tokens') return { kind: 'tokens', vocab: +input.vocab, len: +input.len, embed: +input.embed };
+    if (input.kind === 'series') return { kind: 'series', len: +input.len, dim: +input.dim };
     return { kind: input.kind };
   }
   // The shape the first block receives, the embedding's parameter count, or a problem with the input itself.
@@ -342,6 +354,7 @@
       return isInt(inp.c) && isInt(inp.h) && isInt(inp.w) ? { shape: [inp.c, inp.h, inp.w], params: 0, problem: null }
         : bad('An image input needs at least one channel and a height and width of at least one pixel.');
     }
+    if (inp.kind === 'series') return isInt(inp.len) && isInt(inp.dim) ? { shape: [inp.len, inp.dim], params: 0, problem: null } : bad('A sequence of numbers needs a length and at least one number per position.');
     if (inp.kind === 'tokens') {
       if (!isInt(inp.vocab) || !isInt(inp.len) || !isInt(inp.embed)) return bad('A token input needs a vocabulary, a length and an embedding width of at least 1.');
       return { shape: [inp.len, inp.embed], params: (inp.vocab + inp.len) * inp.embed, problem: null };
@@ -393,6 +406,58 @@
         if (!own(A, s.act)) return fail(unknownAct(s.act));
         const [C, H, W] = inS;
         return ok([s.filters, Math.ceil(H / s.stride), Math.ceil(W / s.stride)], s.filters * C * s.k * s.k + s.filters);
+      }
+      case 'gated': {
+        if (!isInt(s.units)) return fail('A gated layer needs a whole number of units, at least 1.');
+        if (!own(A, s.gate)) return fail(unknownAct(s.gate));
+        const p = (F) => 2 * (F * s.units + s.units);
+        if (kind === 3) return fail(`A gated layer needs a flat vector or a sequence, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
+        return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
+      }
+      case 'batchnorm':
+        return ok(inS, 2 * (kind === 3 ? inS[0] : inS[kind - 1]));
+      case 'noise':
+        return typeof s.sigma === 'number' && s.sigma >= 0 ? ok(inS, 0) : fail('Gaussian noise needs a spread σ of at least 0.');
+      case 'fourier':
+        if (kind !== 1) return fail(`Fourier features work on a flat vector of numbers, but this is ${describe(inS)}.`, kind === 3 ? [{ type: 'flatten' }] : null);
+        if (!isInt(s.features)) return fail('Fourier features need a whole number of frequencies, at least 1.');
+        if (!(typeof s.scale === 'number' && s.scale > 0)) return fail('Fourier features need a frequency spread σ above 0.');
+        return ok([inS[0] + 2 * s.features], 0);
+      case 'rnn': {
+        if (kind !== 2) return fail(`A recurrent layer reads a sequence (positions × features), but this is ${describe(inS)}.`);
+        if (!isInt(s.units)) return fail('A recurrent layer needs a whole number of units, at least 1.');
+        if (!own(GATES, s.cell)) return fail(`"${s.cell}" is not a recurrent cell this builder knows (RNN, LSTM or GRU).`);
+        const G = GATES[s.cell], H = s.units;
+        return ok([inS[0], H], G * H * (inS[1] + H + 2));
+      }
+      case 'conv1d': {
+        if (kind !== 2) return fail(`A 1-D convolution slides along a sequence (positions × features), but this is ${describe(inS)}; for a picture, use Conv.`);
+        if (!isInt(s.filters)) return fail('A 1-D convolution needs a whole number of filters, at least 1.');
+        if (!isInt(s.k)) return fail('A 1-D convolution needs a window of at least 1 position.');
+        if (!isInt(s.dilation)) return fail('A 1-D convolution needs a dilation of at least 1.');
+        if (!own(A, s.act)) return fail(unknownAct(s.act));
+        return ok([inS[0], s.filters], s.filters * s.k * inS[1] + s.filters);
+      }
+      case 'position':
+        if (kind !== 2) return fail(`Positions are added to a sequence (positions × features), but this is ${describe(inS)}.`);
+        return ok(inS, s.mode === 'sine' ? 0 : size(inS));
+      case 'seqpool':
+        if (kind !== 2) return fail(`Sequence pooling squeezes a sequence (positions × features) into one vector, but this is ${describe(inS)}.`, kind === 3 ? [{ type: 'gap' }] : null, kind === 3 ? [inS[0]] : inS);
+        return ok([inS[1]], 0);
+      case 'patches': {
+        if (kind !== 3) return fail(`Patches cut up an image (channels × height × width), but this is ${describe(inS)}.`);
+        if (!isInt(s.size)) return fail('Patches need a size of at least 1 pixel.');
+        if (!isInt(s.dim)) return fail('Patches need a width (numbers per patch) of at least 1.');
+        const [C, H, W] = inS, N = Math.floor(H / s.size) * Math.floor(W / s.size);
+        if (!N) return fail(`A ${s.size} × ${s.size} patch is bigger than this image (${shapeText(inS)}).`);
+        return ok([N, s.dim], s.dim * C * s.size * s.size + s.dim + N * s.dim);
+      }
+      case 'avgpool': {
+        if (kind !== 3) return fail(`Average pooling needs an image (channels × height × width), but this is ${describe(inS)}; for a sequence, use sequence pooling.`);
+        if (!isInt(s.size)) return fail('Average pooling needs a window size of at least 1.');
+        const [C, H, W] = inS, Ho = Math.floor(H / s.size), Wo = Math.floor(W / s.size);
+        if (!Ho || !Wo) return fail(`The ${s.size} × ${s.size} pooling window is bigger than this image (${shapeText(inS)}).`);
+        return ok([C, Ho, Wo], 0);
       }
       case 'pool': {
         if (kind !== 3) return fail(`Max pooling needs an image (channels × height × width), but this is ${describe(inS)}.`);
@@ -746,12 +811,14 @@
       this.params = [this.Wt, this.b];
       this.fn = activation(own(A, cfg.act) ? cfg.act : 'relu', ctx.f64);
       this.linear = this.fn.id === 'linear';
+      this.residual = !!cfg.residual && F === C && cfg.stride === 1; // ResNet-style: the input added back when the shape is kept
       gauss(ctx, this.Wt, initSd(ctx.init, this.J, this.fn.he));
     }
     alloc(B) {
       const m = this.mem, n = B * this.F * this.Q;
       this.z = m.view('z', n);
-      this.out = this.linear ? this.z : m.view('a', n);
+      this.a = this.linear ? this.z : m.view('a', n);
+      this.out = this.residual ? m.view('out', n) : this.a;
       this.dz = this.linear ? null : m.view('dz', n);
       this.dx = m.view('dx', B * this.C * this.H * this.W);
     }
@@ -810,13 +877,14 @@
         for (let f = 0; f < F; f++) z.fill(bias[f], zo + f * Q, zo + (f + 1) * Q);
         gemmNT(z, zo, w, 0, P, 0, F, Q, J);
       }
-      if (!this.linear) activate(this.out, z, B * F * Q, this.fn);
+      if (!this.linear) activate(this.a, z, B * F * Q, this.fn);
+      if (this.residual) { const out = this.out, a = this.a; for (let i = 0, n = B * F * Q; i < n; i++) out[i] = x[i] + a[i]; }
       return this.out;
     }
     backward(dy, B, needDx) {
       const { F, Q, J } = this, CHW = this.C * this.H * this.W, s = this.scr, gW = this.Wt.g, gb = this.b.g, dx = needDx ? this.dx : null;
       let dz = dy;
-      if (!this.linear) { dz = this.dz; activateBack(dz, dy, this.z, this.out, B * F * Q, this.fn); }
+      if (!this.linear) { dz = this.dz; activateBack(dz, dy, this.z, this.a, B * F * Q, this.fn); }
       const Pc = s.get('cols', J * Q);
       let WT = null, dzT = null, dPc = null;
       if (dx) {
@@ -835,6 +903,7 @@
         dx.fill(0, e * CHW, (e + 1) * CHW);
         this.col2im(dx, e * CHW, dPc);
       }
+      if (dx && this.residual) for (let i = 0, n = B * F * Q; i < n; i++) dx[i] += dy[i];
       return dx;
     }
   }
@@ -922,7 +991,437 @@
     }
   }
 
-  const LAYERS = { dense: Dense, activation: Act, dropout: Dropout, layernorm: LayerNormBlock, attention: Attention, transformer: Transformer, conv: Conv, pool: Pool, flatten: Flatten, gap: Gap };
+  // ------------------------------------------------------------------ more layers
+  const sig = (v) => 1 / (1 + Math.exp(-v));
+
+  /* Recurrent layers over a sequence [T, D] → [T, H], one position at a time with a state carried forward: a plain
+     RNN, h = tanh(W·x + U·h + b); an LSTM, whose input, forget and output gates decide what a separate memory c
+     takes in, keeps and shows; or a GRU, with reset and update gates. The input projections of every position are
+     one matrix product up front; the backward pass runs the positions in reverse (backpropagation through time).
+     Weights follow PyTorch: W_ih [G·H, D], W_hh [G·H, H] and two biases, gates in its order (LSTM i, f, g, o;
+     GRU r, z, n). */
+  const GATES = { rnn: 1, lstm: 4, gru: 3 };
+  class Recurrent {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [T, D] = inS, cell = own(GATES, cfg.cell) ? cfg.cell : 'lstm', H = cfg.units, G = GATES[cell], GH = G * H;
+      Object.assign(this, { type: 'rnn', spec, inShape: inS, outShape: outS, T, D, H, G, GH, cell, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.Wih = param(ctx, 'W_ih', [GH, D], true); this.Whh = param(ctx, 'W_hh', [GH, H], true);
+      this.bih = param(ctx, 'b_ih', [GH], false); this.bhh = param(ctx, 'b_hh', [GH], false);
+      this.params = [this.Wih, this.Whh, this.bih, this.bhh];
+      gauss(ctx, this.Wih, initSd(linearInit(ctx), D)); gauss(ctx, this.Whh, initSd(linearInit(ctx), H));
+      if (cell === 'lstm') this.bih.w.fill(1, H, 2 * H); // forget gates start open, so the memory lasts from the start
+    }
+    alloc(B) {
+      const m = this.mem, { T, H, GH, D } = this, N = B * T;
+      this.xw = m.view('xw', N * GH); this.gates = m.view('gates', N * GH); this.out = m.view('h', N * H);
+      this.c = this.cell === 'lstm' ? m.view('c', N * H) : null;
+      this.hn = this.cell === 'gru' ? m.view('hn', N * H) : null;
+      this.hp = m.view('hp', B * H); this.hw = m.view('hw', B * GH);
+      this.dxw = m.view('dxw', N * GH); this.dhw = m.view('dhw', B * GH); this.dh = m.view('dh', B * H); this.dc = m.view('dc', B * H); this.dhp = m.view('dhp', B * H);
+      this.dx = m.view('dx', N * D);
+    }
+    // the states h of position t − 1 for the whole batch, one row each (zeros before the first position)
+    prev(t, B) {
+      const { T, H, hp, out } = this;
+      for (let b = 0; b < B; b++) { const o = b * H; if (t) { const src = (b * T + t - 1) * H; for (let j = 0; j < H; j++) hp[o + j] = out[src + j]; } else hp.fill(0, o, o + H); }
+    }
+    forward(x, B) {
+      const { T, D, H, GH, cell, xw, gates, out, c, hn, hp, hw } = this, Whh = this.Whh.w, bhh = this.bhh.w;
+      this.x = x;
+      linear(xw, x, this.Wih.w, this.bih.w, B * T, D, GH);
+      for (let t = 0; t < T; t++) {
+        this.prev(t, B);
+        for (let b = 0; b < B; b++) hw.set(bhh, b * GH);
+        gemmNT(hw, 0, hp, 0, Whh, 0, B, GH, H);
+        for (let b = 0; b < B; b++) {
+          const r = b * T + t, gi = r * GH, ho = r * H, wo = b * GH, po = b * H;
+          if (cell === 'rnn') {
+            for (let j = 0; j < H; j++) { const h = Math.tanh(xw[gi + j] + hw[wo + j]); gates[gi + j] = h; out[ho + j] = h; }
+          } else if (cell === 'lstm') {
+            const cp = t ? (r - 1) * H : -1;
+            for (let j = 0; j < H; j++) {
+              const i = sig(xw[gi + j] + hw[wo + j]), f = sig(xw[gi + H + j] + hw[wo + H + j]);
+              const g = Math.tanh(xw[gi + 2 * H + j] + hw[wo + 2 * H + j]), o = sig(xw[gi + 3 * H + j] + hw[wo + 3 * H + j]);
+              gates[gi + j] = i; gates[gi + H + j] = f; gates[gi + 2 * H + j] = g; gates[gi + 3 * H + j] = o;
+              const cv = f * (cp >= 0 ? c[cp + j] : 0) + i * g;
+              c[ho + j] = cv; out[ho + j] = o * Math.tanh(cv);
+            }
+          } else {
+            for (let j = 0; j < H; j++) {
+              const rr = sig(xw[gi + j] + hw[wo + j]), z = sig(xw[gi + H + j] + hw[wo + H + j]), hv = hw[wo + 2 * H + j];
+              const n = Math.tanh(xw[gi + 2 * H + j] + rr * hv);
+              gates[gi + j] = rr; gates[gi + H + j] = z; gates[gi + 2 * H + j] = n; hn[ho + j] = hv;
+              out[ho + j] = (1 - z) * n + z * hp[po + j];
+            }
+          }
+        }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { T, D, H, GH, cell, gates, c, hn, hp, dxw, dhw, dh, dc, dhp } = this, s = this.scr;
+      const WT = s.get('rnnWT', H * GH), dhwT = s.get('rnnDhwT', GH * B), hpT = s.get('rnnHpT', H * B);
+      transpose(WT, this.Whh.w, 0, GH, H);
+      dh.fill(0); dc.fill(0); // what flows back from position t + 1 into h_t (and the LSTM's c_t)
+      for (let t = T - 1; t >= 0; t--) {
+        this.prev(t, B);
+        for (let b = 0; b < B; b++) {
+          const r = b * T + t, gi = r * GH, ho = r * H, wo = b * GH, po = b * H;
+          if (cell === 'rnn') {
+            for (let j = 0; j < H; j++) { const h = gates[gi + j], g = (dy[ho + j] + dh[po + j]) * (1 - h * h); dxw[gi + j] = g; dhw[wo + j] = g; }
+          } else if (cell === 'lstm') {
+            const cp = t ? (r - 1) * H : -1;
+            for (let j = 0; j < H; j++) {
+              const i = gates[gi + j], f = gates[gi + H + j], g = gates[gi + 2 * H + j], o = gates[gi + 3 * H + j], tc = Math.tanh(c[ho + j]);
+              const dht = dy[ho + j] + dh[po + j], dct = dc[po + j] + dht * o * (1 - tc * tc), cprev = cp >= 0 ? c[cp + j] : 0;
+              const di = dct * g * i * (1 - i), df = dct * cprev * f * (1 - f), dg = dct * i * (1 - g * g), dO = dht * tc * o * (1 - o);
+              dxw[gi + j] = dhw[wo + j] = di; dxw[gi + H + j] = dhw[wo + H + j] = df;
+              dxw[gi + 2 * H + j] = dhw[wo + 2 * H + j] = dg; dxw[gi + 3 * H + j] = dhw[wo + 3 * H + j] = dO;
+              dc[po + j] = dct * f;
+            }
+          } else {
+            for (let j = 0; j < H; j++) {
+              const rr = gates[gi + j], z = gates[gi + H + j], n = gates[gi + 2 * H + j], hv = hn[ho + j];
+              const dht = dy[ho + j] + dh[po + j], dan = dht * (1 - z) * (1 - n * n);
+              const dar = dan * hv * rr * (1 - rr), daz = dht * (hp[po + j] - n) * z * (1 - z);
+              dxw[gi + j] = dhw[wo + j] = dar; dxw[gi + H + j] = dhw[wo + H + j] = daz;
+              dxw[gi + 2 * H + j] = dan; dhw[wo + 2 * H + j] = dan * rr;
+              dhp[po + j] = dht * z; // the direct path from h_(t−1) to h_t
+            }
+          }
+        }
+        // this position's share of W_hh and b_hh, and the gradient reaching h_(t−1)
+        transpose(dhwT, dhw, 0, B, GH); transpose(hpT, hp, 0, B, H);
+        gemmNT(this.Whh.g, 0, dhwT, 0, hpT, 0, GH, H, B);
+        const gb = this.bhh.g;
+        for (let k = 0; k < GH; k++) { let sum = 0; for (let b = 0; b < B; b++) sum += dhw[b * GH + k]; gb[k] += sum; }
+        if (cell !== 'gru') dhp.fill(0);
+        gemmNT(dhp, 0, dhw, 0, WT, 0, B, H, GH);
+        dh.set(dhp);
+      }
+      const dx = needDx ? this.dx : null;
+      linearBack(s, dx, false, this.Wih.g, this.bih.g, dxw, this.x, this.Wih.w, B * T, D, GH);
+      return dx;
+    }
+  }
+
+  /* 1-D convolution along a sequence [T, D] → [T, F]: each output position mixes a window of k neighbouring positions
+     (spaced d apart when dilated), zero-padded so the length stays T. A causal window only reaches back. */
+  class Conv1d {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [T, D] = inS, F = cfg.filters, k = cfg.k, dil = cfg.dilation || 1, A = NA.engine.ACTIVATIONS, reach = (k - 1) * dil;
+      Object.assign(this, { type: 'conv1d', spec, inShape: inS, outShape: outS, T, D, F, k, dil, left: cfg.causal ? reach : Math.floor(reach / 2), J: k * D, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.Wt = param(ctx, 'kernels', [F, k, D], true); this.b = param(ctx, 'bias', [F], false);
+      this.params = [this.Wt, this.b];
+      this.fn = activation(own(A, cfg.act) ? cfg.act : 'relu', ctx.f64); this.linear = this.fn.id === 'linear';
+      this.residual = !!cfg.residual && F === D;
+      gauss(ctx, this.Wt, initSd(ctx.init, this.J, this.fn.he));
+    }
+    alloc(B) {
+      const m = this.mem, N = B * this.T, n = N * this.F;
+      this.P = m.view('patches', N * this.J); this.z = m.view('z', n);
+      this.a = this.linear ? this.z : m.view('a', n);
+      this.out = this.residual ? m.view('out', n) : this.a;
+      this.dz = this.linear ? null : m.view('dz', n);
+      this.dP = m.view('dP', N * this.J); this.dx = m.view('dx', N * this.D);
+    }
+    // calls fn(row, column offset, input offset) for every window position that lands inside the sequence
+    windows(B, fn) {
+      const { T, D, k, dil, left, J } = this;
+      for (let b = 0; b < B; b++) for (let t = 0; t < T; t++) {
+        const ro = (b * T + t) * J;
+        for (let j = 0; j < k; j++) { const s = t - left + j * dil; if (s >= 0 && s < T) fn(ro + j * D, (b * T + s) * D); }
+      }
+    }
+    forward(x, B) {
+      const N = B * this.T, n = N * this.F, D = this.D, P = this.P;
+      this.x = x;
+      P.fill(0);
+      this.windows(B, (po, xo) => { for (let c = 0; c < D; c++) P[po + c] = x[xo + c]; });
+      linear(this.z, P, this.Wt.w, this.b.w, N, this.J, this.F);
+      if (!this.linear) activate(this.a, this.z, n, this.fn);
+      if (this.residual) { const out = this.out, a = this.a; for (let i = 0; i < n; i++) out[i] = x[i] + a[i]; }
+      return this.out;
+    }
+    backward(dy, B, needDx) {
+      const N = B * this.T, n = N * this.F, D = this.D, dx = needDx ? this.dx : null;
+      let dz = dy;
+      if (!this.linear) { dz = this.dz; activateBack(dz, dy, this.z, this.a, n, this.fn); }
+      linearBack(this.scr, dx ? this.dP : null, false, this.Wt.g, this.b.g, dz, this.P, this.Wt.w, N, this.J, this.F);
+      if (!dx) return null;
+      const dP = this.dP;
+      dx.fill(0);
+      this.windows(B, (po, xo) => { for (let c = 0; c < D; c++) dx[xo + c] += dP[po + c]; });
+      if (this.residual) for (let i = 0; i < n; i++) dx[i] += dy[i];
+      return dx;
+    }
+  }
+
+  // A sequence [T, D] pooled into one vector [D]: its last position, each feature's largest value, or the mean.
+  class SeqPool {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [T, D] = inS;
+      Object.assign(this, { type: 'seqpool', spec, inShape: inS, outShape: outS, params: [], T, D, mode: ['last', 'max', 'mean'].includes(cfg.mode) ? cfg.mode : 'last', mem: new Mem(ctx.Arr) });
+    }
+    alloc(B) { const m = this.mem; this.out = m.view('out', B * this.D); this.arg = m.view('arg', B * this.D, Int32Array); this.dx = m.view('dx', B * this.T * this.D); }
+    forward(x, B) {
+      const { T, D, out, arg, mode } = this;
+      for (let b = 0; b < B; b++) for (let c = 0; c < D; c++) {
+        const o = b * D + c, base = b * T * D + c;
+        if (mode === 'mean') { let s = 0; for (let t = 0; t < T; t++) s += x[base + t * D]; out[o] = s / T; continue; }
+        let bi = base + (T - 1) * D;
+        if (mode === 'max') { bi = base; for (let t = 1; t < T; t++) if (x[base + t * D] > x[bi]) bi = base + t * D; }
+        out[o] = x[bi]; arg[o] = bi;
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const { T, D, dx, arg, mode } = this;
+      dx.fill(0);
+      for (let b = 0; b < B; b++) for (let c = 0; c < D; c++) {
+        const o = b * D + c;
+        if (mode === 'mean') { const g = dy[o] / T, base = b * T * D + c; for (let t = 0; t < T; t++) dx[base + t * D] += g; } else dx[arg[o]] += dy[o];
+      }
+      return dx;
+    }
+  }
+
+  /* Cuts an image [C, H, W] into p × p patches, left to right and top to bottom, and maps each to D numbers with a
+     learned projection, plus a learned vector for its place: a sequence [N, D] for attention to work on, which is
+     how a vision transformer starts. Rows and columns past the last whole patch are left out. */
+  class Patches {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [C, H, W] = inS, p = cfg.size, D = cfg.dim, nw = Math.floor(W / p), N = outS[0], J = C * p * p;
+      Object.assign(this, { type: 'patches', spec, inShape: inS, outShape: outS, C, H, W, p, D, nw, N, J, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.Wp = param(ctx, 'projection', [D, J], true); this.bp = param(ctx, 'bias', [D], false); this.pos = param(ctx, 'position', [N, D], false);
+      gauss(ctx, this.Wp, initSd(linearInit(ctx), J)); gauss(ctx, this.pos, 0.02);
+      this.params = [this.Wp, this.bp, this.pos];
+    }
+    alloc(B) { const m = this.mem, R = B * this.N; this.P = m.view('patches', R * this.J); this.out = m.view('out', R * this.D); this.dP = m.view('dP', R * this.J); this.dx = m.view('dx', B * this.C * this.H * this.W); }
+    // fn(patch-matrix index, image index) for every pixel of every patch
+    pixels(B, fn) {
+      const { C, H, W, p, nw, N, J } = this;
+      for (let b = 0; b < B; b++) for (let n = 0; n < N; n++) {
+        const py = Math.floor(n / nw) * p, px = (n % nw) * p, ro = (b * N + n) * J;
+        let j = 0;
+        for (let c = 0; c < C; c++) for (let yy = 0; yy < p; yy++) { const xo = ((b * C + c) * H + py + yy) * W + px; for (let xx = 0; xx < p; xx++) fn(ro + j++, xo + xx); }
+      }
+    }
+    forward(x, B) {
+      const { N, D, J, out, P } = this, pos = this.pos.w;
+      this.pixels(B, (i, xi) => { P[i] = x[xi]; });
+      linear(out, P, this.Wp.w, this.bp.w, B * N, J, D);
+      for (let b = 0; b < B; b++) for (let i = 0, o = b * N * D; i < N * D; i++) out[o + i] += pos[i];
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { N, D, J } = this, gp = this.pos.g;
+      for (let b = 0; b < B; b++) for (let i = 0, o = b * N * D; i < N * D; i++) gp[i] += dy[o + i];
+      linearBack(this.scr, needDx ? this.dP : null, false, this.Wp.g, this.bp.g, dy, this.P, this.Wp.w, B * N, J, D);
+      if (!needDx) return null;
+      const dx = this.dx, dP = this.dP;
+      dx.fill(0);
+      this.pixels(B, (i, xi) => { dx[xi] += dP[i]; });
+      return dx;
+    }
+  }
+
+  /* Batch normalisation: while training, each feature (each channel of an image) is shifted and scaled to mean 0 and
+     variance 1 over the batch (and over the pixels or positions), then given a learned scale and shift. Running
+     averages of the batches' means and variances stand in when the model is used. */
+  class BatchNorm {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const kind = inS.length, ch = kind === 3 ? inS[0] : inS[inS.length - 1], per = size(inS);
+      Object.assign(this, { type: 'batchnorm', spec, inShape: inS, outShape: outS, kind, ch, per, momentum: 0.1, mem: new Mem(ctx.Arr) });
+      // the channel of each number of one example
+      this.chan = new Int32Array(per);
+      for (let i = 0; i < per; i++) this.chan[i] = kind === 3 ? Math.floor(i / (inS[1] * inS[2])) : i % ch;
+      this.g = param(ctx, 'gain', [ch], false); this.g.w.fill(1); this.b = param(ctx, 'bias', [ch], false);
+      this.params = [this.g, this.b];
+      this.rmean = new Float64Array(ch); this.rvar = new Float64Array(ch).fill(1);
+    }
+    alloc(B) {
+      const m = this.mem, n = B * this.per;
+      this.out = m.view('out', n); this.xhat = m.view('xhat', n); this.dx = m.view('dx', n);
+      this.mean = m.get('mean', this.ch, Float64Array); this.rstd = m.get('rstd', this.ch, Float64Array); this.s1 = m.get('s1', this.ch, Float64Array); this.s2 = m.get('s2', this.ch, Float64Array);
+    }
+    forward(x, B, train) {
+      const { ch, per, chan, mean, rstd, xhat, out } = this, g = this.g.w, bb = this.b.w, cnt = B * per / ch;
+      this.train = train;
+      if (train) {
+        const v = this.s1;
+        mean.fill(0); v.fill(0);
+        for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) mean[chan[k]] += x[i];
+        for (let c = 0; c < ch; c++) mean[c] /= cnt;
+        for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) { const d = x[i] - mean[chan[k]]; v[chan[k]] += d * d; }
+        for (let c = 0; c < ch; c++) {
+          const varc = v[c] / cnt;
+          rstd[c] = 1 / Math.sqrt(varc + 1e-5);
+          this.rmean[c] += this.momentum * (mean[c] - this.rmean[c]);
+          this.rvar[c] += this.momentum * ((cnt > 1 ? varc * cnt / (cnt - 1) : varc) - this.rvar[c]);
+        }
+      } else for (let c = 0; c < ch; c++) { mean[c] = this.rmean[c]; rstd[c] = 1 / Math.sqrt(this.rvar[c] + 1e-5); }
+      for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) { const c = chan[k], h = (x[i] - mean[c]) * rstd[c]; xhat[i] = h; out[i] = h * g[c] + bb[c]; }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { ch, per, chan, rstd, xhat, s1, s2 } = this, g = this.g.w, gg = this.g.g, gb = this.b.g, cnt = B * per / ch;
+      s1.fill(0); s2.fill(0);
+      for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) { const c = chan[k]; s1[c] += dy[i]; s2[c] += dy[i] * xhat[i]; }
+      for (let c = 0; c < ch; c++) { gb[c] += s1[c]; gg[c] += s2[c]; }
+      if (!needDx) return null;
+      const dx = this.dx;
+      if (!this.train) { for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) { const c = chan[k]; dx[i] = dy[i] * g[c] * rstd[c]; } return dx; }
+      // through the batch statistics: dx = γ·rstd·(dy − mean(dy) − x̂·mean(dy·x̂)), per channel
+      for (let e = 0, i = 0; e < B; e++) for (let k = 0; k < per; k++, i++) { const c = chan[k]; dx[i] = g[c] * rstd[c] * (dy[i] - s1[c] / cnt - xhat[i] * s2[c] / cnt); }
+      return dx;
+    }
+  }
+
+  // Average pool with stride = size: each window's mean; rows and columns beyond the last whole window are dropped.
+  class AvgPool {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [C, H, W] = inS;
+      Object.assign(this, { type: 'avgpool', spec, inShape: inS, outShape: outS, params: [], C, H, W, S: cfg.size, Ho: outS[1], Wo: outS[2], mem: new Mem(ctx.Arr) });
+    }
+    alloc(B) { this.out = this.mem.view('out', B * this.C * this.Ho * this.Wo); this.dx = this.mem.view('dx', B * this.C * this.H * this.W); }
+    // fn(output index, input index) for every pixel of every window
+    cells(B, fn) {
+      const { C, H, W, S, Ho, Wo } = this;
+      for (let e = 0, o = 0; e < B; e++) for (let c = 0; c < C; c++) {
+        const base = (e * C + c) * H * W;
+        for (let oy = 0; oy < Ho; oy++) for (let ox = 0; ox < Wo; ox++, o++) for (let dy = 0; dy < S; dy++) { const row = base + (oy * S + dy) * W + ox * S; for (let dx = 0; dx < S; dx++) fn(o, row + dx); }
+      }
+    }
+    forward(x, B) { const out = this.out, inv = 1 / (this.S * this.S); out.fill(0); this.cells(B, (o, i) => { out[o] += x[i] * inv; }); return out; }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const dx = this.dx, inv = 1 / (this.S * this.S);
+      dx.fill(0); this.cells(B, (o, i) => { dx[i] += dy[o] * inv; });
+      return dx;
+    }
+  }
+
+  // Gaussian noise added to every number while training (σ times a standard normal draw); nothing when the model is used.
+  class Noise {
+    constructor(spec, cfg, inS, outS, ctx) { Object.assign(this, { type: 'noise', spec, inShape: inS, outShape: outS, params: [], n: size(inS), sigma: Math.max(0, +cfg.sigma || 0), model: ctx.model, mem: new Mem(ctx.Arr) }); }
+    alloc(B) { this.buf = this.mem.view('out', B * this.n); this.out = this.buf; }
+    forward(x, B, train) {
+      if (!train || !this.sigma) return (this.out = x);
+      const out = this.buf, rng = this.model.rng, s = this.sigma;
+      for (let i = 0, n = B * this.n; i < n; i++) out[i] = x[i] + s * rng.gauss();
+      return (this.out = out);
+    }
+    backward(dy, B, needDx) { return needDx ? dy : null; }
+  }
+
+  /* Fourier features: x [F] becomes [x, sin(2π·Bx), cos(2π·Bx)] for m fixed random frequency vectors (the rows of
+     B, drawn once with spread σ). With them the next layers can build sharp, wiggly functions of x that a plain
+     network learns only slowly. Nothing here is learned. */
+  class Fourier {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const F = inS[0], m = cfg.features;
+      Object.assign(this, { type: 'fourier', spec, inShape: inS, outShape: outS, params: [], F, m, nOut: F + 2 * m, mem: new Mem(ctx.Arr) });
+      this.freq = new Float64Array(m * F);
+      for (let i = 0; i < m * F; i++) this.freq[i] = ctx.rng.gauss(0, cfg.scale);
+    }
+    alloc(B) { const m = this.mem; this.out = m.view('out', B * this.nOut); this.ang = m.get('ang', B * this.m, Float64Array); this.dx = m.view('dx', B * this.F); }
+    forward(x, B) {
+      const { F, m, nOut, out, ang, freq } = this, TAU = 2 * Math.PI;
+      this.ang = this.mem.get('ang', B * m, Float64Array);
+      for (let b = 0; b < B; b++) {
+        const xo = b * F, o = b * nOut;
+        for (let i = 0; i < F; i++) out[o + i] = x[xo + i];
+        for (let j = 0; j < m; j++) {
+          let s = 0;
+          for (let i = 0; i < F; i++) s += freq[j * F + i] * x[xo + i];
+          const a = TAU * s;
+          this.ang[b * m + j] = a; out[o + F + j] = Math.sin(a); out[o + F + m + j] = Math.cos(a);
+        }
+      }
+      void ang;
+      return out;
+    }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const { F, m, nOut, dx, freq, ang } = this, TAU = 2 * Math.PI;
+      for (let b = 0; b < B; b++) {
+        const xo = b * F, o = b * nOut;
+        for (let i = 0; i < F; i++) dx[xo + i] = dy[o + i];
+        for (let j = 0; j < m; j++) {
+          const a = ang[b * m + j], g = TAU * (Math.cos(a) * dy[o + F + j] - Math.sin(a) * dy[o + F + m + j]);
+          for (let i = 0; i < F; i++) dx[xo + i] += g * freq[j * F + i];
+        }
+      }
+      return dx;
+    }
+  }
+
+  /* Gated linear unit: two projections of the input, the first multiplied by a gate made from the second,
+     out = (x·W₁ + b₁) ⊙ g(x·W₂ + b₂), with g a sigmoid (GLU), Swish (SwiGLU, used in many large language models) or
+     GELU (GEGLU). On a sequence, the same at every position. */
+  class Gated {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const nIn = inS[inS.length - 1], U = outS[outS.length - 1], A = NA.engine.ACTIVATIONS;
+      Object.assign(this, { type: 'gated', spec, inShape: inS, outShape: outS, nIn, U, rows: inS.length === 2 ? inS[0] : 1, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.fn = activation(own(A, cfg.gate) ? cfg.gate : 'swish', ctx.f64);
+      this.W1 = param(ctx, 'value weights', [U, nIn], true); this.b1 = param(ctx, 'value bias', [U], false);
+      this.W2 = param(ctx, 'gate weights', [U, nIn], true); this.b2 = param(ctx, 'gate bias', [U], false);
+      this.params = [this.W1, this.b1, this.W2, this.b2];
+      gauss(ctx, this.W1, initSd(linearInit(ctx), nIn)); gauss(ctx, this.W2, initSd(ctx.init, nIn, this.fn.he));
+    }
+    alloc(B) {
+      const m = this.mem, N = B * this.rows, n = N * this.U;
+      for (const k of ['z1', 'z2', 'a2', 'out', 'dz1', 'da2', 'dz2']) this[k] = m.view(k, n);
+      this.dx = m.view('dx', N * this.nIn);
+    }
+    forward(x, B) {
+      const N = B * this.rows, n = N * this.U, { z1, z2, a2, out } = this;
+      this.x = x;
+      linear(z1, x, this.W1.w, this.b1.w, N, this.nIn, this.U);
+      linear(z2, x, this.W2.w, this.b2.w, N, this.nIn, this.U);
+      activate(a2, z2, n, this.fn);
+      for (let i = 0; i < n; i++) out[i] = z1[i] * a2[i];
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const N = B * this.rows, n = N * this.U, { z1, z2, a2, dz1, da2, dz2 } = this, dx = needDx ? this.dx : null;
+      for (let i = 0; i < n; i++) { dz1[i] = dy[i] * a2[i]; da2[i] = dy[i] * z1[i]; }
+      activateBack(dz2, da2, z2, a2, n, this.fn);
+      linearBack(this.scr, dx, false, this.W1.g, this.b1.g, dz1, this.x, this.W1.w, N, this.nIn, this.U);
+      linearBack(this.scr, dx, true, this.W2.g, this.b2.g, dz2, this.x, this.W2.w, N, this.nIn, this.U);
+      return dx;
+    }
+  }
+
+  /* Adds a vector for each position of a sequence, so that what comes next can tell positions apart: learned, or the
+     fixed sine and cosine waves of the original transformer (PE[t, 2i] = sin(t / 10000^(2i/D)), and cos for 2i + 1). */
+  class Position {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [T, D] = inS;
+      Object.assign(this, { type: 'position', spec, inShape: inS, outShape: outS, T, D, learned: cfg.mode !== 'sine', mem: new Mem(ctx.Arr) });
+      if (this.learned) { this.pos = param(ctx, 'position', [T, D], false); gauss(ctx, this.pos, 0.02); this.params = [this.pos]; }
+      else {
+        this.params = [];
+        this.table = new ctx.Arr(T * D);
+        for (let t = 0; t < T; t++) for (let i = 0; i < D; i++) { const a = t / Math.pow(10000, (2 * Math.floor(i / 2)) / D); this.table[t * D + i] = i % 2 ? Math.cos(a) : Math.sin(a); }
+      }
+    }
+    alloc(B) { this.out = this.mem.view('out', B * this.T * this.D); }
+    forward(x, B) {
+      const P = this.learned ? this.pos.w : this.table, n = this.T * this.D, out = this.out;
+      for (let b = 0; b < B; b++) for (let i = 0, o = b * n; i < n; i++) out[o + i] = x[o + i] + P[i];
+      return out;
+    }
+    backward(dy, B, needDx) {
+      if (this.learned) { const g = this.pos.g, n = this.T * this.D; for (let b = 0; b < B; b++) for (let i = 0, o = b * n; i < n; i++) g[i] += dy[o + i]; }
+      return needDx ? dy : null;
+    }
+  }
+
+  const LAYERS = { dense: Dense, activation: Act, dropout: Dropout, layernorm: LayerNormBlock, attention: Attention, transformer: Transformer, conv: Conv, pool: Pool, flatten: Flatten, gap: Gap,
+    gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool };
 
   // ------------------------------------------------------------------ losses
   function resolveLoss(loss, kind) {
