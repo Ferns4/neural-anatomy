@@ -183,6 +183,189 @@
     },
   };
 
+  /* What each part does, in depth: the idea, what happens to the numbers, what it learns and how training shapes it,
+     what its settings change and where it goes wrong, for any level. Shown under "What it does" wherever a part is
+     explained: the palette's guide, a selected block, and the block's level in the Architecture view. */
+  const DEEP = {
+    dense: [
+      `Think of each neuron as a small judge with its own opinion of every input. A weight says how much one input matters and in which direction: a positive weight pushes the neuron's score up when that input is large, a negative one pulls it down. The neuron adds up its weighted inputs and a bias (its starting score) into one number z, and the activation function decides what to pass on: ReLU passes positive scores and silences negative ones, tanh squashes everything into −1…1. Because every neuron sees every input, the layer is called fully connected.`,
+      `Seen as geometry, a neuron's weighted sum is a straight line through the plane of its inputs (a flat plane, or hyperplane, with more inputs): z is positive on one side and negative on the other, and the weights set the line's angle while the bias slides it. The activation bends the output along that line, so a ReLU neuron is a ramp that starts at its line. A layer of 16 neurons lays 16 ramps over the input space, and the next layer adds them up with its own weights: that is how a network builds curved boundaries out of straight pieces. More neurons give more pieces; more layers let pieces be combined into pieces of pieces.`,
+      `In training, each weight changes in proportion to two things: how large its input was, and how much the loss wanted the neuron's output to change (the gradient arriving from the layer above). A neuron whose weighted sum is negative for every example has slope 0 under ReLU, so its weights stop changing for good: a dead neuron. Leaky ReLU, GELU or a smaller learning rate keep neurons alive; the dots on the block show which ones fire.`,
+      `Its settings: the number of neurons is the layer's width (16 is plenty for points in a plane; pictures need more). The activation is the bend. Residual adds the layer's input back to its output, which only works when the width is unchanged; it lets a deep stack learn small corrections and keeps the gradient flowing to the early layers. On a sequence, the same layer, with the same weights, runs on every position separately.`,
+    ],
+    neuron: [
+      `A single neuron is the smallest thing that learns: z = w₁x₁ + w₂x₂ + … + b, then an activation. With two inputs, z = 0 is a straight line through the plane: the weights set its angle and the bias its position, and the neuron's output rises on one side of it.`,
+      `Alone it can only separate classes with one straight line. It can learn AND or OR, but never XOR, which needs two lines: the limit made famous by Minsky and Papert's 1969 book on perceptrons, and the reason networks use layers of many neurons.`,
+      `Drop it on a dense layer to add one neuron (one more line, one more ramp) to that layer, or between blocks for a layer of one neuron: a bottleneck that squeezes everything through a single number.`,
+    ],
+    gated: [
+      `A gated layer computes two weighted sums of the same input for each of its units: a value (what to say) and a gate (how loudly to say it). The gate goes through a function, a sigmoid in the original GLU, Swish in SwiGLU or GELU in GEGLU, and multiplies the value number by number.`,
+      `Multiplying makes the layer's response depend on the input in a richer way than a single bend: the same value can be switched on for some examples and off for others. That is why gated layers learn more per weight, and why most large language models (PaLM, LLaMA and their successors) use SwiGLU in every transformer block instead of a plain MLP.`,
+      `It has twice the weights of a dense layer of the same width: two full matrices and two biases. A sigmoid gate stays between 0 and 1, a soft switch; Swish and GELU gates can dip slightly below 0 and grow without limit, which keeps gradients from vanishing.`,
+    ],
+    activation: [
+      `An activation block applies one fixed function to every number separately; it has nothing to learn. Its job is the bend: a stack of weighted sums without bends is still a single weighted sum, a straight line or a flat plane however deep it is, because a linear function of a linear function is linear.`,
+      `Each function bends differently. ReLU, max(0, z), is cheap and keeps a slope of 1 for positive numbers, so gradients travel well through deep stacks, but negative numbers get slope 0. Tanh and sigmoid are smooth S-curves that flatten at the ends (they saturate), where the slope is almost 0 and learning slows. GELU and Swish are smooth versions of ReLU used in transformers. Sine makes waves, good for periodic patterns and coordinates; Gaussian makes bumps.`,
+      `When the model learns, the gradient passing back through this block is multiplied by the function's slope at each number, so the shape of the slope matters as much as the shape of the function. Try one model with each function and watch the boundary change: straight pieces with ReLU, smooth curves with tanh, waves with sine.`,
+    ],
+    dropout: [
+      `While training, dropout sets a random fraction p of the numbers passing through to 0 at every step, and multiplies the others by 1/(1 − p) so that their average stays the same. A new random set is dropped at every step. When the model is evaluated or used, nothing is dropped: the block does nothing.`,
+      `Why it helps: a neuron can never count on any one of its inputs being there, so the network cannot build fragile chains in which one neuron only works because of another's exact quirks. It behaves like training a huge ensemble of thinned networks that share their weights, and using their average at the end. Hinton's group introduced it in 2012, and it made large networks practical on small data.`,
+      `It costs training speed (the loss is noisier and falls more slowly), and it only helps when the model overfits: if the training and validation scores are both poor, dropout makes things worse. Typical rates are 0.1 to 0.5; transformers usually use 0.1.`,
+    ],
+    noise: [
+      `While training, every number passing through gets a small random amount added, drawn from a normal distribution of spread σ; when the model is used, nothing is added. It is like showing the model a slightly different version of every example each time it sees it.`,
+      `The model learns that tiny differences in what it receives should not change its answer, so the function it learns becomes smoother between the training examples. Adding noise of variance σ² to the inputs acts much like penalising the model's steepness, a classic result (Bishop, 1995).`,
+      `Too much σ drowns the signal: if the noise is as large as the differences between the classes, there is nothing left to learn. Right after the input it works as data augmentation; between layers it makes hidden features robust.`,
+    ],
+    layernorm: [
+      `Layer norm takes the numbers of one example (or of one position of a sequence), computes their mean μ and spread σ, and rescales them to mean 0 and spread 1: x̂ = (x − μ) / σ. Two learned numbers per feature, a gain γ and a bias β, then set whatever scale and shift the next layer prefers.`,
+      `Without it, the size of the signal drifts as it passes through many layers: it grows until activations saturate, or shrinks until it is lost in rounding. Normalising every example keeps each layer's input in a steady range, so one learning rate suits every layer and training is far steadier. Every transformer block uses it twice.`,
+      `Unlike batch norm it does not depend on the other examples in the batch, so it behaves the same in training and in use, for any batch size, one example at a time included. That is why sequence models prefer it.`,
+    ],
+    batchnorm: [
+      `Batch norm normalises each feature (each neuron, or each channel of a picture) across the examples of the current batch: it subtracts the batch's mean of that feature and divides by its spread, then applies a learned gain γ and bias β.`,
+      `It made very deep convolutional networks trainable when it appeared in 2015: each layer sees inputs with a steady distribution even while the layers before it change, so larger learning rates work. Batch statistics also add a little noise, because they depend on which examples share a batch, and that acts as a mild regulariser.`,
+      `When the model is used there may be no batch, so batch norm keeps running averages of the mean and variance from training and uses those instead. That difference is its main pitfall: tiny batches give noisy statistics, and a model can behave differently in use than it did in training.`,
+    ],
+    fourier: [
+      `Fourier features keep the inputs and add sin(2π·b·x) and cos(2π·b·x) for a set of random frequency vectors b, drawn once from a normal distribution of spread σ and never trained. A point in the plane becomes a long vector of waves running in many directions at many frequencies.`,
+      `Plain networks of ReLU or tanh neurons learn smooth, slowly varying shapes first and need many neurons and steps to fit sharp detail (their spectral bias). Handing them ready-made waves lets the next dense layer combine them into fine detail directly. NeRF, which rebuilds 3-D scenes from photographs, depends on this trick (Tancik and others, 2020).`,
+      `σ sets the frequencies. Too low, and nothing changes; too high, and the model wiggles between the training points and fits noise. For inputs between −1 and 1 start between 1 and 3 and compare runs.`,
+    ],
+    attention: [
+      `Self-attention lets every position of a sequence gather information from the others. Each position turns its vector into three: a query (what am I looking for?), a key (what do I contain?) and a value (what do I pass on?). How well a query matches each key (a dot product, divided by √d) becomes a score, a softmax turns the scores into weights that add up to 1, and the position's output is the weighted average of the values.`,
+      `Nothing about order is built in: attention treats the sequence as a set, which is why models add positions first. Causal attention masks the future, so position t sees only positions up to t, as a model that writes one token at a time must. With several heads the vector is split into slices and each head attends on its own, so one head can track grammar while another follows a name.`,
+      `Its cost grows with the square of the length, every position against every other, which is why long contexts are expensive. The residual adds the input back, so the layer only has to learn what to add to each position.`,
+    ],
+    transformer: [
+      `A transformer block, the building block of GPT and most modern language models, runs two steps, each wrapped in a residual connection. First self-attention, where the positions exchange information; then an MLP, where each position thinks on its own with a hidden layer usually four times wider and a GELU. A layer norm before each step keeps the signal steady (the pre-norm arrangement used since GPT-2).`,
+      `It helps to picture a shared notepad, the residual stream, flowing through the stack: every attention layer and every MLP reads it and writes a small update into it. Attention moves information between positions; the MLP transforms it at each position, and is where much of a model's stored knowledge seems to live.`,
+      `Its settings: heads split the attention; the MLP size multiplies the hidden layer (×4 is standard); causal makes it a writer that only looks back. A block of width d has about 12·d² weights, so wider models grow fast.`,
+    ],
+    rnn: [
+      `A recurrent layer reads a sequence one step at a time and carries a state vector h, a running summary of what it has seen. At every step the new state is computed from the current input and the previous state, always with the same weights: h_t = f(W·x_t + U·h_(t−1) + b). Its output at each position is the state.`,
+      `A plain RNN struggles with long gaps: the gradient flowing back through many steps is multiplied by the same matrix again and again, so it fades away or blows up. The LSTM (Hochreiter and Schmidhuber, 1997) adds a separate memory cell c and gates that decide what to write, what to keep and what to show, so information can survive hundreds of steps. The GRU (2014) does much the same with two gates and no separate cell.`,
+      `The units are the size of the state, the memory's capacity. Follow it with a sequence pool (last step) for one answer per sequence. Because it reads the steps in order it cannot be spread over time the way attention can, one reason transformers replaced it for long texts.`,
+    ],
+    conv1d: [
+      `A 1-D convolution slides small filters along the sequence. Each filter looks at a window of k neighbouring positions (all of their features), multiplies them by its weights and adds them up, and the same filter is used at every position, so a pattern is found wherever it occurs.`,
+      `Dilation spreads the window out (dilation 2 looks at every second position) and a causal window only looks back, so the model never sees the future. Stacking causal convolutions with dilations 1, 2, 4, 8 makes the span each output sees double with every layer: the WaveNet design for audio, and the basis of temporal convolutional networks.`,
+      `Compared with a recurrent layer it reads all positions at once (fast to train) and has a fixed reach; compared with attention, its cost grows only linearly with the length.`,
+    ],
+    position: [
+      `Attention and dense layers treat a sequence like a bag: shuffle its positions and they give the same outputs, shuffled. A positions block adds a different vector at each position, so the layers after it can tell first from last and near from far.`,
+      `Learned positions are one trainable vector per position, as in GPT-2 and the Vision Transformer. Sine positions are fixed waves of many frequencies, as in the original transformer (2017): position t gets sin(t / 10000^(2i/d)) and cos(…) in alternate features, so an offset between two positions becomes a rotation a layer can detect.`,
+      `Recurrent and convolutional layers already know the order, because they step or slide, so positions matter most in front of attention. Many recent models use rotary embeddings (RoPE) instead, which rotate the queries and keys rather than adding vectors.`,
+    ],
+    seqpool: [
+      `A class or a single value needs one vector, but a sequence layer gives one per position. Sequence pooling squeezes the sequence: last keeps the final position (what a recurrent layer has gathered after reading everything), max keeps the largest value of each feature over all positions (did this pattern appear anywhere?) and mean averages them (how much of it was there overall?).`,
+      `Last suits recurrent layers and causal attention, whose final position has seen everything. Max suits convolutions that detect local patterns, such as a phrase that decides the sentiment. Mean is a steady summary that uses every position.`,
+      `It has nothing to learn. The gradient goes only to the last position, to the position that held each maximum, or equally to every position.`,
+    ],
+    conv: [
+      `A convolution slides small learned filters (1×1, 3×3 or 5×5) over the picture. At each place a filter multiplies the pixels under it, in every input channel, by its weights and adds them up with a bias, giving one number per place: a feature map that shows where the filter's pattern occurs. Eight filters give eight feature maps, the output's channels.`,
+      `Two ideas make it efficient: locality (each output looks at a small neighbourhood only) and weight sharing (the same filter everywhere), so a pattern is found wherever it appears with far fewer weights than a dense layer would need. Stacked layers see wider areas: early filters find edges and spots, later ones combine them into strokes, corners and shapes, the design that runs from LeNet (1989) to ResNet (2015).`,
+      `Stride 2 moves the filter two pixels at a time and halves the map; padding keeps the borders so the size stays the same. A 1×1 filter looks at no neighbours at all: it mixes the channels at each pixel, a cheap way to change their number, used in Inception modules and ResNet bottlenecks.`,
+    ],
+    pool: [
+      `Max pooling cuts each feature map into small patches (2×2) and keeps only the largest value of each, so the map shrinks by half in each direction and holds a quarter of the numbers.`,
+      `It keeps the strongest response of each detector (was the pattern anywhere in this patch?) and forgets exactly where, which makes the model less sensitive to small shifts and lets later filters of the same size see a wider area. It has nothing to learn, and the gradient flows only to the value that was the maximum.`,
+      `Many modern networks replace it with stride-2 convolutions, which learn how to shrink.`,
+    ],
+    avgpool: [
+      `Average pooling replaces each small patch (2×2) of a feature map with its average, halving the size in each direction. Unlike max pooling every value counts a little, so it smooths rather than picking the strongest response.`,
+      `Use it when the overall amount of a feature matters more than its strongest spot, or to shrink maps gently. It has nothing to learn; the gradient is shared equally by the values of each patch.`,
+    ],
+    patches: [
+      `Patches turn a picture into a sequence of tokens for attention. The picture is cut into non-overlapping squares, each square's pixels are flattened and multiplied by one shared learned matrix into a vector, and a learned position vector is added to each so the model knows where it came from.`,
+      `This is how a Vision Transformer (2020) starts: once patched, a picture is just a sentence of patch-words, and a standard transformer can relate any two patches, near or far, from its first layer. Convolutions build a wide view slowly; attention has it at once, but needs more data to learn what convolutions take for granted, that neighbours matter.`,
+      `Bigger patches give fewer tokens, faster and coarser; smaller patches give more tokens and finer detail, more slowly, because attention's cost grows with the square of the number of tokens.`,
+    ],
+    flatten: [
+      `Flatten lines up all the numbers of a picture (channels × height × width) or of a sequence (positions × features) into one long vector, so that dense layers and a class or value output can use them. Nothing is computed and nothing is learned; the numbers are only relabelled.`,
+      `It keeps every number, but the dense layer after it treats each as a separate input with its own weight, so it no longer knows which numbers were neighbours and needs many weights: one per pixel per neuron. Global pooling is the cheaper choice when only the presence of features matters.`,
+    ],
+    gap: [
+      `Global average pooling averages each channel over every position: a picture of C channels becomes C numbers, and a sequence of D features becomes D numbers, whatever its size.`,
+      `Compared with flatten it needs no weights and no fixed size, and it makes the model ignore where in the picture a feature appeared; most image classifiers since ResNet end with it. The price is that position is gone.`,
+    ],
+    parallel: [
+      `Parallel branches run two to four small stacks of blocks side by side on the same input, then combine what they give. Each branch is a little model of its own with its own weights, so the block can look at the data in several ways at once: big and small filters, a recurrent and a convolutional reader, a deep path and a shallow one.`,
+      `How they meet matters. Joining lays the outputs side by side: every branch's numbers reach the next layer, which learns how much to trust each one; this is the Inception module (2014) and the wide-and-deep model (2016). Adding needs equal shapes and mixes them number by number; with one branch left empty it adds the input back, a residual connection around the other branches, as in ResNet. Multiplying lets one branch gate the other, the idea inside LSTMs and gated layers. Averaging makes the branches vote, like a small ensemble.`,
+      `When the model learns, the gradient reaching the merge is shared out among the branches: each gets the slice for its own numbers (joined), all of it (added), a k-th of it (averaged), or all of it times the other branches' outputs (multiplied). Every branch then runs it back through its own blocks, and what reaches the input is the sum over the branches, because the input fed all of them.`,
+      `On the model, each branch is a lane: add blocks with its list or by dragging parts onto it, and an empty lane passes the input straight through. Branches can give different sizes when joined, but the same kind of data, with the same positions or picture size.`,
+    ],
+    linear: [
+      `A linear model computes one weighted sum of the inputs plus a bias for each output: ŷ = w·x + b. For numbers (regression) the weights are found exactly, in one step, by least squares: the formula for the weights that minimise the squared error. For classes it is logistic regression: one weighted sum per class, turned into probabilities by a softmax and fitted by gradient steps on the cross-entropy.`,
+      `Its boundaries are straight lines (flat planes) and its fitted surfaces are flat, so it fails on curved problems; but it is fast, needs little data, and every weight can be read: how much the answer changes per unit of each input. The ridge penalty λ shrinks the weights toward 0, which steadies them when inputs are correlated or examples are few.`,
+      `It is the right first baseline for any problem: a network that cannot beat it has not learned anything useful.`,
+    ],
+    knn: [
+      `k-nearest neighbours keeps every training example. To answer for a new input it measures the distance to all of them, takes the k closest, and lets them vote (classes) or averages their values (numbers); weighting by distance gives the closest ones more say.`,
+      `There is no training and no formula: the answer follows the data itself, so it can fit any shape. But it must store and search all the data for every answer, it is misled by inputs on very different scales, and with many inputs all points end up far apart (the curse of dimensionality).`,
+      `k sets the smoothness: k = 1 follows every point, noisy ones included, while a large k averages over a wide neighbourhood and blurs the boundary. Choose it by the validation score.`,
+    ],
+    tree: [
+      `A decision tree is a flowchart of yes-or-no questions about the inputs, such as “is x₁ ≤ 0.3?”. It is grown from the top: at each node it tries every input and every threshold, keeps the question that best separates the training answers (the one that most reduces their impurity: Gini for classes, squared error for numbers), splits the examples, and asks a new question on each side, until a depth limit or too few examples.`,
+      `A leaf answers with the most common class, or the average value, of the training examples that reached it, so the boundaries are rectangles: axis-aligned steps. Trees need no scaling of the inputs, mix kinds of data easily and are easy to read.`,
+      `A deep tree memorises the training data, a leaf for every one or two examples, and overfits; the depth and the smallest leaf are its brakes. On its own it is unstable, since a small change in the data changes its questions, which is what forests and boosting fix.`,
+    ],
+    forest: [
+      `A random forest grows many deep trees, each on a bootstrap sample of the training examples (drawn with replacement) and choosing each question among a random few of the inputs. To answer, every tree votes, or their answers are averaged.`,
+      `Each tree overfits in its own way, but their mistakes differ, so averaging cancels much of the noise: a steady model built from unsteady parts. The randomness is essential, since trees grown on the same data from all the inputs would be nearly identical and gain nothing from averaging. Breiman introduced it in 2001, and it is still one of the most reliable models for tables.`,
+      `More trees never overfit; they only cost time. The depth and the inputs per question set how different, and how strong, each tree is.`,
+    ],
+    boost: [
+      `Gradient boosting builds its answer one small tree at a time. It starts from a constant guess; each new tree is trained on the gradient of the loss for every example (for squared error, simply what the model so far still gets wrong) and is added with a small weight η, the learning rate.`,
+      `XGBoost (2016) grows each tree with a second-order rule: a leaf's value is −G/(H + λ), from the sums of the gradients G and curvatures H of its examples, and a split is kept only if it gains more than γ. Shrinkage, the leaf penalty and sampling rows and inputs per tree keep each step modest, so many weak trees add up to a strong model.`,
+      `It usually wins on tables of numbers. Its main risk is overfitting with too many rounds at a high η: watch the validation score and stop where it is best.`,
+    ],
+  };
+  for (const k of Object.keys(DEEP)) if (G[k]) G[k].deep = DEEP[k];
+  G.parallel = {
+    what: 'Two to four branches of blocks side by side on the same input, their outputs joined, added, multiplied or averaged.',
+    how: ['Copy the input to every branch.', 'Run each branch’s blocks in order, each with its own weights.', 'Join the outputs side by side, or add, multiply or average them number by number.'],
+    math: ['y_b = branch_b(x)      for b = A, B, …', 'joined: y = [y_A, y_B, …]      added: y = Σ y_b', 'multiplied: y = Π y_b      averaged: y = (1/k) Σ y_b'],
+    params: 'the learned numbers of the blocks in its branches; the merge itself learns nothing',
+    use: ['Several views of the data at once: small and large filters (Inception), a recurrent and a convolutional reader.', 'A wide (raw inputs) and a deep (learned features) path for tables.', 'An empty branch and Add: a residual connection.', 'A sigmoid branch and Multiply: a gate.'],
+    watch: ['Add, multiply and average need every branch to give the same shape.', 'Joined images need the same height and width; joined sequences the same positions.'],
+    code: 'outs = [branch(x) for branch in self.branches]\ny = torch.cat(outs, -1)        # or sum(outs), torch.stack(outs).prod(0), .mean(0)',
+    deep: DEEP.parallel,
+  };
+
+  // What the block does here, in numbers: its shapes, its learned numbers and how they add up, what its settings mean.
+  function inModel(b, sh) {
+    if (!b || !sh || !sh.in || !sh.out) return '';
+    const c = Object.assign({}, (NA.bx && NA.bx.BLOCKS[b.type] || {}).defaults, b), si = sh.in, so = sh.out, P = sh.params || 0;
+    const T = (s) => s.join(' × '), last = si[si.length - 1], seq = si.length === 2, n = (v) => Number(v).toLocaleString('en');
+    const pos = seq ? `, the same weights at each of the ${si[0]} positions` : '';
+    const A = (id) => ((NA.engine && NA.engine.ACTIVATIONS[id]) || {}).label || id;
+    switch (b.type) {
+      case 'dense': return `Here: ${T(si)} in, ${T(so)} out. Each of its ${c.units} neuron${c.units === 1 ? '' : 's'} has ${last} weight${last === 1 ? '' : 's'} (one per input) and a bias: ${last + 1} learned numbers each, ${c.units} × ${last + 1} = ${n(P)} in all${pos}. Its activation is ${Array.isArray(b.acts) ? 'mixed: some neurons have their own' : A(c.act)}${c.residual ? (last === c.units ? ', and its input is added back (residual)' : `; the residual is off, because it would need ${last} neurons`) : ''}.`;
+      case 'gated': return `Here: ${T(si)} in, ${T(so)} out. Each of its ${c.units} units has a value and a gate, each with ${last} weights and a bias: 2 × ${c.units} × ${last + 1} = ${n(P)} learned numbers${pos}. The gate's function is ${A(c.gate)}.`;
+      case 'activation': return `Here it bends each of the ${n(si.reduce((a, q) => a * q, 1))} numbers it receives (${T(si)}) with ${A(c.act)}, and learns nothing.`;
+      case 'dropout': return `Here, while training, it drops ${Math.round(c.p * 100)}% of the ${n(si.reduce((a, q) => a * q, 1))} numbers it receives at every step and scales the rest by ${(1 / (1 - c.p)).toFixed(2)}; in use it passes all of them unchanged.`;
+      case 'noise': return `Here, while training, it adds noise of spread σ = ${c.sigma} to each of the ${n(si.reduce((a, q) => a * q, 1))} numbers it receives; in use it passes them unchanged.`;
+      case 'layernorm': return `Here it normalises ${seq ? `each of the ${si[0]} positions` : 'each example'}: ${last} numbers to mean 0 and spread 1, then a gain and a bias per feature, 2 × ${last} = ${n(P)} learned numbers.`;
+      case 'batchnorm': { const C = si.length === 3 ? si[0] : last; return `Here it normalises each of ${C} ${si.length === 3 ? 'channels' : 'features'} over the batch, with a learned gain and bias each: 2 × ${C} = ${n(P)} learned numbers, plus a running mean and variance per ${si.length === 3 ? 'channel' : 'feature'} for use.`; }
+      case 'fourier': return `Here it keeps the ${si[0]} input${si[0] === 1 ? '' : 's'} and adds the sine and cosine of ${c.features} random frequencies (spread σ = ${c.scale}): ${si[0]} + 2 × ${c.features} = ${so[0]} numbers out, none of them learned.`;
+      case 'attention': { const D = last, h = c.heads; return `Here every one of the ${si[0]} positions makes a query, a key and a value of ${D} numbers, split into ${h} head${h === 1 ? '' : 's'} of ${D / h}; ${c.causal !== false ? 'each position sees only itself and the ones before it' : 'every position sees every other'}. The four projections (query, key, value and output) are ${D} × ${D} matrices with biases: 4 × (${D} × ${D} + ${D}) = ${n(P)} learned numbers.`; }
+      case 'transformer': { const D = last, Hd = Math.max(1, Math.round((c.mlp || 4) * D)); return `Here each of the ${si[0]} positions carries ${D} numbers. Attention has ${c.heads} head${c.heads === 1 ? '' : 's'}${c.causal !== false ? ' and only looks back' : ''}; the MLP widens to ${Hd} hidden neurons and back. Learned numbers: attention 4 × (${D}² + ${D}), the two layer norms 4 × ${D}, the MLP ${D} × ${Hd} + ${Hd} + ${Hd} × ${D} + ${D}: ${n(P)} in all.`; }
+      case 'conv': { const C = si[0], k = c.k; return `Here it slides ${c.filters} filters of ${k} × ${k} over a ${T(si)} input${c.stride > 1 ? `, ${c.stride} pixels at a time` : ''}. Each filter reaches into all ${C} input channel${C === 1 ? '' : 's'}: ${C} × ${k} × ${k} = ${C * k * k} weights and a bias, ${C * k * k + 1} learned numbers; ${c.filters} filters make ${n(P)}. Out come ${so[0]} feature maps of ${so[1]} × ${so[2]}.`; }
+      case 'pool': case 'avgpool': return `Here it turns ${T(si)} into ${T(so)}, keeping the ${b.type === 'pool' ? 'largest value' : 'average'} of each ${c.size} × ${c.size} patch of each channel, and learns nothing.`;
+      case 'flatten': return `Here it lays the ${T(si)} numbers out as one vector of ${so[0]}, and learns nothing.`;
+      case 'gap': return `Here it averages each of the ${so[0]} ${si.length === 3 ? 'channels over its ' + si[1] + ' × ' + si[2] + ' pixels' : 'features over the ' + si[0] + ' positions'}, and learns nothing.`;
+      case 'seqpool': return `Here it squeezes ${si[0]} positions of ${si[1]} numbers into one vector of ${so[0]}: ${({ last: 'the last position', max: 'the largest value of each feature', mean: 'the average of each feature' })[c.mode] || c.mode}, and learns nothing.`;
+      case 'rnn': { const G = { rnn: 1, lstm: 4, gru: 3 }[c.cell] || 4, H = c.units, D = last; return `Here a ${({ rnn: 'plain RNN', lstm: 'LSTM', gru: 'GRU' })[c.cell] || c.cell} reads ${si[0]} steps of ${D} numbers and carries a state of ${H}. It has ${G} gate${G === 1 ? '' : 's'} (or candidates), each with ${D} input weights, ${H} state weights and two biases per unit: ${G} × ${H} × (${D} + ${H} + 2) = ${n(P)} learned numbers, the same at every step.`; }
+      case 'conv1d': { const k = c.k, D = last, reach = (k - 1) * (c.dilation || 1) + 1; return `Here ${c.filters} filters each look at ${k} positions${c.dilation > 1 ? `, ${c.dilation} apart (a reach of ${reach})` : ''}${c.causal ? ', only backwards' : ''}, with all ${D} numbers at each: ${k} × ${D} weights and a bias, ${k * D + 1} learned numbers per filter, ${n(P)} in all.`; }
+      case 'position': return c.mode === 'sine' ? `Here it adds fixed sine and cosine waves to the ${si[0]} positions of ${last} numbers; nothing is learned.` : `Here it adds a learned vector of ${last} numbers to each of the ${si[0]} positions: ${si[0]} × ${last} = ${n(P)} learned numbers.`;
+      case 'patches': { const p = c.size, C = si[0], N = so[0]; return `Here it cuts the ${T(si)} picture into ${N} patches of ${p} × ${p}, and projects each patch's ${C * p * p} pixel values into ${c.dim} numbers with one shared matrix (${C * p * p} × ${c.dim} weights and ${c.dim} biases), then adds a learned place for each patch (${N} × ${c.dim}): ${n(P)} learned numbers.`; }
+      case 'parallel': { const k = (b.branches || []).length, merge = c.merge || 'concat'; return `Here ${k} branches each receive the ${T(si)} input; what they give is ${({ concat: 'joined side by side', add: 'added', mul: 'multiplied', mean: 'averaged' })[merge]} into ${T(so)}. Its ${n(P)} learned numbers are those of the blocks in its branches.`; }
+      default: return `Here: ${T(si)} in, ${T(so)} out${P ? `, ${n(P)} learned numbers` : ''}.`;
+    }
+  }
+
   // ------------------------------------------------------------------ the pictures
   /* A small picture of each part, drawn into ctx (W × H) at time t seconds. Colours come from the theme: s1 blue
      for data, s2 orange for what the part makes, ink for structure. */
@@ -273,6 +456,18 @@
       else if (type === 'patches') { for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) { ctx.strokeStyle = c('s2'); ctx.lineWidth = 2; ctx.strokeRect(x0 + j * 2 * s, y0 + i * 2 * s, 2 * s - 1, 2 * s - 1); box(W * 0.58 + (i * 2 + j) * (s + 6), mid - s / 2, s, s, c('s7', 0.8)); } label('2 × 2 patches → 4 tokens for attention', W / 2, H - 6); }
       else if (type === 'flatten') { for (let k = 0; k < n * n; k++) box(W * 0.5 + (k % 13) * 8, mid - 10 + Math.floor(k / 13) * 10, 7, 8, theme.seqColor(rnd(k))); label('rows laid end to end: one long vector', W / 2, H - 6); }
       else { box(W * 0.62, mid - 9, 18, 18, theme.seqColor(0.5)); label('every position averaged → one number per channel', W / 2, H - 6); }
+    } else if (type === 'parallel') {
+      // the input splits into branches of different blocks, then they meet again
+      const k = 3, x0 = W * 0.1, x1 = W * 0.78, lanes = [['s1', 2], ['s7', 1], ['s4', 3]], ph = Math.floor(t * 1.2) % 4;
+      dot(x0, mid, 7, c('s1'));
+      lanes.forEach(([col, n2], b) => {
+        const y = 16 + b * ((H - 34) / (k - 1));
+        ctx.strokeStyle = muted; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(x0 + 7, mid); ctx.bezierCurveTo(x0 + 30, mid, x0 + 30, y, x0 + 46, y); ctx.lineTo(x1 - 40, y); ctx.bezierCurveTo(x1 - 20, y, x1 - 20, mid, x1 - 9, mid); ctx.stroke();
+        for (let j = 0; j < n2; j++) box(x0 + 54 + j * 34, y - 8, 26, 16, c(col, ph > j ? 0.95 : 0.45), c('line-2'));
+        label('ABC'[b], x0 + 40, y - 9, { size: 9.5, w: 700, color: c('s3') });
+      });
+      dot(x1, mid, 9, c('s3')); label('‖', x1, mid, { color: c('panel'), w: 700, size: 12 });
+      label('one input, three branches, joined at the end', W / 2, H - 6);
     } else if (type === 'linear' || type === 'knn' || type === 'tree' || type === 'forest' || type === 'boost') {
       const X = (u) => W * 0.08 + u * W * 0.5, Y = (v) => 10 + (1 - v) * (H - 24);
       const pts = Array.from({ length: 26 }, (_, i) => { const u = rnd(i * 3 + 1), v = rnd(i * 5 + 2); return { u, v, k: v > 0.25 + 0.5 * u + 0.12 * Math.sin(u * 9) ? 1 : 0 }; });
@@ -308,11 +503,11 @@
     animate(canvas, type);
     return root;
   }
-  function sections(g) {
+  function sections(g, o = {}) {
     const S = (title, ...kids) => el('section', { class: 'insp-sec pg-sec' }, el('h3', { class: 'sec-title', text: title }), ...kids);
     const list = (items, ordered) => el(ordered ? 'ol' : 'ul', { class: 'pg-list' }, ...items.map((t) => el('li', { text: t })));
     const out = [];
-    if (g.what) out.push(S('What it does', el('p', { class: 'pg-p', text: g.what })));
+    if (g.what && !o.noWhat) out.push(S('What it does', el('p', { class: 'pg-p', text: g.what }), ...(g.deep || []).map((t) => el('p', { class: 'pg-p pg-deep', text: t }))));
     if (g.how) out.push(S('Step by step', list(g.how, true)));
     if (g.math) out.push(S('The maths', el('div', { class: 'fx' }, ...g.math.map((m) => el('div', { class: 'fx-line', text: m })))));
     if (g.params) out.push(S(g.classic ? 'What it learns' : 'Learned numbers', el('p', { class: 'pg-p', text: g.params })));
@@ -326,7 +521,7 @@
     const g = G[type];
     if (!g) return el('span');
     const canvas = el('canvas', { class: 'pg-canvas', role: 'img', 'aria-label': `How this part works: ${g.what}` });
-    const d = el('details', { class: 'pg-details' }, el('summary', { text: 'How it works, in depth' }), el('div', { class: 'pg-visual' }, canvas), ...sections(g));
+    const d = el('details', { class: 'pg-details' }, el('summary', { text: 'Step by step, the maths and the code' }), el('div', { class: 'pg-visual' }, canvas), ...sections(g, { noWhat: true }));
     if (o.open) d.open = true;
     d.addEventListener('toggle', () => { if (d.open) animate(canvas, type); });
     if (d.open) animate(canvas, type);
@@ -349,5 +544,5 @@
     requestAnimationFrame(frame);
   }
 
-  NA.partGuide = { G, render, details, draw };
+  NA.partGuide = { G, render, details, draw, inModel };
 })(window.NA);

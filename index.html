@@ -805,6 +805,32 @@ button.bd-gchip:hover { border-color: var(--bk); }
 .bd-inpart > span:nth-child(2) { flex: 1 1 180px; }
 .bd-inpart .bd-card-ico { width: 24px; height: 24px; }
 .bd-inpart .bd-card-ico .ico { width: 16px; height: 16px; }
+/* a parallel block's branches, side by side on its card */
+.bd-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 6px; margin: 8px 0 0 40px; }
+.bd-lane { display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 70px; padding: 6px; border: 1px dashed color-mix(in srgb, var(--s3) 55%, var(--line-2)); border-radius: 9px; background: color-mix(in srgb, var(--s3) 4%, var(--panel)); transition: border-color 0.15s ease, background-color 0.15s ease; }
+.bd-lane.is-target { border-style: solid; border-color: var(--focus); background: color-mix(in srgb, var(--focus) 8%, var(--panel)); }
+.bd-lane.is-bad { border-color: var(--critical); }
+.bd-lane-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font: 600 11px var(--font-ui); color: var(--ink-2); }
+.bd-lane-letter { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; background: color-mix(in srgb, var(--s3) 22%, var(--panel)); color: var(--ink); font: 700 11px var(--font-ui); flex: none; }
+.bd-lane-shape { font: 500 10.5px var(--font-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-lane .bd-gchip { width: 100%; }
+.bd-lane .bd-gchip-name { white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }
+.bd-lane-empty { font-size: 11px; color: var(--muted); padding: 4px 2px; }
+.bd-lane-add { width: 100%; min-height: 28px; margin-top: auto; padding: 2px 6px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel); color: var(--ink-2); font: 500 11.5px var(--font-ui); }
+.bd-lane .bd-fix { align-self: flex-start; }
+.bd-merge { display: flex; align-items: center; gap: 6px; margin: 6px 0 0 40px; font: 500 11.5px var(--font-ui); color: var(--ink-2); }
+.bd-merge-sign { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: color-mix(in srgb, var(--s3) 26%, var(--panel)); color: var(--ink); font: 700 12px var(--font-ui); }
+.bd-branch-row { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--line); }
+.bd-branch-row:first-of-type { border-top: 0; }
+.bd-branch-head { display: flex; align-items: center; gap: 8px; }
+.bd-branch-head .sec-note { flex: 1; margin: 0; }
+[data-layout="mobile"] .bd-lane-add { min-height: 36px; }
+/* a block's explanation in depth, and what it does in this model */
+.bd-deep { margin: 0 0 8px; line-height: 1.55; }
+.bd-here { margin-top: 10px; padding: 9px 11px; border-left: 3px solid var(--focus); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--ink) 4%, var(--panel)); }
+.bd-here-title { font: 650 11px var(--font-ui); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 3px; }
+.bd-here p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+.pg-deep { margin-top: 8px; }
 .bd-style { flex: none; flex-wrap: nowrap; }
 .bd-style button { padding: 4px 10px; }
 [data-layout="mobile"] .bd-style button { padding: 7px 9px; }
@@ -1562,59 +1588,59 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=5ea9810020"></script>
-<script src="js/engine.js?v=5ea9810020"></script>
-<script src="js/data.js?v=5ea9810020"></script>
-<script src="js/presets.js?v=5ea9810020"></script>
-<script src="js/app.js?v=5ea9810020"></script>
-<script src="js/ui.js?v=5ea9810020"></script>
-<script src="js/network-view.js?v=5ea9810020"></script>
-<script src="js/data-view.js?v=5ea9810020"></script>
-<script src="js/hidden-space.js?v=5ea9810020"></script>
-<script src="js/landscape.js?v=5ea9810020"></script>
-<script src="js/charts.js?v=5ea9810020"></script>
-<script src="js/insights.js?v=5ea9810020"></script>
-<script src="js/inspector.js?v=5ea9810020"></script>
-<script src="js/walkthrough.js?v=5ea9810020"></script>
-<script src="js/lab.js?v=5ea9810020"></script>
-<script src="js/archview.js?v=5ea9810020"></script>
-<script src="js/arch-deep.js?v=5ea9810020"></script>
-<script src="js/net-deep.js?v=5ea9810020"></script>
-<script src="js/lm-data.js?v=5ea9810020"></script>
-<script src="js/transformer.js?v=5ea9810020"></script>
-<script src="js/lm-weights.js?v=5ea9810020"></script>
-<script src="js/arch-transformer.js?v=5ea9810020"></script>
-<script src="js/lab-transformer.js?v=5ea9810020"></script>
-<script src="js/pinn.js?v=5ea9810020"></script>
-<script src="js/pinn-weights.js?v=5ea9810020"></script>
-<script src="js/arch-pinn.js?v=5ea9810020"></script>
-<script src="js/lab-pinn.js?v=5ea9810020"></script>
-<script src="js/diffusion.js?v=5ea9810020"></script>
-<script src="js/diffusion-weights.js?v=5ea9810020"></script>
-<script src="js/arch-diffusion.js?v=5ea9810020"></script>
-<script src="js/lab-diffusion.js?v=5ea9810020"></script>
-<script src="js/yolo.js?v=5ea9810020"></script>
-<script src="js/arch-yolo.js?v=5ea9810020"></script>
-<script src="js/lab-yolo.js?v=5ea9810020"></script>
-<script src="js/radar.js?v=5ea9810020"></script>
-<script src="js/radar-weights.js?v=5ea9810020"></script>
-<script src="js/arch-radar.js?v=5ea9810020"></script>
-<script src="js/lab-radar.js?v=5ea9810020"></script>
-<script src="js/builder-engine.js?v=5ea9810020"></script>
-<script src="js/classic-ml.js?v=5ea9810020"></script>
-<script src="js/builder-tasks.js?v=5ea9810020"></script>
-<script src="js/builder-challenges.js?v=5ea9810020"></script>
-<script src="js/part-guide.js?v=5ea9810020"></script>
-<script src="js/builder-insights.js?v=5ea9810020"></script>
-<script src="js/builder-viz.js?v=5ea9810020"></script>
-<script src="js/builder-py.js?v=5ea9810020"></script>
-<script src="js/arch-builder.js?v=5ea9810020"></script>
-<script src="js/lab-builder.js?v=5ea9810020"></script>
-<script src="js/mobile.js?v=5ea9810020"></script>
-<script src="js/share.js?v=5ea9810020"></script>
-<script src="js/glossary.js?v=5ea9810020"></script>
-<script src="js/tour.js?v=5ea9810020"></script>
-<script src="js/chrome.js?v=5ea9810020"></script>
-<script src="pwa.js?v=5ea9810020"></script>
+<script src="js/core.js?v=25a600e424"></script>
+<script src="js/engine.js?v=25a600e424"></script>
+<script src="js/data.js?v=25a600e424"></script>
+<script src="js/presets.js?v=25a600e424"></script>
+<script src="js/app.js?v=25a600e424"></script>
+<script src="js/ui.js?v=25a600e424"></script>
+<script src="js/network-view.js?v=25a600e424"></script>
+<script src="js/data-view.js?v=25a600e424"></script>
+<script src="js/hidden-space.js?v=25a600e424"></script>
+<script src="js/landscape.js?v=25a600e424"></script>
+<script src="js/charts.js?v=25a600e424"></script>
+<script src="js/insights.js?v=25a600e424"></script>
+<script src="js/inspector.js?v=25a600e424"></script>
+<script src="js/walkthrough.js?v=25a600e424"></script>
+<script src="js/lab.js?v=25a600e424"></script>
+<script src="js/archview.js?v=25a600e424"></script>
+<script src="js/arch-deep.js?v=25a600e424"></script>
+<script src="js/net-deep.js?v=25a600e424"></script>
+<script src="js/lm-data.js?v=25a600e424"></script>
+<script src="js/transformer.js?v=25a600e424"></script>
+<script src="js/lm-weights.js?v=25a600e424"></script>
+<script src="js/arch-transformer.js?v=25a600e424"></script>
+<script src="js/lab-transformer.js?v=25a600e424"></script>
+<script src="js/pinn.js?v=25a600e424"></script>
+<script src="js/pinn-weights.js?v=25a600e424"></script>
+<script src="js/arch-pinn.js?v=25a600e424"></script>
+<script src="js/lab-pinn.js?v=25a600e424"></script>
+<script src="js/diffusion.js?v=25a600e424"></script>
+<script src="js/diffusion-weights.js?v=25a600e424"></script>
+<script src="js/arch-diffusion.js?v=25a600e424"></script>
+<script src="js/lab-diffusion.js?v=25a600e424"></script>
+<script src="js/yolo.js?v=25a600e424"></script>
+<script src="js/arch-yolo.js?v=25a600e424"></script>
+<script src="js/lab-yolo.js?v=25a600e424"></script>
+<script src="js/radar.js?v=25a600e424"></script>
+<script src="js/radar-weights.js?v=25a600e424"></script>
+<script src="js/arch-radar.js?v=25a600e424"></script>
+<script src="js/lab-radar.js?v=25a600e424"></script>
+<script src="js/builder-engine.js?v=25a600e424"></script>
+<script src="js/classic-ml.js?v=25a600e424"></script>
+<script src="js/builder-tasks.js?v=25a600e424"></script>
+<script src="js/builder-challenges.js?v=25a600e424"></script>
+<script src="js/part-guide.js?v=25a600e424"></script>
+<script src="js/builder-insights.js?v=25a600e424"></script>
+<script src="js/builder-viz.js?v=25a600e424"></script>
+<script src="js/builder-py.js?v=25a600e424"></script>
+<script src="js/arch-builder.js?v=25a600e424"></script>
+<script src="js/lab-builder.js?v=25a600e424"></script>
+<script src="js/mobile.js?v=25a600e424"></script>
+<script src="js/share.js?v=25a600e424"></script>
+<script src="js/glossary.js?v=25a600e424"></script>
+<script src="js/tour.js?v=25a600e424"></script>
+<script src="js/chrome.js?v=25a600e424"></script>
+<script src="pwa.js?v=25a600e424"></script>
 </body>
 </html>

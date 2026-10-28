@@ -13,10 +13,10 @@
   // ------------------------------------------------------------------ names, colours, shapes
   // the builder's palette: layers, sequences, images and reshapes, then the input and the output
   const TONE = { dense: 's1', activation: 's1', dropout: 's1', layernorm: 's1', attention: 's7', transformer: 's7', conv: 's4', pool: 's4', flatten: 's6', gap: 's6',
-    gated: 's1', batchnorm: 's1', noise: 's1', fourier: 's1', rnn: 's7', conv1d: 's7', position: 's7', seqpool: 's7', patches: 's4', avgpool: 's4', linear: 's5', knn: 's5', tree: 's5', forest: 's5', boost: 's5' };
+    gated: 's1', batchnorm: 's1', noise: 's1', fourier: 's1', rnn: 's7', conv1d: 's7', position: 's7', seqpool: 's7', patches: 's4', avgpool: 's4', linear: 's5', knn: 's5', tree: 's5', forest: 's5', boost: 's5', parallel: 's3' };
   const NAME = { dense: 'Dense', activation: 'Activation', dropout: 'Dropout', layernorm: 'LayerNorm', attention: 'Self-attention', transformer: 'Transformer', conv: 'Convolution', pool: 'Max pool', flatten: 'Flatten', gap: 'Global average pool',
     gated: 'Gated (GLU)', batchnorm: 'BatchNorm', noise: 'Gaussian noise', fourier: 'Fourier features', rnn: 'Recurrent', conv1d: 'Conv 1-D', position: 'Positions', seqpool: 'Sequence pool', patches: 'Patches', avgpool: 'Average pool',
-    linear: 'Linear model', knn: 'k-nearest neighbours', tree: 'Decision tree', forest: 'Random forest', boost: 'Gradient boosting' };
+    linear: 'Linear model', knn: 'k-nearest neighbours', tree: 'Decision tree', forest: 'Random forest', boost: 'Gradient boosting', parallel: 'Parallel branches' };
   const RNN_NAME = { lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' };
   // each recurrent cell's gates in PyTorch's order: [symbol, name, function]
   const RNN_GATES = { lstm: [['i', 'input gate', 'sigmoid'], ['f', 'forget gate', 'sigmoid'], ['g', 'candidate', 'tanh'], ['o', 'output gate', 'sigmoid']], gru: [['r', 'reset gate', 'sigmoid'], ['z', 'update gate', 'sigmoid'], ['n', 'candidate', 'tanh']], rnn: [['h', 'state', 'tanh']] };
@@ -48,9 +48,10 @@
     tree: 'lower the depth one step at a time and watch the training and validation scores meet.',
     forest: 'compare 1 tree with 50, and inputs per question “all” with “√ of them”: the randomness is what makes the average work.',
     boost: 'set η to 1, then 0.05 with more rounds: big steps fit fast and overfit, small steps generalise.',
+    parallel: 'switch the merge from join to add (all branches must then give the same shape), or empty one branch and add: a residual connection. Compare a run with one branch against one with three.',
   };
   // the attribute each block gets in the Python tab's Model class (js/builder-py.js): self.dense3, self.conv1, …
-  const PYMOD = { dense: 'dense', dropout: 'drop', layernorm: 'norm', attention: 'attn', transformer: 'block', conv: 'conv', gated: 'glu', batchnorm: 'bn', noise: 'noise', rnn: 'rnn', conv1d: 'conv', patches: 'patch' };
+  const PYMOD = { dense: 'dense', dropout: 'drop', layernorm: 'norm', attention: 'attn', transformer: 'block', conv: 'conv', gated: 'glu', batchnorm: 'bn', noise: 'noise', rnn: 'rnn', conv1d: 'conv', patches: 'patch', parallel: 'par' };
   const PYACT = { relu: (z) => `F.relu(${z})`, leaky: (z) => `F.leaky_relu(${z}, 0.05)`, elu: (z) => `F.elu(${z})`, gelu: (z) => `F.gelu(${z}, approximate="tanh")`, swish: (z) => `F.silu(${z})`,
     softplus: (z) => `F.softplus(${z})`, tanh: (z) => `torch.tanh(${z})`, sigmoid: (z) => `torch.sigmoid(${z})`, sine: (z) => `torch.sin(${z})`, gaussian: (z) => `torch.exp(-${z} ** 2)`, linear: (z) => z };
   const shapeText = (s) => (s && s.length ? s.join(' × ') : '?');
@@ -158,7 +159,7 @@
     const P = { va, x: Float32Array.from(x), y: Array.from(Ys.subarray(0, ySize)), logits: Float32Array.from(out), layers: [], img: new Map() };
     if (model.embed) { P.ids = Int32Array.from(x); P.emb = cp(model.embed.out); }
     if (nb) P.nb = nb;
-    for (const lay of model.layers) {
+    for (const lay of [...model.layers, ...(model.nested || [])]) { // the layers inside parallel branches come after the head
       const r = {};
       for (const k of BUFS[lay.type] || ['out']) r[k] = cp(lay[k]);
       if (lay.core) for (const k of ['q', 'k', 'v', 'o', 'y', 'att']) r[k] = cp(lay.core[k]);
@@ -181,8 +182,9 @@
       if (model.classic) { const o = model.predict(X, n); g = { G, n, dims, layers: null, out: o, K: o.length / n }; }
       else {
         model.forward(X, n, false);
-        const layers = model.layers.map((lay) => { const per = lay.outShape.reduce((a, b) => a * b, 1); return { per, v: Float32Array.from(lay.out.subarray(0, n * per)) }; });
-        g = { G, n, dims, layers, out: layers[layers.length - 1].v, K: layers[layers.length - 1].per };
+        const layers = [...model.layers, ...(model.nested || [])].map((lay) => { const per = lay.outShape.reduce((a, b) => a * b, 1); return { per, v: Float32Array.from(lay.out.subarray(0, n * per)) }; });
+        const head = layers[model.layers.length - 1];
+        g = { G, n, dims, layers, out: head.v, K: head.per };
       }
     } catch (e) { g = null; }
     GRIDP = { model, key, d, g };
@@ -219,12 +221,34 @@
     const quote = (id) => `"${word(id)}"`, tok = (t) => (P && P.ids ? quote(P.ids[t]) : `position ${t}`);
     const BV = NA.builderViz, cache = P ? P.img : null;
     const shapes = chk.shapes || [];
-    const inS = (i) => (i < nb ? (shapes[i] || {}).in : shapes.length ? (shapes[nb - 1] || {}).out : inputShape());
-    const outS = (i) => (i < nb ? (shapes[i] || {}).out : chk.outShape);
+    /* Blocks inside parallel branches get indices of their own after the top-level blocks and the output head (nb),
+       in the engine's order (block by block, branch by branch), so every level below works for them as for any
+       block: BK, SH, layOf and pOf give a block's settings, shapes, layer and example values, PV the block it reads. */
+    const SLOT = [];
+    {
+      let q = nb + 1;
+      blocks.forEach((b, i) => {
+        if (b.type !== 'parallel' || !Array.isArray(b.branches)) return;
+        const brs = (shapes[i] || {}).branches || [];
+        b.branches.forEach((list, br) => list.forEach((spec, k) => { SLOT[q] = { spec, sh: (brs[br] || [])[k] || {}, owner: i, br, k, prev: k ? q - 1 : i - 1 }; q++; }));
+      });
+    }
+    const BK = (i) => (i > nb ? (SLOT[i] || {}).spec : blocks[i]);
+    const SH = (i) => (i > nb ? (SLOT[i] || {}).sh : shapes[i]);
+    const layOf = (i) => (!model ? null : i > nb ? (model.nested || [])[i - nb - 1] : model.layers[i]);
+    const pOf = (i) => (P ? P.layers[i] : null);
+    const PV = (i) => (i > nb ? SLOT[i].prev : i - 1);
+    const blockNo = (i) => (i > nb && SLOT[i] ? `${SLOT[i].owner + 1}${'ABCD'[SLOT[i].br]}${SLOT[i].k + 1}` : String(i + 1));
+    // the blocks of branch br of parallel block i (indices), and whose output the branch hands on (an empty one: its input)
+    const laneSlots = (i, br) => SLOT.reduce((a, q, j) => (q && q.owner === i && q.br === br ? a.concat(j) : a), []);
+    const laneEnd = (i, br) => { const sl = laneSlots(i, br); return sl.length ? sl[sl.length - 1] : PV(i); };
+    const inS = (i) => (i > nb ? (SH(i) || {}).in : i < nb ? (SH(i) || {}).in : shapes.length ? (SH(nb - 1) || {}).out : inputShape());
+    const outS = (i) => (i > nb ? (SH(i) || {}).out : i < nb ? (SH(i) || {}).out : chk.outShape);
     function inputShape() { const q = d.input || {}; return q.kind === 'tokens' ? [q.len, q.embed] : q.kind === 'vector' ? [q.dim] : q.kind === 'image' ? [q.c, q.h, q.w] : q.kind === 'series' ? [q.len, q.dim] : null; }
-    const blockTitle = (i) => { const b = blocks[i]; return `${i + 1} · ${b.type === 'dense' && b.units === 1 ? 'Neuron' : b.type === 'rnn' ? RNN_NAME[cfgOf(b).cell] || 'LSTM' : NAME[b.type] || b.type}`; };
-    const pyAt = (i, stem) => (NA.builderPy && NA.builderPy.attrPath ? NA.builderPy.attrPath(L.setup, i, stem) : `model.${stem}${i + 1}`);
-    const pyName = (i) => (PYMOD[blocks[i].type] ? pyAt(i, PYMOD[blocks[i].type]) : null);
+    const blockTitle = (i) => { const b = BK(i); return `${blockNo(i)} · ${b.type === 'dense' && b.units === 1 ? 'Neuron' : b.type === 'rnn' ? RNN_NAME[cfgOf(b).cell] || 'LSTM' : NAME[b.type] || b.type}`; };
+    // a block inside a branch lives in its parallel block's branch module: model.par2.branches[0].dense1
+    const pyAt = (i, stem) => (i > nb && SLOT[i] ? `${pyAt(SLOT[i].owner, 'par')}.branches[${SLOT[i].br}].${stem}${SLOT[i].k + 1}` : NA.builderPy && NA.builderPy.attrPath ? NA.builderPy.attrPath(L.setup, i, stem) : `model.${stem}${i + 1}`);
+    const pyName = (i) => (PYMOD[BK(i).type] ? pyAt(i, PYMOD[BK(i).type]) : null);
     const T0 = seq ? d.input.len : 1, D0 = seq ? d.input.embed : 0;
 
     // ---- what the example is, and what the model makes of it
@@ -289,34 +313,34 @@
     const weightsNote = st.live ? `trained for ${fmtInt(L.step)} step${L.step === 1 ? '' : 's'}` : 'untrained weights: train to see learned ones';
 
     // ---- every number's story: what block bi hands on at flat index idx (bi = −1: the input or its embedding)
-    const inVals = (bi) => (bi === 0 ? (seq ? P.emb : P.x) : P.layers[bi - 1].out);
+    const inVals = (bi) => { const pv = PV(bi); return pv < 0 ? (seq ? P.emb : P.x) : pOf(pv).out; };
     const posOf = (s, idx) => (s.length === 3 ? { c: Math.floor(idx / (s[1] * s[2])), y: Math.floor((idx % (s[1] * s[2])) / s[2]), x: idx % s[2] } : s.length === 2 ? { t: Math.floor(idx / s[1]), c: idx % s[1] } : { c: idx });
     const shapeAfter = (bi) => (bi < 0 ? (seq ? [T0, D0] : inputShape()) : outS(bi));
     // what number idx of block bi's output is called
     function nameOf(bi, idx) {
       const s = shapeAfter(bi), p = posOf(s, idx);
       if (bi < 0) return seq ? `x₀[${p.c}] of ${tok(p.t)}` : inputLabel(idx);
-      if (s.length === 3) return `channel ${p.c + 1} (${p.x}, ${p.y}) of block ${bi + 1}`;
-      if (s.length === 2) return `${tok(p.t)}[${p.c}] after block ${bi + 1}`;
-      return blocks[bi].type === 'dense' ? `neuron ${idx + 1} of block ${bi + 1}` : `number ${idx} of block ${bi + 1}`;
+      if (s.length === 3) return `channel ${p.c + 1} (${p.x}, ${p.y}) of block ${blockNo(bi)}`;
+      if (s.length === 2) return `${tok(p.t)}[${p.c}] after block ${blockNo(bi)}`;
+      return BK(bi).type === 'dense' ? `neuron ${idx + 1} of block ${blockNo(bi)}` : `number ${idx} of block ${blockNo(bi)}`;
     }
     function valueNode(bi, idx) {
       if (bi < 0) {
-        if (!seq) return Dp.stored(X, P.x[idx], inputLabel(idx));
+        if (!seq) return Dp.stored(X, P.x[idx], inputLabel(idx), 'input');
         const p = posOf([T0, D0], idx), id = P.ids[p.t], E = model.embed.tok.w, Pp = model.embed.pos.w;
         return Object.assign(Dp.fadd(X, E[id * D0 + p.c], Pp[p.t * D0 + p.c]), { title: `x₀[${p.c}] for ${quote(id)} = E + P`, sub: `its token's row plus row ${p.t} of the position table` });
       }
-      const b = blocks[bi], s = outS(bi), p = posOf(s, idx);
+      const b = BK(bi), s = outS(bi), p = posOf(s, idx);
       switch (b.type) {
         case 'dense': return denseValue(bi, idx);
         case 'activation': return actValue(bi, idx);
-        case 'dropout': return Object.assign(valueNode(bi - 1, idx), { sub: `passed through dropout ${bi + 1} unchanged` });
+        case 'dropout': return Object.assign(valueNode(PV(bi), idx), { sub: `passed through dropout ${blockNo(bi)} unchanged` });
         case 'layernorm': return lnCell(bi, s.length === 2 ? p.t : 0, s.length === 2 ? p.c : idx);
         case 'attention': return attnValue(bi, p.t, p.c);
         case 'transformer': return tfValue(bi, p.t, p.c);
         case 'conv': return convValue(bi, idx);
         case 'pool': return poolValue(bi, idx);
-        case 'flatten': return Object.assign(valueNode(bi - 1, idx), { sub: `number ${idx} of the flattened vector` });
+        case 'flatten': return Object.assign(valueNode(PV(bi), idx), { sub: `number ${idx} of the flattened vector` });
         case 'gap': return gapValue(bi, idx);
         case 'rnn': return rnnValue(bi, p.t, p.c);
         case 'conv1d': return conv1dValue(bi, idx);
@@ -324,12 +348,13 @@
         case 'patches': return patchValue(bi, p.t, p.c);
         case 'batchnorm': return bnValue(bi, idx);
         case 'avgpool': return avgPoolValue(bi, idx);
-        case 'noise': return Object.assign(valueNode(bi - 1, idx), { sub: `passed through block ${bi + 1} unchanged (noise is only added while training)` });
+        case 'noise': return Object.assign(valueNode(PV(bi), idx), { sub: `passed through block ${blockNo(bi)} unchanged (noise is only added while training)` });
         case 'fourier': return fourierValue(bi, idx);
         case 'gated': return gatedValue(bi, idx);
         case 'position': return positionValue(bi, p.t, p.c);
+        case 'parallel': return parallelValue(bi, idx);
       }
-      return Dp.stored(X, P.layers[bi].out[idx], nameOf(bi, idx));
+      return Dp.stored(X, pOf(bi).out[idx], nameOf(bi, idx));
     }
     // the cell under a value that is the sum of two others: either side, and the float addition itself
     function sumNode(title, formula, a, b, aNode, bNode, about, code) {
@@ -349,8 +374,8 @@
 
     // ---- dense layers (and the output head, which is one)
     function denseNeuron(bi, t, j) {
-      const lay = model.layers[bi], head = bi === nb, F = lay.nIn, U = lay.U, xin = inVals(bi), Wt = lay.W.w, bb = lay.b.w;
-      const id = head ? 'linear' : unitAct(lay, blocks[bi], j), act = actOf(id), seqL = lay.rows > 1;
+      const lay = layOf(bi), head = bi === nb, F = lay.nIn, U = lay.U, xin = inVals(bi), Wt = lay.W.w, bb = lay.b.w;
+      const id = head ? 'linear' : unitAct(lay, BK(bi), j), act = actOf(id), seqL = lay.rows > 1;
       const mod = head ? 'model.out' : pyName(bi), what = head ? (out.kind === 'classes' ? `the score for ${names[j] || 'class ' + (j + 1)}` : out.kind === 'tokens' ? `the score for ${quote(j)} as the next token` : K === 1 ? 'the output neuron' : `output ${j + 1}`) : `neuron ${j + 1}`;
       const terms = Array.from({ length: F }, (_, p) => ({ a: xin[t * F + p], w: Wt[j * F + p] }));
       const z = terms.reduce((s, q) => s + q.a * q.w, bb[j]);
@@ -358,39 +383,39 @@
         title: head ? `${what[0].toUpperCase()}${what.slice(1)}${seqL ? ` after ${tok(t)}` : ''}` : `${blockTitle(bi)} · neuron ${j + 1}${seqL ? ` at ${tok(t)}` : ''}`,
         sub: `${F} input${F === 1 ? '' : 's'}${act ? ', ' + act.label : ', no activation'}`, tone: head ? 's2' : 's1',
         terms, bias: bb[j], act, zName: 'z', outName: head ? 'score' : 'a',
-        inLabel: (p) => nameOf(bi - 1, t * F + p), wLabel: (p) => `W[${j}, ${p}]`, inWhat: seqL ? `${tok(t)}'s ${F} numbers` : bi ? `what block ${bi} hands on` : 'the input',
-        inputNode: (p) => valueNode(bi - 1, t * F + p),
+        inLabel: (p) => nameOf(PV(bi), t * F + p), wLabel: (p) => `W[${j}, ${p}]`, inWhat: seqL ? `${tok(t)}'s ${F} numbers` : PV(bi) >= 0 ? `what block ${blockNo(PV(bi))} hands on` : 'the input',
+        inputNode: (p) => valueNode(PV(bi), t * F + p),
         vars: { w: `${mod}.weight[${j}]`, a: 'x', b: `${mod}.bias[${j}]` },
         codeHead: [...pyGrab(mod, 'x', 'inp[0][0]'), seqL ? `x = grab['x'][${t}]                                 # ${tok(t)}'s ${F} numbers: what the layer reads there` : `x = grab['x']                                      # the ${F} numbers the layer reads`],
         codeWhat: `as ${what} of ${mod}, an nn.Linear(${F}, ${U})`,
         about: [
           head ? `${what[0].toUpperCase()}${what.slice(1)}${seqL ? ` after ${tok(t)}` : ''}: the output head is a dense layer without an activation, so this number is a plain weighted sum of the ${F} numbers that reach it, plus a bias: ${fmt(z, 4)}.${out.kind === 'classes' ? ' The softmax then turns the scores into probabilities.' : out.kind === 'tokens' ? ' The softmax over all the tokens turns these scores into next-token probabilities.' : ' It is the model\'s answer.'}`
-            : `Neuron ${j + 1} of block ${bi + 1}${seqL ? `, at ${tok(t)}` : ''}: it multiplies each of its ${F} inputs by its own learned weight, adds them up with its bias (z = ${fmt(z, 4)}) and bends the result with ${act ? act.label : 'no activation'}${act ? `: ${fmt(act.f(z), 4)}` : ''}.${seqL ? ' The same neuron, with the same weights, runs at every position of the sequence on its own.' : ''}`,
+            : `Neuron ${j + 1} of block ${blockNo(bi)}${seqL ? `, at ${tok(t)}` : ''}: it multiplies each of its ${F} inputs by its own learned weight, adds them up with its bias (z = ${fmt(z, 4)}) and bends the result with ${act ? act.label : 'no activation'}${act ? `: ${fmt(act.f(z), 4)}` : ''}.${seqL ? ' The same neuron, with the same weights, runs at every position of the sequence on its own.' : ''}`,
           'Zoom into an input bar to open the number of the block below that produced it.',
         ],
       });
     }
     function denseValue(bi, idx) {
-      const lay = model.layers[bi], t = Math.floor(idx / lay.U), j = idx % lay.U, r = P.layers[bi];
+      const lay = layOf(bi), t = Math.floor(idx / lay.U), j = idx % lay.U, r = pOf(bi);
       if (!lay.residual) return denseNeuron(bi, t, j);
       const xin = inVals(bi);
-      return sumNode(`${nameOf(bi, idx)}: input + neuron`, 'out = x + a   (a residual connection)', xin[idx], r.a[idx], () => valueNode(bi - 1, idx), () => denseNeuron(bi, t, j), residualAbout(`neuron ${j + 1}'s output`), `x = torch.randn(1, ${lay.rows > 1 ? lay.rows + ', ' : ''}${lay.nIn})                     # an input of this shape\nout = x + ${(PYACT[lay.fn.id] || PYACT.linear)(`${pyName(bi)}(x)`)}        # the same shape in and out, so they can be added`);
+      return sumNode(`${nameOf(bi, idx)}: input + neuron`, 'out = x + a   (a residual connection)', xin[idx], r.a[idx], () => valueNode(PV(bi), idx), () => denseNeuron(bi, t, j), residualAbout(`neuron ${j + 1}'s output`), `x = torch.randn(1, ${lay.rows > 1 ? lay.rows + ', ' : ''}${lay.nIn})                     # an input of this shape\nout = x + ${(PYACT[lay.fn.id] || PYACT.linear)(`${pyName(bi)}(x)`)}        # the same shape in and out, so they can be added`);
     }
 
     // ---- element-wise blocks
     function actValue(bi, idx) {
-      const id = model.layers[bi].fn.id, z = inVals(bi)[idx], a = ACT(id);
-      if (id === 'linear') return Object.assign(valueNode(bi - 1, idx), { sub: 'the linear activation passes it unchanged' });
+      const id = layOf(bi).fn.id, z = inVals(bi)[idx], a = ACT(id);
+      if (id === 'linear') return Object.assign(valueNode(PV(bi), idx), { sub: 'the linear activation passes it unchanged' });
       return Object.assign(Dp.lib(X, id, { z }), { title: `${blockTitle(bi)}, number ${idx}`, sub: `${a.label}(${fmt(z, 3)}) = ${fmt(a.f(z), 3)}` });
     }
     function lnCell(bi, t, j) {
-      const lay = model.layers[bi], D = lay.d, x = inVals(bi), row = Array.from(x.subarray(t * D, t * D + D));
+      const lay = layOf(bi), D = lay.d, x = inVals(bi), row = Array.from(x.subarray(t * D, t * D + D));
       return Object.assign(Dp.lib(X, 'layernorm', { x: row, j, g: lay.g.w[j], b: lay.b.w[j] }), { title: `LayerNorm ${bi + 1}, number ${j}${lay.rows > 1 ? ` of ${tok(t)}` : ''}` });
     }
 
     // ---- convolutions, pooling, global average
     function convNeuron(bi, f, oy, ox) {
-      const lay = model.layers[bi], { C, H, k, s, pad } = lay, Wd = lay.W, xin = inVals(bi), w = lay.Wt.w, J = C * k * k, id = lay.fn.id, act = actOf(id);
+      const lay = layOf(bi), { C, H, k, s, pad } = lay, Wd = lay.W, xin = inVals(bi), w = lay.Wt.w, J = C * k * k, id = lay.fn.id, act = actOf(id);
       const terms = [], src = [], tag = [];
       for (let c = 0; c < C; c++) for (let ky = 0; ky < k; ky++) for (let kx = 0; kx < k; kx++) {
         const iy = oy * s + ky - pad, ix = ox * s + kx - pad, inside = iy >= 0 && iy < H && ix >= 0 && ix < Wd, at = (c * H + iy) * Wd + ix;
@@ -400,20 +425,20 @@
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · channel ${f + 1} at (${ox}, ${oy})`, sub: `${J} inputs${act ? ', ' + act.label : ''}`, tone: 's4',
         terms, bias: lay.b.w[f], act, outName: 'a',
-        inLabel: (p) => (src[p] < 0 ? `padding at (${tag[p][3]}, ${tag[p][4]})` : nameOf(bi - 1, src[p])), wLabel: (p) => `kernel[${f}, ${tag[p][0]}, ${tag[p][1]}, ${tag[p][2]}]`,
-        inputNode: (p) => (src[p] < 0 ? Object.assign(Dp.stored(X, 0, 'zero padding'), { sub: 'past the edge of the picture' }) : valueNode(bi - 1, src[p])),
+        inLabel: (p) => (src[p] < 0 ? `padding at (${tag[p][3]}, ${tag[p][4]})` : nameOf(PV(bi), src[p])), wLabel: (p) => `kernel[${f}, ${tag[p][0]}, ${tag[p][1]}, ${tag[p][2]}]`,
+        inputNode: (p) => (src[p] < 0 ? Object.assign(Dp.stored(X, 0, 'zero padding'), { sub: 'past the edge of the picture' }) : valueNode(PV(bi), src[p])),
         rowNames: [`inputs: a ${k} × ${k} window of all ${C} input channel${C > 1 ? 's' : ''} (${J} numbers)`, 'the kernel’s weights (learned)', 'products wᵢ·aᵢ'],
         vars: { w: `${mod}.weight[${f}].flatten()`, a: 'patch', b: `${mod}.bias[${f}]` },
         codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `patch = F.pad(grab['x'], [${pad}] * 4)[0, :, ${oy * s}:${oy * s + k}, ${ox * s}:${ox * s + k}].flatten()   # ${J} numbers`],
         codeWhat: `as one output of ${mod}, an nn.Conv2d(${C}, ${lay.F}, ${k}${s > 1 ? `, stride=${s}` : ''}, padding=${pad})`,
         about: [
-          `One number of block ${bi + 1}'s output: channel ${f + 1} at column ${ox}, row ${oy}. The filter is laid over a ${k} × ${k} window of the input${C > 1 ? `, through all ${C} channels` : ''}${s > 1 ? ` (the window moves ${s} pixels per output, so the map shrinks)` : ''}; each of the ${J} numbers under it is multiplied by its weight and the products are added up with the bias: z = ${fmt(z, 4)}${act ? `, and ${act.label} gives ${fmt(act.f(z), 4)}` : ''}.${pads ? ` ${pads} of the window's positions fall past the edge of the picture, where the input counts as 0 (zero padding).` : ''}`,
+          `One number of block ${blockNo(bi)}'s output: channel ${f + 1} at column ${ox}, row ${oy}. The filter is laid over a ${k} × ${k} window of the input${C > 1 ? `, through all ${C} channels` : ''}${s > 1 ? ` (the window moves ${s} pixels per output, so the map shrinks)` : ''}; each of the ${J} numbers under it is multiplied by its weight and the products are added up with the bias: z = ${fmt(z, 4)}${act ? `, and ${act.label} gives ${fmt(act.f(z), 4)}` : ''}.${pads ? ` ${pads} of the window's positions fall past the edge of the picture, where the input counts as 0 (zero padding).` : ''}`,
           `The same ${J} weights slide over every position of the picture, which is why a convolution has so few parameters for so many outputs. Zoom into an input bar to open the number of the block below that it read.`,
         ],
       });
     }
     function poolValue(bi, idx) {
-      const lay = model.layers[bi], { C, H, S: Sz, Ho, Wo } = lay, Wd = lay.W, xin = inVals(bi), r = P.layers[bi];
+      const lay = layOf(bi), { C, H, S: Sz, Ho, Wo } = lay, Wd = lay.W, xin = inVals(bi), r = pOf(bi);
       const c = Math.floor(idx / (Ho * Wo)), oy = Math.floor((idx % (Ho * Wo)) / Wo), ox = idx % Wo, cells = [];
       for (let dy = 0; dy < Sz; dy++) for (let dx = 0; dx < Sz; dx++) { const iy = oy * Sz + dy, ix = ox * Sz + dx, at = (c * H + iy) * Wd + ix; cells.push({ v: xin[at], at, ix, iy }); }
       // the engine remembers which input won each window (ties go to the first)
@@ -427,10 +452,10 @@
           S.caption(ctx, 'the window, the largest one marked: zoom into a bar', br, { size: u * 0.8, minW: 200 });
           S.bars(ctx, vals, br, { color: (k) => (cells[k] === best ? theme.c('s4') : theme.c('muted', 0.6)) });
         },
-        grids: [{ id: 'win', rect: W2([0, 0.32, 0.6, 0.56], [0, 0.3, 1, 0.3]), rows: 1, cols: cells.length, make: (i, j) => valueNode(bi - 1, cells[j].at) }],
+        grids: [{ id: 'win', rect: W2([0, 0.32, 0.6, 0.56], [0, 0.3, 1, 0.3]), rows: 1, cols: cells.length, make: (i, j) => valueNode(PV(bi), cells[j].at) }],
         about: [`Max pooling keeps the largest number in each ${Sz} × ${Sz} window: here ${fmt(best.v, 4)}, from (${best.ix}, ${best.iy}).${ties > 1 ? ` ${ties} of the numbers are equal (typically where the picture is blank, so a filter gives the same answer everywhere); the first of them is kept.` : ''} A feature that fired anywhere in the window still counts, the picture shrinks, and the next layer's filters see a wider area for the same size.`, 'A comparison is a subtraction whose sign is read, so the circuit inside is the same adder as the one under an addition. The winner box opens the number that won.'],
         code: `x = torch.randn(1, ${C}, ${H}, ${Wd})\ny = F.max_pool2d(x, ${Sz})                     # (1, ${C}, ${Ho}, ${Wo})\nprint(y[0, ${c}, ${oy}, ${ox}] == x[0, ${c}, ${oy * Sz}:${oy * Sz + Sz}, ${ox * Sz}:${ox * Sz + Sz}].max())   # True`,
-      }, () => [Object.assign(valueNode(bi - 1, best.at), { id: 'max', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner, at (${best.ix}, ${best.iy})` })]);
+      }, () => [Object.assign(valueNode(PV(bi), best.at), { id: 'max', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner, at (${best.ix}, ${best.iy})` })]);
     }
     function gapValue(bi, idx) {
       const s = inS(bi), xin = inVals(bi);
@@ -440,7 +465,7 @@
           title: `${blockTitle(bi)} · average of channel ${c + 1}`, sub: `${n} numbers × 1/${n}`, tone: 's6',
           terms: Array.from({ length: n }, (_, p) => ({ a: xin[c * n + p], w: 1 / n })), bias: null, act: null, outName: 'g',
           rowNames: [`channel ${c + 1}'s ${n} numbers`, `weights: all 1/${n}`, 'products'], inLabel: (p) => `(${p % Wd}, ${Math.floor(p / Wd)})`, wLabel: () => `1/${n}`,
-          inputNode: (p) => valueNode(bi - 1, c * n + p), vars: { w: `torch.full((${n},), 1 / ${n})`, a: `x[0, ${c}].flatten()`, b: '' }, codeHead: [`x = torch.randn(1, ${C}, ${H}, ${Wd})                  # an input of this shape`],
+          inputNode: (p) => valueNode(PV(bi), c * n + p), vars: { w: `torch.full((${n},), 1 / ${n})`, a: `x[0, ${c}].flatten()`, b: '' }, codeHead: [`x = torch.randn(1, ${C}, ${H}, ${Wd})                  # an input of this shape`],
           about: [`An average is a weighted sum whose weights are all 1/${n}: channel ${c + 1} of the ${C} is averaged over its ${H} × ${Wd} positions. It forgets where in the picture the channel fired and keeps how strongly, which is what lets a classifier work wherever the digit sits.`],
         });
       }
@@ -449,7 +474,7 @@
         title: `${blockTitle(bi)} · average of feature ${c}`, sub: `${T} positions × 1/${T}`, tone: 's6',
         terms: Array.from({ length: T }, (_, t) => ({ a: xin[t * D + c], w: 1 / T })), bias: null, act: null, outName: 'g',
         rowNames: [`feature ${c} at the ${T} positions`, `weights: all 1/${T}`, 'products'], inLabel: (t) => tok(t), wLabel: () => `1/${T}`,
-        inputNode: (t) => valueNode(bi - 1, t * D + c), vars: { w: `torch.full((${T},), 1 / ${T})`, a: `x[0, :, ${c}]`, b: '' }, codeHead: [`x = torch.randn(1, ${T}, ${D})                  # an input of this shape`],
+        inputNode: (t) => valueNode(PV(bi), t * D + c), vars: { w: `torch.full((${T},), 1 / ${T})`, a: `x[0, :, ${c}]`, b: '' }, codeHead: [`x = torch.randn(1, ${T}, ${D})                  # an input of this shape`],
         about: [`Feature ${c} averaged over the ${T} positions of the sequence: a weighted sum whose weights are all 1/${T}. The result no longer says where in the sequence anything was.`],
       });
     }
@@ -489,7 +514,7 @@
     const rnnHook = (mod, t, H) => ['grab = {}', `hook = ${mod}.register_forward_hook(lambda m, inp, out: grab.update(x=inp[0][0], h=out[0][0]))`, 'with torch.no_grad(): model(Xva[:1])                # the first validation example, as here', 'hook.remove()', `x_t, h_prev = grab['x'][${t}], ${t ? `grab['h'][${t - 1}]` : `torch.zeros(${H})`}`];
     // the pre-activation of gate q of unit j at step t: x·W_ih + b_ih + h₋₁·W_hh + b_hh (a GRU's candidate scales the h part by its reset gate)
     function rnnGate(bi, t, q, j) {
-      const lay = model.layers[bi], { D, H, cell, GH } = lay, r = P.layers[bi], xin = inVals(bi), row = q * H + j, Wi = lay.Wih.w, Wh = lay.Whh.w, [sym, what, fn] = RNN_GATES[cell][q];
+      const lay = layOf(bi), { D, H, cell, GH } = lay, r = pOf(bi), xin = inVals(bi), row = q * H + j, Wi = lay.Wih.w, Wh = lay.Whh.w, [sym, what, fn] = RNN_GATES[cell][q];
       const reset = cell === 'gru' && q === 2 ? r.gates[t * GH + j] : null, rf = reset === null ? 1 : reset, mod = pyName(bi), rs = reset === null ? '' : 'r * ';
       const terms = [];
       for (let p = 0; p < D; p++) terms.push({ a: xin[t * D + p], w: Wi[row * D + p] });
@@ -498,8 +523,8 @@
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · ${nm} at ${tok(t)}`, sub: `${D} + ${H} inputs, ${fn}`, tone: 's7',
         terms, bias: lay.bih.w[row] + rf * lay.bhh.w[row], act, outName: sym,
-        inLabel: (p) => (p < D ? nameOf(bi - 1, t * D + p) : `h₋₁[${p - D}]`), wLabel: (p) => (p < D ? `W_ih[${row}, ${p}]` : `${reset === null ? '' : 'r · '}W_hh[${row}, ${p - D}]`),
-        inputNode: (p) => (p < D ? valueNode(bi - 1, t * D + p) : t ? rnnValue(bi, t - 1, p - D) : Object.assign(Dp.stored(X, 0, 'the state before the first step'), { sub: 'h starts at 0' })),
+        inLabel: (p) => (p < D ? nameOf(PV(bi), t * D + p) : `h₋₁[${p - D}]`), wLabel: (p) => (p < D ? `W_ih[${row}, ${p}]` : `${reset === null ? '' : 'r · '}W_hh[${row}, ${p - D}]`),
+        inputNode: (p) => (p < D ? valueNode(PV(bi), t * D + p) : t ? rnnValue(bi, t - 1, p - D) : Object.assign(Dp.stored(X, 0, 'the state before the first step'), { sub: 'h starts at 0' })),
         rowNames: [`inputs: x at ${tok(t)} (${D}), then h from the step before (${H})`, `weights: row ${row} of W_ih, then of W_hh${reset === null ? '' : ' times r'} (learned)`, 'products wᵢ·aᵢ'],
         vars: { w: `torch.cat([${mod}.weight_ih_l0[${row}], ${rs}${mod}.weight_hh_l0[${row}]])`, a: 'torch.cat([x_t, h_prev])', b: `(${mod}.bias_ih_l0[${row}] + ${rs}${mod}.bias_hh_l0[${row}])` },
         codeHead: [...rnnHook(mod, t, H), ...(reset === null ? [] : [`r = torch.sigmoid(${mod}.weight_ih_l0[${j}] @ x_t + ${mod}.bias_ih_l0[${j}] + ${mod}.weight_hh_l0[${j}] @ h_prev + ${mod}.bias_hh_l0[${j}])   # the reset gate`])],
@@ -513,7 +538,7 @@
     }
     // h at step t, unit j: o·tanh(c) for an LSTM, (1 − z)·n + z·h₋₁ for a GRU, the neuron itself for a plain RNN
     function rnnValue(bi, t, j) {
-      const lay = model.layers[bi], { H, cell, GH } = lay, r = P.layers[bi], g = (q) => r.gates[t * GH + q * H + j], title = `${blockTitle(bi)} · h[${j}] at ${tok(t)}`, mod = pyName(bi);
+      const lay = layOf(bi), { H, cell, GH } = lay, r = pOf(bi), g = (q) => r.gates[t * GH + q * H + j], title = `${blockTitle(bi)} · h[${j}] at ${tok(t)}`, mod = pyName(bi);
       const code = [...rnnHook(mod, t, H), `print(grab['h'][${t}, ${j}])                            # h[${j}] at this step`].join('\n');
       if (cell === 'rnn') return rnnGate(bi, t, 0, j);
       if (cell === 'lstm') {
@@ -530,7 +555,7 @@
     }
     // an LSTM's memory: c = f·c₋₁ + i·g
     function lstmCell(bi, t, j) {
-      const lay = model.layers[bi], { H, GH } = lay, r = P.layers[bi], g = (q) => r.gates[t * GH + q * H + j], cp = t ? r.c[(t - 1) * H + j] : 0;
+      const lay = layOf(bi), { H, GH } = lay, r = pOf(bi), g = (q) => r.gates[t * GH + q * H + j], cp = t ? r.c[(t - 1) * H + j] : 0;
       return sumNode(`${blockTitle(bi)} · memory c[${j}] at ${tok(t)}`, 'c = f · c₋₁ + i · g: keep some of the old memory, write some new', g(1) * cp, g(0) * g(2),
         () => prodNode('f · c₋₁: what is kept', `the forget gate f = ${fmt(g(1), 3)} times the memory before`, g(1), cp, () => rnnGate(bi, t, 1, j), () => (t ? lstmCell(bi, t - 1, j) : Object.assign(Dp.stored(X, 0, 'the memory before the first step'), { sub: 'c starts at 0' })), [`What survives of the memory: the forget gate f (between 0 and 1) times the memory from the step before. f near 1 keeps it all; near 0 wipes it.`]),
         () => prodNode('i · g: what is written', `the input gate i = ${fmt(g(0), 3)} times the candidate g = ${fmt(g(2), 3)}`, g(0), g(2), () => rnnGate(bi, t, 0, j), () => rnnGate(bi, t, 2, j), [`What is written into the memory: the candidate g (new content between −1 and 1) times the input gate i (how much of it to let in).`]),
@@ -539,15 +564,15 @@
 
     // ---- 1-D convolutions along a sequence
     function conv1dNeuron(bi, t, f) {
-      const lay = model.layers[bi], { T, D, k, dil, left } = lay, xin = inVals(bi), w = lay.Wt.w, J = k * D, act = actOf(lay.fn.id), mod = pyName(bi), reach = (k - 1) * dil;
+      const lay = layOf(bi), { T, D, k, dil, left } = lay, xin = inVals(bi), w = lay.Wt.w, J = k * D, act = actOf(lay.fn.id), mod = pyName(bi), reach = (k - 1) * dil;
       const terms = [], src = [], tag = [];
       for (let j = 0; j < k; j++) { const s = t - left + j * dil, inside = s >= 0 && s < T; for (let c = 0; c < D; c++) { terms.push({ a: inside ? xin[s * D + c] : 0, w: w[f * J + j * D + c] }); src.push(inside ? s * D + c : -1); tag.push([j, c, s]); } }
       const z = terms.reduce((q, u) => q + u.a * u.w, lay.b.w[f]), pads = src.filter((v) => v < 0).length / D;
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · filter ${f + 1} at ${tok(t)}`, sub: `${J} inputs${act ? ', ' + act.label : ''}`, tone: 's7',
         terms, bias: lay.b.w[f], act, outName: 'a',
-        inLabel: (p) => (src[p] < 0 ? `padding (position ${tag[p][2]})` : nameOf(bi - 1, src[p])), wLabel: (p) => `kernel[${f}, ${tag[p][1]}, ${tag[p][0]}]`,
-        inputNode: (p) => (src[p] < 0 ? Object.assign(Dp.stored(X, 0, 'zero padding'), { sub: tag[p][2] < 0 ? 'before the start of the sequence' : 'past its end' }) : valueNode(bi - 1, src[p])),
+        inLabel: (p) => (src[p] < 0 ? `padding (position ${tag[p][2]})` : nameOf(PV(bi), src[p])), wLabel: (p) => `kernel[${f}, ${tag[p][1]}, ${tag[p][0]}]`,
+        inputNode: (p) => (src[p] < 0 ? Object.assign(Dp.stored(X, 0, 'zero padding'), { sub: tag[p][2] < 0 ? 'before the start of the sequence' : 'past its end' }) : valueNode(PV(bi), src[p])),
         rowNames: [`inputs: ${k} position${k === 1 ? '' : 's'}${dil > 1 ? ` ${dil} apart` : ''} × ${D} feature${D === 1 ? '' : 's'} (${J} numbers)`, 'the filter’s weights (learned)', 'products wᵢ·aᵢ'],
         vars: { w: `${mod}.weight[${f}].T.flatten()`, a: 'window.T.flatten()', b: `${mod}.bias[${f}]` },
         codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `window = grab['x'][0, :, ${t}:${t + reach + 1}${dil > 1 ? `:${dil}` : ''}]          # (${D}, ${k}): the input arrives padded and channels-first`],
@@ -559,22 +584,22 @@
       });
     }
     function conv1dValue(bi, idx) {
-      const lay = model.layers[bi], t = Math.floor(idx / lay.F), f = idx % lay.F;
+      const lay = layOf(bi), t = Math.floor(idx / lay.F), f = idx % lay.F;
       if (!lay.residual) return conv1dNeuron(bi, t, f);
-      return sumNode(`${nameOf(bi, idx)}: input + filter`, 'out = x + a   (a residual connection)', inVals(bi)[idx], P.layers[bi].a[idx], () => valueNode(bi - 1, idx), () => conv1dNeuron(bi, t, f), residualAbout(`filter ${f + 1}'s output`), `out = x + a                                        # the same shape in and out, so they can be added`);
+      return sumNode(`${nameOf(bi, idx)}: input + filter`, 'out = x + a   (a residual connection)', inVals(bi)[idx], pOf(bi).a[idx], () => valueNode(PV(bi), idx), () => conv1dNeuron(bi, t, f), residualAbout(`filter ${f + 1}'s output`), `out = x + a                                        # the same shape in and out, so they can be added`);
     }
     // a 2-D convolution's output: the filter's number, plus the input when the block is residual
     function convValue(bi, idx) {
-      const lay = model.layers[bi], p = posOf(outS(bi), idx);
+      const lay = layOf(bi), p = posOf(outS(bi), idx);
       if (!lay.residual) return convNeuron(bi, p.c, p.y, p.x);
-      return sumNode(`${nameOf(bi, idx)}: input + filter`, 'out = x + a   (a residual connection, as in a ResNet)', inVals(bi)[idx], P.layers[bi].a[idx], () => valueNode(bi - 1, idx), () => convNeuron(bi, p.c, p.y, p.x), residualAbout(`channel ${p.c + 1}'s filter output`), 'out = x + a                                        # the shape is kept (same channels, stride 1), so they can be added');
+      return sumNode(`${nameOf(bi, idx)}: input + filter`, 'out = x + a   (a residual connection, as in a ResNet)', inVals(bi)[idx], pOf(bi).a[idx], () => valueNode(PV(bi), idx), () => convNeuron(bi, p.c, p.y, p.x), residualAbout(`channel ${p.c + 1}'s filter output`), 'out = x + a                                        # the shape is kept (same channels, stride 1), so they can be added');
     }
 
     // ---- sequence pooling, patches, average pooling
     function seqPoolValue(bi, c) {
-      const lay = model.layers[bi], { T, D, mode } = lay, xin = inVals(bi);
+      const lay = layOf(bi), { T, D, mode } = lay, xin = inVals(bi);
       if (mode === 'mean') return gapValue(bi, c);
-      if (mode === 'last') return Object.assign(valueNode(bi - 1, (T - 1) * D + c), { sub: `feature ${c} at the last position, kept as it is` });
+      if (mode === 'last') return Object.assign(valueNode(PV(bi), (T - 1) * D + c), { sub: `feature ${c} at the last position, kept as it is` });
       const cells = Array.from({ length: T }, (_, t) => ({ v: xin[t * D + c], at: t * D + c, t })), best = cells.reduce((p, q) => (q.v > p.v ? q : p)), vals = Float32Array.from(cells.map((q) => q.v));
       const br = W2([0, 0.32, 0.6, 0.56], [0, 0.3, 1, 0.3]);
       return Dp.lazy({
@@ -586,10 +611,10 @@
           S.caption(ctx, `feature ${c} at every position, the largest marked: zoom into a bar`, b2, { size: u * 0.8, minW: 200 });
           S.bars(ctx, vals, b2, { color: (k) => (k === best.t ? theme.c('s7') : theme.c('muted', 0.6)) });
         },
-        grids: [{ id: 'seq', rect: br, rows: 1, cols: T, make: (i, j) => valueNode(bi - 1, cells[j].at) }],
+        grids: [{ id: 'seq', rect: br, rows: 1, cols: T, make: (i, j) => valueNode(PV(bi), cells[j].at) }],
         about: [`Max pooling over the sequence keeps each feature's largest value, wherever it was: here ${fmt(best.v, 4)}, at ${tok(best.t)}. It answers "did this pattern appear anywhere?", which is what a sequence classifier often needs, and forgets where.`],
         code: `x = torch.randn(1, ${T}, ${D})\ny = x.max(1).values                                # (1, ${D})\nprint(y[0, ${c}] == x[0, :, ${c}].max())           # True`,
-      }, () => [Object.assign(valueNode(bi - 1, best.at), { id: 'max', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner, at ${tok(best.t)}` })]);
+      }, () => [Object.assign(valueNode(PV(bi), best.at), { id: 'max', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner, at ${tok(best.t)}` })]);
     }
     // patch n's pixels, in the order the projection reads them (channel, row, column)
     function patchSrc(lay, n) {
@@ -598,11 +623,11 @@
       return src;
     }
     function patchProj(bi, n, e) {
-      const lay = model.layers[bi], { J, p, C } = lay, xin = inVals(bi), src = patchSrc(lay, n), Wp = lay.Wp.w, mod = pyName(bi);
+      const lay = layOf(bi), { J, p, C } = lay, xin = inVals(bi), src = patchSrc(lay, n), Wp = lay.Wp.w, mod = pyName(bi);
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · patch ${n + 1}, number ${e}: the projection`, sub: `${J} pixels, no activation`, tone: 's4',
         terms: src.map((at, q) => ({ a: xin[at], w: Wp[e * J + q] })), bias: lay.bp.w[e], act: null, zName: 'e', outName: 'e',
-        inLabel: (q) => nameOf(bi - 1, src[q]), wLabel: (q) => `W[${e}, ${q}]`, inputNode: (q) => valueNode(bi - 1, src[q]),
+        inLabel: (q) => nameOf(PV(bi), src[q]), wLabel: (q) => `W[${e}, ${q}]`, inputNode: (q) => valueNode(PV(bi), src[q]),
         rowNames: [`the ${p} × ${p} patch${C > 1 ? ` through ${C} channels` : ''}: ${J} numbers`, 'projection weights (learned, the same for every patch)', 'products wᵢ·aᵢ'],
         vars: { w: `${mod}.weight[${e}].flatten()`, a: 'patch', b: `${mod}.bias[${e}]` },
         codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `patch = grab['x'][0, :, ${Math.floor(n / lay.nw) * p}:${Math.floor(n / lay.nw) * p + p}, ${(n % lay.nw) * p}:${(n % lay.nw) * p + p}].flatten()   # ${J} numbers`],
@@ -611,26 +636,26 @@
       });
     }
     function patchValue(bi, n, e) {
-      const lay = model.layers[bi], D = lay.D, xin = inVals(bi), src = patchSrc(lay, n), pos = lay.pos.w[n * D + e];
+      const lay = layOf(bi), D = lay.D, xin = inVals(bi), src = patchSrc(lay, n), pos = lay.pos.w[n * D + e];
       const proj = src.reduce((s, at, q) => s + xin[at] * lay.Wp.w[e * lay.J + q], lay.bp.w[e]);
       return sumNode(`${blockTitle(bi)} · patch ${n + 1}, number ${e}`, 'out = W · patch + b + pos[n]: what the patch shows, plus where it is', proj, pos, () => patchProj(bi, n, e), () => Dp.stored(X, pos, `pos[${n}, ${e}]: patch ${n + 1}'s place (learned)`),
         [`A patch's vector is its projection plus a learned vector for its place in the picture. Without the place, attention would see the patches as an unordered bag and could not tell top from bottom.`], `out = ${pyName(bi)}(x).flatten(2).transpose(1, 2) + ${pyAt(bi, 'pos')}   # (1, ${lay.N}, ${D})`);
     }
     function avgPoolValue(bi, idx) {
-      const lay = model.layers[bi], { C, H, S: Sz, Ho, Wo } = lay, Wd = lay.W, xin = inVals(bi), c = Math.floor(idx / (Ho * Wo)), oy = Math.floor((idx % (Ho * Wo)) / Wo), ox = idx % Wo, n = Sz * Sz, cells = [];
+      const lay = layOf(bi), { C, H, S: Sz, Ho, Wo } = lay, Wd = lay.W, xin = inVals(bi), c = Math.floor(idx / (Ho * Wo)), oy = Math.floor((idx % (Ho * Wo)) / Wo), ox = idx % Wo, n = Sz * Sz, cells = [];
       for (let dy = 0; dy < Sz; dy++) for (let dx = 0; dx < Sz; dx++) cells.push((c * H + oy * Sz + dy) * Wd + ox * Sz + dx);
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · channel ${c + 1} at (${ox}, ${oy})`, sub: `${n} numbers × 1/${n}`, tone: 's4',
         terms: cells.map((at) => ({ a: xin[at], w: 1 / n })), bias: null, act: null, outName: 'y',
-        rowNames: [`the ${Sz} × ${Sz} window of channel ${c + 1}`, `weights: all 1/${n}`, 'products'], inLabel: (p) => nameOf(bi - 1, cells[p]), wLabel: () => `1/${n}`,
-        inputNode: (p) => valueNode(bi - 1, cells[p]), vars: { w: `torch.full((${n},), 1 / ${n})`, a: `x[0, ${c}, ${oy * Sz}:${oy * Sz + Sz}, ${ox * Sz}:${ox * Sz + Sz}].flatten()`, b: '' }, codeHead: [`x = torch.randn(1, ${C}, ${H}, ${Wd})                  # an input of this shape`],
+        rowNames: [`the ${Sz} × ${Sz} window of channel ${c + 1}`, `weights: all 1/${n}`, 'products'], inLabel: (p) => nameOf(PV(bi), cells[p]), wLabel: () => `1/${n}`,
+        inputNode: (p) => valueNode(PV(bi), cells[p]), vars: { w: `torch.full((${n},), 1 / ${n})`, a: `x[0, ${c}, ${oy * Sz}:${oy * Sz + Sz}, ${ox * Sz}:${ox * Sz + Sz}].flatten()`, b: '' }, codeHead: [`x = torch.randn(1, ${C}, ${H}, ${Wd})                  # an input of this shape`],
         about: [`Average pooling: the mean of a ${Sz} × ${Sz} window, a weighted sum whose weights are all 1/${n}. Unlike max pooling every number in the window counts, so it keeps a smoother summary of the picture as it shrinks.`],
       });
     }
 
     // ---- batch norm, Fourier features, gated layers, positions
     function bnValue(bi, idx) {
-      const lay = model.layers[bi], c = lay.chan[idx], x = inVals(bi)[idx], mu = lay.rmean[c], v = lay.rvar[c], rs = 1 / Math.sqrt(v + 1e-5), g = lay.g.w[c], bb = lay.b.w[c], d0 = x - mu, xh = d0 * rs, y = xh * g + bb;
+      const lay = layOf(bi), c = lay.chan[idx], x = inVals(bi)[idx], mu = lay.rmean[c], v = lay.rvar[c], rs = 1 / Math.sqrt(v + 1e-5), g = lay.g.w[c], bb = lay.b.w[c], d0 = x - mu, xh = d0 * rs, y = xh * g + bb;
       const what = lay.kind === 3 ? `channel ${c + 1}` : `feature ${c}`, R = wide ? [...boxGrid(3, 3, 0.3, 0.6), ...boxGrid(4, 4, 0.66, 0.98)] : boxGrid(7, 2, 0.27, 0.99);
       return Dp.lazy({
         title: `${blockTitle(bi)} · number ${idx} (${what})`, sub: `= ${fmt(y, 4)}`, tone: 's1',
@@ -639,7 +664,7 @@
         about: [`Batch norm on one number, the way it runs when the model is used: subtract the running mean μ of ${what}, divide by the running spread √(σ² + ε), then scale by the learned γ and shift by the learned β. While training, the batch's own mean and variance are used instead, and the running averages follow them.`, 'The top row holds the numbers it reads; the bottom row is the four steps of arithmetic, each one float32 operation.'],
         code: `norm = ${pyName(bi)}\nnorm.eval()                                        # in use: the running averages\nmu, var = norm.running_mean[${c}], norm.running_var[${c}]\nprint((${NA.fmtCode(x, 5)} - mu) / torch.sqrt(var + norm.eps) * norm.weight[${c}] + norm.bias[${c}])`,
       }, () => [
-        Object.assign(valueNode(bi - 1, idx), { id: 'x', rect: R[0], title: `x = ${fmt(x, 3)}` }),
+        Object.assign(valueNode(PV(bi), idx), { id: 'x', rect: R[0], title: `x = ${fmt(x, 3)}` }),
         Object.assign(Dp.stored(X, mu, `running mean μ of ${what}`), { id: 'mu', rect: R[1] }),
         Object.assign(Dp.stored(X, v, `running variance σ² of ${what}`), { id: 'var', rect: R[2] }),
         Object.assign(Dp.fadd(X, x, -mu), { id: 'sub', rect: R[3], title: 'x − μ' }),
@@ -649,13 +674,13 @@
       ]);
     }
     function fourierValue(bi, k) {
-      const lay = model.layers[bi], { F, m } = lay, xin = inVals(bi);
-      if (k < F) return Object.assign(valueNode(bi - 1, k), { sub: 'passed on unchanged: the Fourier features keep the input as well' });
+      const lay = layOf(bi), { F, m } = lay, xin = inVals(bi);
+      if (k < F) return Object.assign(valueNode(PV(bi), k), { sub: 'passed on unchanged: the Fourier features keep the input as well' });
       const j = (k - F) % m, cosine = k >= F + m, TAU = 2 * Math.PI, terms = Array.from({ length: F }, (_, i) => ({ a: xin[i], w: TAU * lay.freq[j * F + i] }));
       const n = Dp.neuron(X, {
         title: `${blockTitle(bi)} · ${cosine ? 'cos' : 'sin'} wave ${j + 1}`, sub: `${F} input${F === 1 ? '' : 's'}, fixed random frequencies`, tone: 's1',
         terms, bias: cosine ? Math.PI / 2 : null, act: actOf('sine'), zName: 'theta', outName: 'y',
-        inLabel: (i) => nameOf(bi - 1, i), wLabel: (i) => `2π·B[${j}, ${i}] (random, fixed)`, inputNode: (i) => valueNode(bi - 1, i),
+        inLabel: (i) => nameOf(PV(bi), i), wLabel: (i) => `2π·B[${j}, ${i}] (random, fixed)`, inputNode: (i) => valueNode(PV(bi), i),
         rowNames: ['the input numbers', `2π × frequency row ${j + 1} of B (random, never trained)`, 'products'],
         vars: { w: `2 * math.pi * ${pyAt(bi, 'B')}[${j}]`, a: 'x', b: cosine ? 'math.pi / 2' : '' }, codeHead: ['x = Xva[0]                                          # the first validation example'],
         about: [`Wave ${j + 1}: θ = 2π·(B row ${j + 1} · x)${cosine ? ' + π/2' : ''}, then ${cosine ? 'cos θ, computed as sin(θ + π/2): a cosine is a sine shifted by a quarter turn' : 'sin θ'}. The frequencies were drawn at random once and never change; the layers after learn how much of each wave to use.`],
@@ -663,32 +688,32 @@
       return n;
     }
     function gatedLinear(bi, t, j, which) {
-      const lay = model.layers[bi], F = lay.nIn, xin = inVals(bi), W = which === 1 ? lay.W1.w : lay.W2.w, bb = which === 1 ? lay.b1.w : lay.b2.w, act = which === 2 ? actOf(lay.fn.id) : null, mod = pyName(bi), seqL = lay.rows > 1;
+      const lay = layOf(bi), F = lay.nIn, xin = inVals(bi), W = which === 1 ? lay.W1.w : lay.W2.w, bb = which === 1 ? lay.b1.w : lay.b2.w, act = which === 2 ? actOf(lay.fn.id) : null, mod = pyName(bi), seqL = lay.rows > 1;
       return Dp.neuron(X, {
         title: `${blockTitle(bi)} · ${which === 1 ? 'value' : 'gate'} ${j + 1}${seqL ? ` at ${tok(t)}` : ''}`, sub: `${F} inputs${act ? ', ' + act.label : ', no activation'}`, tone: 's1',
         terms: Array.from({ length: F }, (_, p) => ({ a: xin[t * F + p], w: W[j * F + p] })), bias: bb[j], act, zName: which === 1 ? 'v' : 'z2', outName: which === 1 ? 'v' : 'g',
-        inputNode: (p) => valueNode(bi - 1, t * F + p), inLabel: (p) => nameOf(bi - 1, t * F + p), wLabel: (p) => `W${which === 1 ? '₁' : '₂'}[${j}, ${p}]`,
+        inputNode: (p) => valueNode(PV(bi), t * F + p), inLabel: (p) => nameOf(PV(bi), t * F + p), wLabel: (p) => `W${which === 1 ? '₁' : '₂'}[${j}, ${p}]`,
         vars: { w: `${mod}.${which === 1 ? 'value' : 'gate'}.weight[${j}]`, a: 'x', b: `${mod}.${which === 1 ? 'value' : 'gate'}.bias[${j}]` },
         codeHead: [...pyGrab(mod, 'x', 'inp[0][0]'), seqL ? `x = grab['x'][${t}]` : `x = grab['x']`], codeWhat: `as the ${which === 1 ? 'value' : 'gate'} half of ${mod}`,
         about: [which === 1 ? `The value half of unit ${j + 1}: a plain weighted sum of the inputs, with no activation.` : `The gate half of unit ${j + 1}: its own weighted sum, bent by ${act ? act.label : 'its activation'}. It decides how much of the value gets through.`],
       });
     }
     function gatedValue(bi, idx) {
-      const lay = model.layers[bi], U = lay.U, t = Math.floor(idx / U), j = idx % U, r = P.layers[bi];
+      const lay = layOf(bi), U = lay.U, t = Math.floor(idx / U), j = idx % U, r = pOf(bi);
       return prodNode(`${nameOf(bi, idx)}: value × gate`, `out = v · ${ACT(lay.fn.id).label}(z₂)`, r.z1[idx], r.a2[idx], () => gatedLinear(bi, t, j, 1), () => gatedLinear(bi, t, j, 2),
         [`A gated unit multiplies two weighted sums of the same input: a value and a gate. The gate can open (let the value through), shut (0) or even flip it, depending on the input, which lets the layer switch features on and off: the idea behind the GLU layers in most large language models today.`], `out = ${pyName(bi)}.value(x) * ${PYACT[lay.fn.id] ? PYACT[lay.fn.id](`${pyName(bi)}.gate(x)`) : `${pyName(bi)}.gate(x)`}`);
     }
     function positionValue(bi, t, c) {
-      const lay = model.layers[bi], D = lay.D, x = inVals(bi)[t * D + c], pv = lay.learned ? lay.pos.w[t * D + c] : lay.table[t * D + c];
+      const lay = layOf(bi), D = lay.D, x = inVals(bi)[t * D + c], pv = lay.learned ? lay.pos.w[t * D + c] : lay.table[t * D + c];
       const ang = t / Math.pow(10000, (2 * Math.floor(c / 2)) / D);
       const pe = () => Object.assign(Dp.lib(X, 'sine', { z: c % 2 ? ang + Math.PI / 2 : ang }), { title: `PE[${t}, ${c}] = ${c % 2 ? 'cos' : 'sin'}(${fmt(ang, 3)})`, sub: `angle = ${t} / 10000^(${2 * Math.floor(c / 2)}/${D})` });
-      return sumNode(`${nameOf(bi, t * D + c)}: x + position`, `out = x + ${lay.learned ? 'P' : 'PE'}[${t}, ${c}]`, x, pv, () => valueNode(bi - 1, t * D + c), lay.learned ? () => Dp.stored(X, pv, `P[${t}, ${c}]: learned for position ${t}`) : pe,
+      return sumNode(`${nameOf(bi, t * D + c)}: x + position`, `out = x + ${lay.learned ? 'P' : 'PE'}[${t}, ${c}]`, x, pv, () => valueNode(PV(bi), t * D + c), lay.learned ? () => Dp.stored(X, pv, `P[${t}, ${c}]: learned for position ${t}`) : pe,
         [lay.learned ? 'The position table is learned: each position has its own row of numbers, added to whatever arrives there.' : 'The original transformer\'s positions: sine and cosine waves of different speeds, a fixed pattern that is different at every position (and lets the model compare positions by their difference).'], lay.learned ? `out = x + ${pyAt(bi, 'pos')}[${t}, ${c}]` : `angle = ${t} / 10000 ** (${2 * Math.floor(c / 2)} / ${D})\nprint(math.${c % 2 ? 'cos' : 'sin'}(angle))`);
     }
 
     // ---- attention: the projections, the heads, a query's weighted average
     function attnData(bi) {
-      const lay = model.layers[bi], r = P.layers[bi], core = lay.core, T = lay.T, D = lay.D, H = lay.heads;
+      const lay = layOf(bi), r = pOf(bi), core = lay.core, T = lay.T, D = lay.D, H = lay.heads;
       return { bi, lay, r, core, T, D, H, dh: D / H, causal: lay.causal, xin: lay.type === 'transformer' ? r.h1 : inVals(bi), mod: lay.type === 'transformer' ? `${pyName(bi)}.attn` : pyName(bi), inTf: lay.type === 'transformer' };
     }
     const xName = (A) => (A.inTf ? 'x̂ (after LN1)' : 'x');
@@ -701,7 +726,7 @@
         title: which === 'o' ? `Attention output ${j} for ${tok(t)}` : `${which}[${j}] for ${tok(t)}`, sub: which === 'o' ? `heads side by side · Wo row ${j}` : `${xName(A)} · W${which} row ${j}`, tone: 's7',
         terms: Array.from({ length: D }, (_, p) => ({ a: src[t * D + p], w: Wm[j * D + p] })), bias: bm[j], act: null, zName: which,
         inLabel: (p) => (which === 'o' ? `head ${Math.floor(p / A.dh) + 1} output ${p % A.dh}` : `${xName(A).split(' ')[0]}[${p}] of ${tok(t)}`), wLabel: (p) => `W${which}[${j}, ${p}]`,
-        inputNode: (p) => (which === 'o' ? headOut(A, Math.floor(p / A.dh), t, p % A.dh) : A.inTf ? tfLnCell(A.bi, 1, t, p) : valueNode(A.bi - 1, t * D + p)),
+        inputNode: (p) => (which === 'o' ? headOut(A, Math.floor(p / A.dh), t, p % A.dh) : A.inTf ? tfLnCell(A.bi, 1, t, p) : valueNode(PV(A.bi), t * D + p)),
         vars: { w: `${A.mod}.${which}.weight[${j}]`, a: which === 'o' ? 'heads' : 'x', b: `${A.mod}.${which}.bias[${j}]` },
         codeHead: which === 'o' ? [...pyGrab(`${A.mod}.o`, 'h', 'inp[0][0]'), `heads = grab['h'][${t}]                             # ${tok(t)}: the heads' outputs side by side`]
           : [...pyGrab(A.mod, 'x', 'inp[0][0]'), `x = grab['x'][${t}]                                 # ${tok(t)}'s ${D} numbers${A.inTf ? ', after LN1' : ''}`],
@@ -877,7 +902,7 @@ out = weights @ v[:, ${h}]                          # (1, ${T}, ${dh}): what eac
           }
         },
         grids: [
-          { id: 'x', rect: LY.x, rows: T, cols: D, make: (i, j) => (A.inTf ? tfLnCell(A.bi, 1, i, j) : valueNode(A.bi - 1, i * D + j)) },
+          { id: 'x', rect: LY.x, rows: T, cols: D, make: (i, j) => (A.inTf ? tfLnCell(A.bi, 1, i, j) : valueNode(PV(A.bi), i * D + j)) },
           ...['q', 'k', 'v'].map((which) => ({ id: which, rect: LY[which], rows: T, cols: D, make: (i, j) => projNeuron(A, which, i, j) })),
           { id: 'o', rect: LY.o, rows: T, cols: D, make: (i, j) => headOut(A, Math.floor(j / dh), i, j % dh) },
           { id: 'y', rect: LY.y, rows: T, cols: D, make: (i, j) => projNeuron(A, 'o', i, j) },
@@ -902,27 +927,27 @@ print(torch.allclose(y, attn(x), atol=1e-6))       # True${res ? '\nout = x + y 
     function attnValue(bi, t, j) {
       const A = attnData(bi), idx = t * A.D + j;
       if (!A.lay.residual) return projNeuron(A, 'o', t, j);
-      return sumNode(`${tok(t)}[${j}] after attention`, 'out = x + attention(x)', A.xin[idx], A.r.y[idx], () => valueNode(bi - 1, idx), () => projNeuron(A, 'o', t, j), residualAbout('what attention found'), `x = torch.randn(1, ${A.T}, ${A.D})\nout = x + ${A.mod}(x)                       # the residual: same shape in and out`);
+      return sumNode(`${tok(t)}[${j}] after attention`, 'out = x + attention(x)', A.xin[idx], A.r.y[idx], () => valueNode(PV(bi), idx), () => projNeuron(A, 'o', t, j), residualAbout('what attention found'), `x = torch.randn(1, ${A.T}, ${A.D})\nout = x + ${A.mod}(x)                       # the residual: same shape in and out`);
     }
 
     // ---- transformer blocks: LN1 → attention → + → LN2 → MLP → +
     function tfLnCell(bi, which, t, j) {
-      const lay = model.layers[bi], r = P.layers[bi], D = lay.D, src = which === 1 ? inVals(bi) : r.mid, g = which === 1 ? lay.ln1g.w : lay.ln2g.w, b = which === 1 ? lay.ln1b.w : lay.ln2b.w;
-      return Object.assign(Dp.lib(X, 'layernorm', { x: Array.from(src.subarray(t * D, t * D + D)), j, g: g[j], b: b[j] }), { title: `LN${which} of block ${bi + 1}, number ${j} of ${tok(t)}` });
+      const lay = layOf(bi), r = pOf(bi), D = lay.D, src = which === 1 ? inVals(bi) : r.mid, g = which === 1 ? lay.ln1g.w : lay.ln2g.w, b = which === 1 ? lay.ln1b.w : lay.ln2b.w;
+      return Object.assign(Dp.lib(X, 'layernorm', { x: Array.from(src.subarray(t * D, t * D + D)), j, g: g[j], b: b[j] }), { title: `LN${which} of block ${blockNo(bi)}, number ${j} of ${tok(t)}` });
     }
     function mlpHidden(bi, t, j) {
-      const lay = model.layers[bi], r = P.layers[bi], D = lay.D, Hd = lay.Hd, mod = pyName(bi);
+      const lay = layOf(bi), r = pOf(bi), D = lay.D, Hd = lay.Hd, mod = pyName(bi);
       return Dp.neuron(X, {
         title: `MLP neuron ${j} at ${tok(t)}`, sub: `u = x̂·W1 row + b1, then GELU`, tone: 's7',
         terms: Array.from({ length: D }, (_, p) => ({ a: r.h2[t * D + p], w: lay.W1.w[j * D + p] })), bias: lay.b1.w[j], act: actOf('gelu'), zName: 'u', outName: 'g',
         inLabel: (p) => `x̂[${p}] of ${tok(t)}`, wLabel: (p) => `W1[${j}, ${p}]`, inputNode: (p) => tfLnCell(bi, 2, t, p),
         codeHead: [...pyGrab(`${mod}.mlp`, 'x', 'inp[0][0]'), `x_hat = grab['x'][${t}]                             # ${tok(t)}'s ${D} numbers after LN2`],
         vars: { w: `${mod}.mlp[0].weight[${j}]`, a: 'x_hat', b: `${mod}.mlp[0].bias[${j}]` },
-        about: [`Hidden neuron ${j} of the MLP in block ${bi + 1} (one of ${Hd}), at ${tok(t)}: a weighted sum of that position's ${D} normalised numbers, a bias, then GELU, a smooth ReLU.`],
+        about: [`Hidden neuron ${j} of the MLP in block ${blockNo(bi)} (one of ${Hd}), at ${tok(t)}: a weighted sum of that position's ${D} normalised numbers, a bias, then GELU, a smooth ReLU.`],
       });
     }
     function mlpOut(bi, t, j) {
-      const lay = model.layers[bi], r = P.layers[bi], Hd = lay.Hd, mod = pyName(bi);
+      const lay = layOf(bi), r = pOf(bi), Hd = lay.Hd, mod = pyName(bi);
       return Dp.neuron(X, {
         title: `MLP output ${j} at ${tok(t)}`, sub: `g · W2 row ${j} + b2`, tone: 's7',
         terms: Array.from({ length: Hd }, (_, p) => ({ a: r.g[t * Hd + p], w: lay.W2.w[j * Hd + p] })), bias: lay.b2.w[j], act: null, zName: 'm',
@@ -933,12 +958,12 @@ print(torch.allclose(y, attn(x), atol=1e-6))       # True${res ? '\nout = x + y 
       });
     }
     function tfMid(bi, t, j) {
-      const r = P.layers[bi], D = model.layers[bi].D, idx = t * D + j, A = attnData(bi);
-      return sumNode(`${tok(t)}[${j}] after attention`, 'mid = x + attention(LN1(x))', inVals(bi)[idx], r.y[idx], () => valueNode(bi - 1, idx), () => projNeuron(A, 'o', t, j), residualAbout('what attention found'), `block, x = ${pyName(bi)}, torch.randn(1, ${A.T}, ${D})\nmid = x + block.attn(block.norm1(x))`);
+      const r = pOf(bi), D = layOf(bi).D, idx = t * D + j, A = attnData(bi);
+      return sumNode(`${tok(t)}[${j}] after attention`, 'mid = x + attention(LN1(x))', inVals(bi)[idx], r.y[idx], () => valueNode(PV(bi), idx), () => projNeuron(A, 'o', t, j), residualAbout('what attention found'), `block, x = ${pyName(bi)}, torch.randn(1, ${A.T}, ${D})\nmid = x + block.attn(block.norm1(x))`);
     }
     function tfValue(bi, t, j) {
-      const r = P.layers[bi], D = model.layers[bi].D, idx = t * D + j;
-      return sumNode(`${tok(t)}[${j}] after block ${bi + 1}`, 'out = mid + MLP(LN2(mid))', r.mid[idx], r.mo[idx], () => tfMid(bi, t, j), () => mlpOut(bi, t, j), residualAbout('what the MLP computed'), `block, mid = ${pyName(bi)}, torch.randn(1, ${model.layers[bi].T}, ${D})\nout = mid + block.mlp(block.norm2(mid))`);
+      const r = pOf(bi), D = layOf(bi).D, idx = t * D + j;
+      return sumNode(`${tok(t)}[${j}] after block ${blockNo(bi)}`, 'out = mid + MLP(LN2(mid))', r.mid[idx], r.mo[idx], () => tfMid(bi, t, j), () => mlpOut(bi, t, j), residualAbout('what the MLP computed'), `block, mid = ${pyName(bi)}, torch.randn(1, ${layOf(bi).T}, ${D})\nout = mid + block.mlp(block.norm2(mid))`);
     }
     // a LayerNorm over the rows of a T × D sequence, or over one vector (rows = 1)
     function lnLevel(o) {
@@ -985,7 +1010,7 @@ print(torch.allclose(y, attn(x), atol=1e-6))       # True${res ? '\nout = x + y 
       };
     }
     function mlpLevel(bi) {
-      const lay = model.layers[bi], r = P.layers[bi], T = lay.T, D = lay.D, Hd = lay.Hd, mod = pyName(bi), labels = Array.from({ length: T }, (_, t) => (P.ids ? word(P.ids[t]) : String(t)));
+      const lay = layOf(bi), r = pOf(bi), T = lay.T, D = lay.D, Hd = lay.Hd, mod = pyName(bi), labels = Array.from({ length: T }, (_, t) => (P.ids ? word(P.ids[t]) : String(t)));
       const LY = W2({ t: [0, 0, 1, 0.08], x: [0.06, 0.16, 0.2, 0.34], u: [0.32, 0.16, 0.42, 0.34], c: [0.8, 0.16, 0.2, 0.34], g: [0.06, 0.62, 0.48, 0.34], o: [0.62, 0.62, 0.3, 0.34] },
         { t: [0, 0, 1, 0.08], x: [0.12, 0.14, 0.36, 0.17], c: [0.56, 0.14, 0.44, 0.17], u: [0.12, 0.39, 0.88, 0.17], g: [0.12, 0.62, 0.88, 0.16], o: [0.12, 0.84, 0.5, 0.15] });
       return {
@@ -1023,7 +1048,7 @@ print(torch.allclose(out, mlp(x_hat), atol=1e-6))  # True`,
       };
     }
     function addLevel(bi, k) {
-      const lay = model.layers[bi], r = P.layers[bi], T = lay.T, D = lay.D, before = k === 1 ? inVals(bi) : r.mid, delta = k === 1 ? r.y : r.mo, after = k === 1 ? r.mid : r.out, what = k === 1 ? 'attention' : 'MLP';
+      const lay = layOf(bi), r = pOf(bi), T = lay.T, D = lay.D, before = k === 1 ? inVals(bi) : r.mid, delta = k === 1 ? r.y : r.mo, after = k === 1 ? r.mid : r.out, what = k === 1 ? 'attention' : 'MLP';
       const G = [[0.1, 0.06, 0.9, 0.24], [0.1, 0.39, 0.9, 0.24], [0.1, 0.72, 0.9, 0.24]], labels = Array.from({ length: T }, (_, t) => (P.ids ? word(P.ids[t]) : String(t)));
       return {
         title: '+', sub: `residual: x + ${what}`, shape: 'op',
@@ -1037,7 +1062,7 @@ print(torch.allclose(out, mlp(x_hat), atol=1e-6))  # True`,
           });
         },
         grids: [
-          { id: 'in', rect: G[0], rows: T, cols: D, make: (i, j) => (k === 1 ? valueNode(bi - 1, i * D + j) : tfMid(bi, i, j)) },
+          { id: 'in', rect: G[0], rows: T, cols: D, make: (i, j) => (k === 1 ? valueNode(PV(bi), i * D + j) : tfMid(bi, i, j)) },
           { id: 'f', rect: G[1], rows: T, cols: D, make: (i, j) => (k === 1 ? projNeuron(attnData(bi), 'o', i, j) : mlpOut(bi, i, j)) },
           { id: 'sum', rect: G[2], rows: T, cols: D, make: (i, j) => Object.assign(Dp.fadd(X, before[i * D + j], delta[i * D + j]), { title: `${tok(i)}[${j}] + ${what} output` }) },
         ],
@@ -1103,8 +1128,8 @@ print(torch.allclose(out, mlp(x_hat), atol=1e-6))  # True`,
     }
 
     // ---- the boxes of the top level
-    const tone = (i) => ((shapes[i] || {}).problem ? 'critical' : TONE[blocks[i].type] || 's1');
-    const problemOf = (i) => (shapes[i] || {}).problem;
+    const tone = (i) => ((SH(i) || {}).problem ? 'critical' : TONE[BK(i).type] || 's1');
+    const problemOf = (i) => (SH(i) || {}).problem;
     const fixText = (p) => (p && p.fix ? ` The fix: add ${p.fix.map((f) => (L.blockLabel ? L.blockLabel(f) : f.type)).join(' and ')} before it (the red block in the builder has a button for it).` : '');
     // the level shown when there are no numbers: what the part does and its shapes (and what does not fit)
     function plainLevel(lines, problem) {
@@ -1121,22 +1146,145 @@ with torch.no_grad():
     model(Xva[:1])                                 # the first validation example, as here
 hook.remove()`;
 
+    // ---- parallel branches: every branch reads the same input; their outputs meet in a merge
+    const MERGE_TXT = { concat: 'joined side by side', add: 'added number by number', mul: 'multiplied number by number', mean: 'averaged number by number' };
+    const MERGE_SIGN = { concat: '‖', add: '+', mul: '×', mean: 'x̄' };
+    const sizeOf = (sh) => (sh ? sh.reduce((a, q) => a * q, 1) : 0);
+    const endVals = (e) => (e < 0 ? (seq ? P.emb : P.x) : pOf(e).out);
+    // the level of a parallel block: one row per branch with its blocks in order, then the merge
+    function parallelLevel(i, base, c, sI, sO, prob, pnum) {
+      const b = BK(i), k = b.branches.length, merge = c.merge || 'concat', lanes = NA.range(k).map((br) => laneSlots(i, br));
+      const maxLen = Math.max(1, ...lanes.map((l) => l.length)), y0 = W2(0.2, 0.17), hAll = W2(0.72, 0.76), rowH = hAll / k, x0 = 0.07, mx = 0.83, colW = (mx - x0 - 0.04) / maxLen;
+      const boxAt = (br, j) => [x0 + j * colW + colW * 0.08, y0 + br * rowH + rowH * 0.15, colW * 0.84, rowH * 0.7];
+      const mergeRect = W2([mx, y0 + hAll / 2 - 0.12, 0.13, 0.24], [mx - 0.02, y0 + hAll / 2 - 0.08, 0.17, 0.16]);
+      const kids = [];
+      lanes.forEach((sl, br) => sl.forEach((q, j) => kids.push(Object.assign(blockNode(q), { rect: boxAt(br, j) }))));
+      kids.push(Object.assign(mergeNode(i), { rect: mergeRect }));
+      const laneText = lanes.map((sl, br) => `${'ABCD'[br]}: ${sl.length ? sl.map((q) => NAME[BK(q).type] || BK(q).type).join(' → ') : 'nothing (the input passes straight through)'}`);
+      base.sub = `${k} branches · ${MERGE_TXT[merge]}${pnum ? ` · ${fmtInt(pnum)} parameters` : ''}`;
+      return Object.assign(base, {
+        summary: (ctx, q) => {
+          const rh = q.h / k;
+          lanes.forEach((sl, br) => {
+            const n = Math.max(1, sl.length), w = Math.min((q.w * 0.74) / n - 3, 24), h = Math.min(rh * 0.62, 12), cy = q.y + br * rh + rh / 2;
+            ctx.strokeStyle = theme.c('ink-2', 0.45); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(q.x + q.w * 0.04, cy); ctx.lineTo(q.x + q.w * 0.86, q.y + q.h / 2); ctx.stroke();
+            sl.forEach((s2, j) => { ctx.fillStyle = theme.c(TONE[BK(s2).type] || 's1', 0.7); NA.rr(ctx, q.x + q.w * 0.08 + j * (w + 3), cy - h / 2, w, h, 3); ctx.fill(); });
+          });
+          ctx.fillStyle = theme.c('s3', 0.85); ctx.beginPath(); ctx.arc(q.x + q.w * 0.9, q.y + q.h / 2, Math.max(3, Math.min(q.h * 0.16, 7)), 0, Math.PI * 2); ctx.fill();
+        },
+        inner: (ctx, r, S) => {
+          const u = S.u(r, 8, 12);
+          S.lines(ctx, [`${k} branches read the same input (${shapeText(sI)}); what they give is ${MERGE_TXT[merge]}: ${shapeText(sO)}`, prob ? `Does not fit: ${prob.reason}` : 'Open any block to see its numbers, or the merge to see how the branches meet.'],
+            S.place(r, [0, 0, 1, y0 - 0.03]), { size: u * 0.9, strong: (q) => q === 0, colorOf: (q) => (q === 1 && prob ? theme.c('critical') : null) });
+          const mrg = S.place(r, mergeRect), mx0 = mrg.x - 2, my = mrg.y + mrg.h / 2, ax = r.x + r.w * 0.045;
+          ctx.strokeStyle = theme.c('ink-2', 0.7); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(r.x, r.y + r.h * (y0 + hAll / 2)); ctx.lineTo(ax - 4, r.y + r.h * (y0 + hAll / 2)); ctx.stroke();
+          lanes.forEach((sl, br) => {
+            const cy = r.y + r.h * (y0 + br * rowH + rowH / 2), boxes = sl.map((q, j) => S.place(r, boxAt(br, j)));
+            ctx.strokeStyle = theme.c('ink-2', 0.7); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(ax - 4, r.y + r.h * (y0 + hAll / 2)); ctx.lineTo(ax, cy); ctx.stroke();
+            S.text(ctx, 'ABCD'[br], ax + u * 0.2, cy - u * 1.1, { size: u * 0.95, w: 700, color: theme.c('s3') });
+            if (!boxes.length) { S.arrow(ctx, ax, cy, mx0, my, { lw: 1.2, head: 5 }); S.text(ctx, 'the input, passed straight through', (ax + mx0) / 2, cy - u, { size: u * 0.8, color: theme.c('muted'), align: 'center', maxW: mx0 - ax }); return; }
+            S.arrow(ctx, ax, cy, boxes[0].x - 3, cy, { lw: 1.2, head: 5 });
+            for (let j = 0; j + 1 < boxes.length; j++) { const a = boxes[j], c2 = boxes[j + 1]; S.arrow(ctx, a.x + a.w + 2, cy, c2.x - 3, cy, { lw: 1.2, head: 5 }); S.text(ctx, shapeText(outS(sl[j])).replace(/ /g, ''), (a.x + a.w + c2.x) / 2, cy - u * 1.05, { size: u * 0.75, mono: true, color: theme.c('muted'), align: 'center', maxW: c2.x - a.x - a.w + 8 }); }
+            const last = boxes[boxes.length - 1];
+            S.arrow(ctx, last.x + last.w + 2, cy, mx0, my, { lw: 1.2, head: 5 });
+            S.text(ctx, shapeText(outS(sl[sl.length - 1])).replace(/ /g, ''), last.x + last.w + 6, cy - u * 1.05, { size: u * 0.75, mono: true, color: theme.c('muted'), maxW: mx0 - last.x - last.w });
+          });
+          S.arrow(ctx, mrg.x + mrg.w + 2, my, r.x + r.w - 1, my, { lw: 1.4, head: 6 });
+        },
+        children: kids,
+        about: [`Parallel branches: ${k} small stacks of blocks that all read the same input, side by side, instead of one after another. ${laneText.join('; ')}. Their outputs are ${MERGE_TXT[merge]}, giving ${shapeText(sO)}.`,
+          ({ concat: `Joining keeps every branch's numbers: the next layer sees them all, side by side, and can weigh each branch's findings separately. This is how an Inception module combines small and large filters, and a wide-and-deep model combines the raw inputs with learned features.`,
+            add: `Adding mixes the branches number by number, so they must give the same shape. With one branch empty, the block adds its own input back: a residual connection around the other branches, the trick that lets very deep networks train.`,
+            mul: `Multiplying lets one branch scale the other, number by number: a branch that ends in a sigmoid becomes a gate between 0 and 1 that opens or shuts the other branch's numbers for each example. LSTMs and gated layers are built on this.`,
+            mean: `Averaging makes the branches vote: each one is a small model of its own, and their average is usually steadier than any one of them, like an ensemble.` })[merge],
+          `When it learns, the gradient that reaches the merge is shared out: ${merge === 'concat' ? 'each branch gets the slice for its own numbers' : merge === 'add' ? 'each branch gets all of it' : merge === 'mean' ? `each branch gets a ${k}th of it` : 'each branch gets it times the other branches\' outputs'}, runs it back through its own blocks, and the input's gradient is the sum over the branches.${pnum ? ` Its ${fmtInt(pnum)} learned numbers are those of the blocks inside it.` : ''}`],
+        code: `block = ${pyAt(i, 'par')}                       # ${k} branches, ${MERGE_TXT[merge]}
+x = torch.randn${sI ? pyShape(sI) : '(1, 16)'}                    # what comes in
+outs = [branch(x) for branch in block.branches]   # every branch reads the same x
+print([tuple(o.shape) for o in outs])
+print(tuple(block(x).shape))                      # ${sO ? pyShape(sO) : ''}: ${MERGE_TXT[merge]}`,
+      });
+    }
+    // the merge of a parallel block: each branch's output for the example, and what they make together
+    function mergeNode(i) {
+      const b = BK(i), merge = cfgOf(b).merge || 'concat', k = b.branches.length, sO = outS(i), n = sizeOf(sO);
+      const ends = NA.range(k).map((br) => laneEnd(i, br)), shs = ends.map((e) => shapeAfter(e));
+      const rowsR = W2([0.16, 0.8], [0.16, 0.8]), rowH = rowsR[1] / (k + 1);
+      const rowRect = (q) => [0.12, rowsR[0] + q * rowH + rowH * 0.15, 0.86, rowH * 0.7];
+      return {
+        id: 'merge', title: `${blockNo(i)} · the merge (${MERGE_SIGN[merge]})`, sub: `${k} outputs ${MERGE_TXT[merge]} → ${shapeText(sO)}`, tone: 's3',
+        summary: (ctx, q, S) => {
+          ctx.fillStyle = theme.c('s3', 0.18); ctx.beginPath(); ctx.arc(q.x + q.w / 2, q.y + q.h / 2, Math.min(q.w, q.h) * 0.36, 0, Math.PI * 2); ctx.fill();
+          S.text(ctx, MERGE_SIGN[merge], q.x + q.w / 2, q.y + q.h / 2, { size: Math.max(8, Math.min(q.h * 0.42, 24)), w: 700, align: 'center', color: theme.c('ink') });
+        },
+        inner: (ctx, r, S) => {
+          const u = S.u(r, 8, 12);
+          S.lines(ctx, [`${k} branch outputs, ${MERGE_TXT[merge]}`, nums ? 'top rows: what each branch gives for the example; bottom: the result. Zoom into a number of the result for where it came from.' : 'Train or wait for the example to see the numbers.'], S.place(r, [0, 0, 1, 0.14]), { size: u * 0.9, strong: (q) => q === 0 });
+          ends.forEach((e, br) => {
+            const q = S.place(r, rowRect(br));
+            S.text(ctx, `${'ABCD'[br]}`, r.x + r.w * 0.05, q.y + q.h / 2, { size: u, w: 700, align: 'center', color: theme.c('s3') });
+            S.text(ctx, shapeText(shs[br]), r.x + r.w * 0.05, q.y + q.h / 2 + u * 1.2, { size: u * 0.7, mono: true, align: 'center', color: theme.c('muted'), maxW: r.w * 0.1 });
+            if (nums) miniTensor(ctx, S, `mg${i}:${br}`, shs[br], endVals(e), q);
+          });
+          const q = S.place(r, rowRect(k));
+          S.text(ctx, MERGE_SIGN[merge], r.x + r.w * 0.05, q.y + q.h / 2, { size: u * 1.3, w: 700, align: 'center', color: theme.c('ink') });
+          if (nums) miniTensor(ctx, S, `mgo${i}`, sO, pOf(i).out, q);
+        },
+        grids: nums && sO && sO.length === 1 && n <= 512 ? [{ id: 'v', rect: rowRect(k), rows: 1, cols: n, make: (a, j) => valueNode(i, j) }] : [],
+        about: [`Where the ${k} branches meet. ${({ concat: `Their outputs are laid side by side: ${shs.map((s2, br) => `${'ABCD'[br]} gives ${shapeText(s2)}`).join(', ')}, so the result has ${shapeText(sO)}. Nothing is computed here: every number is a copy of one branch's number, and the next layer learns how much to trust each.`, add: `Number by number, the branches' outputs are added: result[j] = ${ends.map((_, br) => `${'ABCD'[br]}[j]`).join(' + ')}.`, mul: `Number by number, the branches' outputs are multiplied: result[j] = ${ends.map((_, br) => `${'ABCD'[br]}[j]`).join(' × ')}.`, mean: `Number by number, the branches' outputs are averaged: result[j] = (${ends.map((_, br) => `${'ABCD'[br]}[j]`).join(' + ')}) / ${k}.` })[merge]}`,
+          'The merge learns nothing itself; it decides how the branches’ findings reach the next layer, and how the gradient is shared out among them when the model learns.'],
+        code: `block = ${pyAt(i, 'par')}
+x = torch.randn${inS(i) ? pyShape(inS(i)) : '(1, 16)'}
+outs = [branch(x) for branch in block.branches]
+${merge === 'concat' ? `y = torch.cat(outs, ${sO && sO.length === 3 ? 1 : -1})                     # side by side` : merge === 'add' ? 'y = sum(outs)                                   # number by number' : merge === 'mul' ? 'y = torch.stack(outs).prod(0)                  # number by number' : 'y = torch.stack(outs).mean(0)                  # number by number'}
+print(torch.allclose(y, block(x)))                # True`,
+      };
+    }
+    // a number of a parallel block's output: a copy of one branch's number (joined), or the branches' numbers combined
+    function parallelValue(bi, idx) {
+      const b = BK(bi), merge = cfgOf(b).merge || 'concat', k = b.branches.length, s = outS(bi);
+      const ends = NA.range(k).map((br) => laneEnd(bi, br)), shs = ends.map((e) => shapeAfter(e));
+      if (merge === 'concat') {
+        const per = s.length === 2 ? s[1] : sizeOf(s), row = s.length === 2 ? Math.floor(idx / per) : 0, within = s.length === 2 ? idx % per : idx;
+        let off = 0;
+        for (let br = 0; br < k; br++) {
+          const w = s.length === 2 ? shs[br][1] : sizeOf(shs[br]);
+          if (within < off + w) {
+            const j = s.length === 2 ? row * shs[br][1] + (within - off) : within - off;
+            return Object.assign(valueNode(ends[br], j), { sub: `from branch ${'ABCD'[br]} (its number ${j}), joined in as number ${idx} of block ${blockNo(bi)}` });
+          }
+          off += w;
+        }
+      }
+      const vals = ends.map((e) => endVals(e)[idx]), res = pOf(bi).out[idx], op = merge === 'mul' ? ' × ' : ' + ';
+      const formula = merge === 'mean' ? `(${vals.map((v) => fmt(v, 3)).join(' + ')}) / ${k} = ${fmt(res, 4)}` : `${vals.map((v) => fmt(v, 3)).join(op)} = ${fmt(res, 4)}`;
+      const rs = NA.range(k).map((br) => W2([br / k + 0.01, 0.4, 1 / k - 0.02, 0.5], [0, 0.3 + br * (0.68 / k), 1, 0.68 / k - 0.02]));
+      return Dp.lazy({
+        title: `Number ${idx} of block ${blockNo(bi)}`, sub: formula, tone: 's3',
+        summary: (ctx, r, S) => S.text(ctx, vals.map((v) => fmt(v, 2)).join(op.trim()), r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.w / 10, 6, 11), mono: true, align: 'center', color: theme.c('ink-2'), maxW: r.w }),
+        inner: (ctx, r, S) => S.lines(ctx, [`${MERGE_TXT[merge]}: ${formula}`, 'Zoom into any branch for where its number came from.'], S.place(r, [0, 0.02, 1, 0.3]), { mono: true, size: S.u(r, 8, 13), strong: (q) => q === 0 }),
+        about: [`Number ${idx} of the parallel block's output: the branches' number ${idx}, ${MERGE_TXT[merge]}. Each branch computed its own from the same input.`],
+        code: `block = ${pyAt(bi, 'par')}\nouts = [branch(x) for branch in block.branches]      # x: what the block received\nprint([o.flatten()[${idx}].item() for o in outs])`,
+      }, () => ends.map((e, br) => Object.assign(valueNode(e, idx), { id: 'b' + br, rect: rs[br], title: `Branch ${'ABCD'[br]}: ${fmt(vals[br], 4)}` })));
+    }
+
     // a block's level, its explanation ending with an experiment to try
     function blockNode(i) {
-      const node = blockNode0(i), t = TRY[blocks[i].type];
-      if (!node || !t) return node;
+      const b = BK(i), node = blockNode0(i), t = TRY[b.type], g = NA.partGuide && NA.partGuide.G[b.type === 'dense' && b.units === 1 ? 'neuron' : b.type], deep = (b.type !== 'parallel' && g && g.deep) || []; // the parallel level explains itself
+      if (!node || (!t && !deep.length)) return node;
       const desc = Object.getOwnPropertyDescriptor(node, 'about'), own = desc && (desc.get ? () => desc.get.call(node) : () => desc.value);
-      Object.defineProperty(node, 'about', { configurable: true, enumerable: true, get: () => [...((own && own()) || []), `Try this: ${t}`] });
+      Object.defineProperty(node, 'about', { configurable: true, enumerable: true, get: () => [...((own && own()) || []), ...deep.slice(1), ...(t ? [`Try this: ${t}`] : [])] });
       return node;
     }
     function blockNode0(i) {
-      const b = blocks[i], c = cfgOf(b), sI = inS(i), sO = outS(i), prob = problemOf(i), base = { id: b.id || 'b' + i, title: blockTitle(i), tone: tone(i) };
+      const b = BK(i), c = cfgOf(b), sI = inS(i), sO = outS(i), prob = problemOf(i), base = { id: b.id || 'b' + i, title: blockTitle(i), tone: tone(i) };
       const shp = sI && sO ? `${shapeText(sI)} → ${shapeText(sO)}` : '';
-      const have = nums && !prob, lay = have ? model.layers[i] : null, r = have ? P.layers[i] : null, xin = have ? inVals(i) : null;
-      const pnum = (shapes[i] || {}).params || 0, mod = pyName(i);
+      const have = nums && !prob, lay = have ? layOf(i) : null, r = have ? pOf(i) : null, xin = have ? inVals(i) : null;
+      const pnum = (SH(i) || {}).params || 0, mod = pyName(i);
       const plain = (lines, about, code) => Object.assign(base, { inner: plainLevel([...lines, shp ? `${shp}${pnum ? ` · ${fmtInt(pnum)} parameters` : ''}` : ''].filter(Boolean), prob), about: prob ? [...about, `Here it does not fit: ${prob.reason}${fixText(prob)}`] : about, code });
       const sum = (key, s, v) => (ctx, q, S) => miniTensor(ctx, S, key, s, v, q);
       if (isClassicB(b.type)) return classicLevel(i, base, prob);
+      if (b.type === 'parallel') return parallelLevel(i, base, c, sI, sO, prob, pnum);
 
       if (b.type === 'dense') {
         // the engine adds the input back only when the shapes match (a layer that changes the width cannot)
@@ -1168,7 +1316,7 @@ a = ${mixed ? `${pyAt(i, 'act')}(z)` : PYACT[c.act] ? PYACT[c.act]('z') : 'z'}${
               S.lines(ctx, wide ? [`${head}   ${sizes}`, 'each row of W is one neuron\'s weights; z is its weighted sum, a its output', `here the strongest is neuron ${top + 1}: a = ${fmt(as[top], 3)}${live ? ' · ' + live : ''}`]
                 : [head, sizes, `strongest: neuron ${top + 1}, a = ${fmt(as[top], 3)}`, live].filter(Boolean), at('t'), { mono: true, size: u * 0.9, strong: (k) => k === 0 });
               const xr = at('x'), wr = at('W');
-              S.caption(ctx, `input x: ${F} number${F === 1 ? '' : 's'}${i ? ` from block ${i}` : ''}`, xr, { size: u * 0.8, minW: 150 }); S.bars(ctx, xin, xr);
+              S.caption(ctx, `input x: ${F} number${F === 1 ? '' : 's'}${PV(i) >= 0 ? ` from block ${blockNo(PV(i))}` : ''}`, xr, { size: u * 0.8, minW: 150 }); S.bars(ctx, xin, xr);
               S.caption(ctx, W2(`weights W: ${U} neurons × ${F} inputs`, `W: ${U} × ${F}`), wr, { size: u * 0.8, minW: 90 });
               drawHeat(ctx, heatImg(cache, `W:${i}`, U, F, (a, p) => Wt[a * F + p]), wr, U, F);
               // z and a share a scale, so what the activation does to each sum shows
@@ -1178,8 +1326,8 @@ a = ${mixed ? `${pyAt(i, 'act')}(z)` : PYACT[c.act] ? PYACT[c.act]('z') : 'z'}${
               if (ch >= 3) for (let j = 0; j < U; j += every) S.text(ctx, mixed ? `${j + 1} ${ACT(acts[j]).short || acts[j]}` : String(j + 1), lr.x + lr.w, lr.y + ch * (j + 0.5), { size: Math.min(u * 0.78, Math.max(7, ch * 0.8)), mono: true, align: 'right', color: mixed && acts[j] !== c.act ? theme.c('ink') : theme.c('muted'), maxW: lr.w });
             },
             grids: [
-              { id: 'x', rect: LY.x, rows: 1, cols: F, make: (a, p) => valueNode(i - 1, p) },
-              { id: 'W', rect: LY.W, rows: U, cols: F, make: (j, p) => Dp.stored(X, Wt[j * F + p], `W[${j}, ${p}]: neuron ${j + 1}'s weight on ${nameOf(i - 1, p)}`) },
+              { id: 'x', rect: LY.x, rows: 1, cols: F, make: (a, p) => valueNode(PV(i), p) },
+              { id: 'W', rect: LY.W, rows: U, cols: F, make: (j, p) => Dp.stored(X, Wt[j * F + p], `W[${j}, ${p}]: neuron ${j + 1}'s weight on ${nameOf(PV(i), p)}`) },
               { id: 'b', rect: LY.b, rows: U, cols: 1, make: (j) => Dp.stored(X, bb[j], `bias of neuron ${j + 1}`) },
               { id: 'z', rect: LY.z, rows: U, cols: 1, make: (j) => denseNeuron(i, 0, j) },
               { id: 'n', rect: LY.a, rows: U, cols: 1, make: (j) => denseNeuron(i, 0, j) },
@@ -1205,7 +1353,7 @@ a = ${mixed ? `${pyAt(i, 'act')}(z)` : PYACT[c.act] ? PYACT[c.act]('z') : 'z'}${
             if (!wide) rowLabels(ctx, S, labels, ar, { size: u * 0.78, maxW: Math.max(18, ar.x - q.x - 2) });
           },
           grids: [
-            { id: 'x', rect: LY.x, rows: T, cols: F, make: (t, p) => valueNode(i - 1, t * F + p) },
+            { id: 'x', rect: LY.x, rows: T, cols: F, make: (t, p) => valueNode(PV(i), t * F + p) },
             { id: 'W', rect: LY.W, rows: U, cols: F, make: (j, p) => Dp.stored(X, Wt[j * F + p], `W[${j}, ${p}], a weight of neuron ${j + 1}`) },
             { id: 'a', rect: LY.a, rows: T, cols: U, make: (t, j) => (res ? denseValue(i, t * U + j) : denseNeuron(i, t, j)) },
           ],
@@ -1221,8 +1369,8 @@ a = ${mixed ? `${pyAt(i, 'act')}(z)` : PYACT[c.act] ? PYACT[c.act]('z') : 'z'}${
         const code = `x = torch.randn${sI ? pyShape(sI) : '(1, 8)'}               # any input of this shape\ny = ${PYACT[a.id] ? PYACT[a.id]('x') : 'x'}                      # every number on its own`;
         if (!have) return plain([`y = ${a.label}(x), number by number`], [about0], code);
         const n = xin.length, LY = W2({ t: [0, 0, 0.62, 0.15], c: [0.7, 0.03, 0.3, 0.42], in: [0, 0.3, 0.62, 0.26], out: [0, 0.69, 0.62, 0.28] }, { t: [0, 0, 1, 0.12], c: [0.2, 0.16, 0.6, 0.2], in: [0, 0.45, 1, 0.2], out: [0, 0.76, 1, 0.22] });
-        const vin = tensorView(`aci${i}`, sI, xin, LY.in, { id: 'x', caption: 'x: what comes in', make: (k) => valueNode(i - 1, k), name: `Block ${i + 1} input`, tone: base.tone });
-        const vout = tensorView(`aco${i}`, sO, r.out, LY.out, { id: 'y', caption: `y = ${a.label}(x): zoom into any number`, make: (k) => actValue(i, k), name: `Block ${i + 1} output`, tone: base.tone });
+        const vin = tensorView(`aci${i}`, sI, xin, LY.in, { id: 'x', caption: 'x: what comes in', make: (k) => valueNode(PV(i), k), name: `Block ${blockNo(i)} input`, tone: base.tone });
+        const vout = tensorView(`aco${i}`, sO, r.out, LY.out, { id: 'y', caption: `y = ${a.label}(x): zoom into any number`, make: (k) => actValue(i, k), name: `Block ${blockNo(i)} output`, tone: base.tone });
         let lo = Infinity, hi = -Infinity; for (let k = 0; k < n; k++) { if (xin[k] < lo) lo = xin[k]; if (xin[k] > hi) hi = xin[k]; }
         const x0 = Math.min(-2, lo), x1 = Math.max(2, hi), ys = [a.f(x0), a.f(x1), a.f(0), a.f((x0 + x1) / 2), ...(a.lo !== undefined ? [a.lo, a.hi] : [])], y0 = Math.min(...ys, -0.2), y1 = Math.max(...ys, 1);
         return Object.assign(base, {
@@ -1253,8 +1401,8 @@ drop.eval();  print(drop(x))                       # when the model is used: unc
         if (!have) return plain(['while training: y = x · mask / (1 − p);  when used: y = x'], [about0, 'When the model is used (evaluation), dropout does nothing at all: every number passes through unchanged.'], code);
         const LY = W2({ t: [0, 0, 1, 0.16], in: [0, 0.3, 1, 0.27], tr: [0, 0.7, 1, 0.27] }, { t: [0, 0, 1, 0.16], in: [0, 0.27, 1, 0.28], tr: [0, 0.68, 1, 0.3] });
         const rng = new NA.RNG(977 * (i + 1) + 13), keep = 1 / (1 - p), mask = Float32Array.from({ length: xin.length }, () => (rng.next() < p ? 0 : keep)), tr = Float32Array.from(xin, (v, k) => v * mask[k]), both = Math.max(maxAbs(xin), maxAbs(tr));
-        const vin = tensorView(`dri${i}`, sI, xin, LY.in, { id: 'y', max: both, caption: 'when the model is used, as here: y = x, unchanged', make: (k) => Object.assign(valueNode(i - 1, k), { sub: 'unchanged by dropout when the model is used' }), name: `Block ${i + 1}`, tone: base.tone });
-        const vtr = tensorView(`drt${i}`, sI, tr, LY.tr, { id: 't', max: both, caption: `one training step: ${fmtPct(p, 0)} set to 0, the rest × ${fmt(keep, 2)} (same scale)`, make: (k) => Dp.stored(X, tr[k], mask[k] ? `kept and scaled: ${fmt(xin[k], 3)} × ${fmt(keep, 2)}` : 'dropped: 0 for this step'), name: `Block ${i + 1} (one training step)`, tone: base.tone });
+        const vin = tensorView(`dri${i}`, sI, xin, LY.in, { id: 'y', max: both, caption: 'when the model is used, as here: y = x, unchanged', make: (k) => Object.assign(valueNode(PV(i), k), { sub: 'unchanged by dropout when the model is used' }), name: `Block ${blockNo(i)}`, tone: base.tone });
+        const vtr = tensorView(`drt${i}`, sI, tr, LY.tr, { id: 't', max: both, caption: `one training step: ${fmtPct(p, 0)} set to 0, the rest × ${fmt(keep, 2)} (same scale)`, make: (k) => Dp.stored(X, tr[k], mask[k] ? `kept and scaled: ${fmt(xin[k], 3)} × ${fmt(keep, 2)}` : 'dropped: 0 for this step'), name: `Block ${blockNo(i)} (one training step)`, tone: base.tone });
         return Object.assign(base, {
           summary: sum(`drs${i}`, sO, r.out),
           inner: (ctx, q, S) => {
@@ -1279,7 +1427,7 @@ print(torch.allclose(y, norm(x), atol=1e-6))       # True`;
         const about0 = 'LayerNorm rescales each example (or each position of a sequence) to mean 0 and spread 1, then applies a learned scale γ and shift β to every number. It keeps the numbers in a steady range however many layers came before, which keeps training stable.';
         if (!have) return plain(['y = (x − μ) / √(σ² + ε) · γ + β'], [about0], code);
         const D = lay.d, T = lay.rows;
-        return Object.assign(base, lnLevel({ key: `ln${i}`, title: base.title, tone: base.tone, rows: T, d: D, x: xin, y: r.out, g: lay.g.w, b: lay.b.w, src: (t, j) => valueNode(i - 1, t * D + j), cell: (t, j) => lnCell(i, t, j), code }), { id: base.id, title: base.title, sub: base.sub });
+        return Object.assign(base, lnLevel({ key: `ln${i}`, title: base.title, tone: base.tone, rows: T, d: D, x: xin, y: r.out, g: lay.g.w, b: lay.b.w, src: (t, j) => valueNode(PV(i), t * D + j), cell: (t, j) => lnCell(i, t, j), code }), { id: base.id, title: base.title, sub: base.sub });
       }
 
       if (b.type === 'conv') {
@@ -1305,7 +1453,7 @@ a = ${PYACT[c.act] ? PYACT[c.act]('z') : 'z'}`;
             S.text(ctx, `its filter: ${C > lay2.k ? `${lay2.k} of ` : ''}${C} kernel${C === 1 ? '' : 's'} of ${k} × ${k}`, rr.x, rr.y + u * 0.6, { size: u * 0.8, color: theme.c('muted'), maxW: rr.w });
             for (let ch = 0; ch < lay2.k; ch++) drawHeat(ctx, heatImg(cache, `kf${i}:${f}:${ch}`, k, k, (a2, b2) => w[f * J + (ch * k + a2) * k + b2], { max: m }), { x: rr.x + (ch % lay2.cols) * cs + 2, y: rr.y + u * 1.4 + Math.floor(ch / lay2.cols) * cs + 2, w: cs - 4, h: cs - 4 }, k, k, true);
           },
-          channelAbout: (f) => [`Channel ${f + 1} of block ${i + 1}: filter ${f + 1} laid over every position of the picture. Each cell is one weighted sum of a ${k} × ${k} window through all ${C} input channel${C === 1 ? '' : 's'}, plus the bias, then ${ACT(c.act).label}: bright where the filter's pattern is found.`, 'The small squares are the filter itself, one kernel per input channel. Zoom into any cell for the weighted sum behind it.'],
+          channelAbout: (f) => [`Channel ${f + 1} of block ${blockNo(i)}: filter ${f + 1} laid over every position of the picture. Each cell is one weighted sum of a ${k} × ${k} window through all ${C} input channel${C === 1 ? '' : 's'}, plus the bias, then ${ACT(c.act).label}: bright where the filter's pattern is found.`, 'The small squares are the filter itself, one kernel per input channel. Zoom into any cell for the weighted sum behind it.'],
           channelCode: (f) => [...pyGrab(mod, 'z', 'out[0]'), `a = ${PYACT[c.act] ? PYACT[c.act](`grab['z'][${f}]`) : `grab['z'][${f}]`}            # channel ${f + 1}: (${Ho}, ${Wo})`, `kernel = ${mod}.weight[${f}]                         # (${C}, ${k}, ${k}): its filter`].join('\n'),
         });
         return Object.assign(base, {
@@ -1331,7 +1479,7 @@ print(y[0, 0, 0, 0] == x[0, 0, :${c.size}, :${c.size}].max())     # True`;
         const about0 = `Max pooling keeps the largest number of each ${c.size} × ${c.size} window, channel by channel${sI && sO && sI[1] % c.size ? ` (the last ${sI[1] % c.size} row${sI[1] % c.size === 1 ? '' : 's'} and column${sI[1] % c.size === 1 ? '' : 's'}, which do not fill a window, are dropped)` : ''}. The picture shrinks ${c.size} times in each direction, the next filters see a wider area, and small shifts of a feature stop mattering. It has no weights to learn.`;
         if (!have) return plain([`y[c, i, j] = max of a ${c.size} × ${c.size} window`], [about0], code);
         const LY = W2({ t: [0, 0, 1, 0.12], in: [0, 0.22, 0.45, 0.76], out: [0.55, 0.22, 0.45, 0.76] }, { t: [0, 0, 1, 0.13], in: [0, 0.2, 1, 0.37], out: [0, 0.62, 1, 0.37] });
-        const vin = tensorView(`pi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(i - 1, q), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`pi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(PV(i), q), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         const vout = tensorView(`po${i}`, sO, r.out, LY.out, { id: 'y', caption: `out: ${shapeText(sO)}, open a channel`, make: (q) => poolValue(i, q), name: blockTitle(i), tone: base.tone, tiles: 16 });
         return Object.assign(base, {
           summary: sum(`pos${i}`, sO, r.out),
@@ -1352,7 +1500,7 @@ print(y[0, 0, 0, 0] == x[0, 0, :${c.size}, :${c.size}].max())     # True`;
         const about0 = 'Flatten lines all the numbers up into one long vector, so that dense layers (and the output) can use them. Nothing is computed: the numbers are already stored in that order, channel by channel and row by row. It keeps every number but forgets which ones were neighbours.';
         if (!have) return plain(['y = x.flatten()'], [about0], code);
         const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.22, 1, 0.46], out: [0, 0.79, 1, 0.18] }, { t: [0, 0, 1, 0.14], in: [0, 0.22, 1, 0.48], out: [0, 0.8, 1, 0.18] });
-        const vin = tensorView(`fi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(i - 1, q), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`fi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(PV(i), q), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         return Object.assign(base, {
           summary: sum(`fls${i}`, sO, r.out),
           inner: (ctx, q, S) => {
@@ -1362,7 +1510,7 @@ print(y[0, 0, 0, 0] == x[0, 0, :${c.size}, :${c.size}].max())     # True`;
             S.caption(ctx, `out: ${fmtInt(sO[0])} numbers in a row, zoom into any`, orr, { size: u * 0.8, minW: 200 });
             S.bars(ctx, r.out, orr);
           },
-          grids: [vin.grid, { id: 'y', rect: LY.out, rows: 1, cols: sO[0], make: (a, q) => Object.assign(valueNode(i - 1, q), { sub: `number ${q} of the flattened vector` }) }],
+          grids: [vin.grid, { id: 'y', rect: LY.out, rows: 1, cols: sO[0], make: (a, q) => Object.assign(valueNode(PV(i), q), { sub: `number ${q} of the flattened vector` }) }],
           about: [about0, 'Zoom into a bar of the long vector to see which number it is and where it came from.'],
           code,
         });
@@ -1374,7 +1522,7 @@ print(y[0, 0, 0, 0] == x[0, 0, :${c.size}, :${c.size}].max())     # True`;
         const about0 = sI && sI.length === 2 ? `Global average pooling averages each of the ${sI[1]} features over the ${sI[0]} positions: the whole sequence becomes one vector, whatever its length, with no position information left.` : `Global average pooling averages each channel over all its positions: the whole picture becomes one short vector${sI ? ` of ${sI[0]} numbers` : ''}. It works for any picture size, and it keeps how strongly each filter fired but forgets where.`;
         if (!have) return plain([sI && sI.length === 2 ? 'y[c] = mean over the positions of x[:, c]' : 'y[c] = mean over the pixels of channel c'], [about0], code);
         const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.22, 0.6, 0.76], out: [0.66, 0.4, 0.34, 0.4] }, { t: [0, 0, 1, 0.14], in: [0, 0.22, 1, 0.46], out: [0, 0.77, 1, 0.2] });
-        const vin = tensorView(`gi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(i - 1, q), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`gi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q) => valueNode(PV(i), q), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         return Object.assign(base, {
           summary: sum(`gas${i}`, sO, r.out),
           inner: (ctx, q, S) => {
@@ -1444,7 +1592,7 @@ print(torch.allclose(out, block(x), atol=1e-6))    # True`;
           about: [about0, `Here ${T} positions of ${D2} numbers, ${lay.heads} heads of ${D2 / lay.heads} and an MLP of ${lay.Hd} hidden neurons. Open a part: each one shows its numbers for this example, and every number opens what computed it.`],
           code,
         }), () => [
-          Object.assign(lnLevel({ key: `t1${i}`, title: 'LayerNorm 1', tone: 's7', rows: T, d: D2, x: xin, y: r.h1, g: lay.ln1g.w, b: lay.ln1b.w, src: (t, j) => valueNode(i - 1, t * D2 + j), cell: (t, j) => tfLnCell(i, 1, t, j), code: lnCode(1) }), { id: 'ln1', rect: R.ln1 }),
+          Object.assign(lnLevel({ key: `t1${i}`, title: 'LayerNorm 1', tone: 's7', rows: T, d: D2, x: xin, y: r.h1, g: lay.ln1g.w, b: lay.ln1b.w, src: (t, j) => valueNode(PV(i), t * D2 + j), cell: (t, j) => tfLnCell(i, 1, t, j), code: lnCode(1) }), { id: 'ln1', rect: R.ln1 }),
           Object.assign(attnLevel(A, { noResidual: true }), { id: 'attn', rect: R.attn }),
           Object.assign(addLevel(i, 1), { id: 'add1', rect: R.add1 }),
           Object.assign(lnLevel({ key: `t2${i}`, title: 'LayerNorm 2', tone: 's7', rows: T, d: D2, x: r.mid, y: r.h2, g: lay.ln2g.w, b: lay.ln2b.w, src: (t, j) => tfMid(i, t, j), cell: (t, j) => tfLnCell(i, 2, t, j), code: lnCode(2) }), { id: 'ln2', rect: R.ln2 }),
@@ -1514,7 +1662,7 @@ print(torch.allclose(h0, h[0, 0], atol=1e-6))      # True`;
               if (m % colsT === 0) rowLabels(ctx, S, labels, pr, { size: u * 0.74, maxW: Math.max(16, (wide ? LY.x[0] : 0.11) * q.w - 4) });
             });
           },
-          grids: panels.map(([key, , qi]) => ({ id: key, rect: LY[key], rows: T, cols: key === 'x' ? Din : H, make: key === 'x' ? (t, p) => valueNode(i - 1, t * Din + p) : key === 'c' ? (t, j) => lstmCell(i, t, j) : key === 'h' ? (t, j) => rnnValue(i, t, j) : (t, j) => rnnGate(i, t, qi, j) })),
+          grids: panels.map(([key, , qi]) => ({ id: key, rect: LY[key], rows: T, cols: key === 'x' ? Din : H, make: key === 'x' ? (t, p) => valueNode(PV(i), t * Din + p) : key === 'c' ? (t, j) => lstmCell(i, t, j) : key === 'h' ? (t, j) => rnnValue(i, t, j) : (t, j) => rnnGate(i, t, qi, j) })),
           get about() { return [about0, about1, `Each panel is one quantity at every step (rows) and unit (columns)${cell === 'rnn' ? '' : ': the gates run from 0 (shut, dark) to 1 (open, bright), the candidate and h from −1 to 1'}. Zoom into a cell of h for the formula behind it; its parts open the gates' weighted sums, and h${cell === 'lstm' ? ' or c' : ''} from the step before opens that step: you can walk back through time, the way backpropagation through time sends the gradient.`]; },
           code,
         });
@@ -1543,7 +1691,7 @@ a = ${PYACT[c.act] ? PYACT[c.act]('conv(xp)') : 'conv(xp)'}.transpose(1, 2)    #
             if (!wide) rowLabels(ctx, S, labels, ar, { size: u * 0.78, maxW: Math.max(18, ar.x - q.x - 2) });
           },
           grids: [
-            { id: 'x', rect: LY.x, rows: T, cols: D, make: (t, p) => valueNode(i - 1, t * D + p) },
+            { id: 'x', rect: LY.x, rows: T, cols: D, make: (t, p) => valueNode(PV(i), t * D + p) },
             { id: 'k', rect: LY.k, rows: F, cols: J, make: (f, p) => Dp.stored(X, w[f * J + p], `kernel[${f}, ${p % D}, ${Math.floor(p / D)}]: filter ${f + 1}'s weight on feature ${p % D} at window position ${Math.floor(p / D)}`) },
             { id: 'a', rect: LY.a, rows: T, cols: F, make: (t, f) => conv1dValue(i, t * F + f) },
           ],
@@ -1572,7 +1720,7 @@ a = ${PYACT[c.act] ? PYACT[c.act]('conv(xp)') : 'conv(xp)'}.transpose(1, 2)    #
             if (mode === 'max' && g.cw >= 2 && g.ch >= 2) for (let cc = 0; cc < D; cc++) { const t = Math.floor(Math.round(r.arg[cc]) / D); ctx.strokeRect(g.x + cc * g.cw, g.y + t * g.ch, g.cw, g.ch); }
             S.caption(ctx, 'out: zoom into any number', orr, { size: u * 0.8, minW: 140 }); S.bars(ctx, r.out, orr);
           },
-          grids: [{ id: 'x', rect: LY.in, rows: T, cols: D, make: (t, p) => valueNode(i - 1, t * D + p) }, { id: 'y', rect: LY.out, rows: 1, cols: D, make: (a, cc) => seqPoolValue(i, cc) }],
+          grids: [{ id: 'x', rect: LY.in, rows: T, cols: D, make: (t, p) => valueNode(PV(i), t * D + p) }, { id: 'y', rect: LY.out, rows: 1, cols: D, make: (a, cc) => seqPoolValue(i, cc) }],
           about: [about0, 'Zoom into a number of the result to see where it came from.'],
           code,
         });
@@ -1587,10 +1735,10 @@ x = torch.randn${sI ? pyShape(sI) : '(1, 1, 14, 14)'}
 e = patch(x).flatten(2).transpose(1, 2)            # (1, ${N}, ${E}): one row per patch
 out = e + ${pyAt(i, 'pos')}                                # plus each patch's learned place`;
         if (!have) return plain([`out[n] = W · patch[n] + b + pos[n]   (${N} patches)`], [about0], code);
-        const { nw } = lay, w = lay.Wp.w, pos = lay.pos.w, img = C0 === 1, ink = i === 0;
+        const { nw } = lay, w = lay.Wp.w, pos = lay.pos.w, img = C0 === 1, ink = PV(i) < 0;
         const LY = W2({ t: [0, 0, 1, 0.14], img: [0, 0.24, 0.27, 0.72], P: [0.31, 0.24, 0.16, 0.72], W: [0.51, 0.24, 0.15, 0.72], pos: [0.7, 0.24, 0.13, 0.72], out: [0.87, 0.24, 0.13, 0.72] },
           { t: [0, 0, 1, 0.13], img: [0, 0.18, 0.48, 0.3], P: [0.54, 0.18, 0.46, 0.3], W: [0, 0.54, 0.46, 0.18], pos: [0.54, 0.54, 0.46, 0.18], out: [0, 0.78, 1, 0.21] });
-        const vin = img ? null : tensorView(`pti${i}`, sI, xin, LY.img, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(i - 1, q2), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = img ? null : tensorView(`pti${i}`, sI, xin, LY.img, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         const srcs = Array.from({ length: N }, (_, n) => patchSrc(lay, n));
         return Object.assign(base, {
           summary: sum(`pts${i}`, sO, r.out),
@@ -1612,8 +1760,8 @@ out = e + ${pyAt(i, 'pos')}                                # plus each patch's l
             S.caption(ctx, `out: ${N} × ${E}, open one`, orr, { size: u * 0.8, minW: 80 }); drawHeat(ctx, heatImg(cache, `pto${i}`, N, E, (n, e) => r.out[n * E + e]), orr, N, E);
           },
           grids: [
-            img ? { id: 'x', rect: LY.img, rows: H0, cols: W0, square: true, make: (y, x2) => valueNode(i - 1, y * W0 + x2) } : vin.grid,
-            { id: 'P', rect: LY.P, rows: N, cols: J, make: (n, j) => Object.assign(valueNode(i - 1, srcs[n][j]), { sub: `pixel ${j} of patch ${n + 1}` }) },
+            img ? { id: 'x', rect: LY.img, rows: H0, cols: W0, square: true, make: (y, x2) => valueNode(PV(i), y * W0 + x2) } : vin.grid,
+            { id: 'P', rect: LY.P, rows: N, cols: J, make: (n, j) => Object.assign(valueNode(PV(i), srcs[n][j]), { sub: `pixel ${j} of patch ${n + 1}` }) },
             { id: 'W', rect: LY.W, rows: E, cols: J, make: (e, j) => Dp.stored(X, w[e * J + j], `W[${e}, ${j}], a projection weight`) },
             { id: 'pos', rect: LY.pos, rows: N, cols: E, make: (n, e) => Dp.stored(X, pos[n * E + e], `pos[${n}, ${e}]: patch ${n + 1}'s place (learned)`) },
             { id: 'out', rect: LY.out, rows: N, cols: E, make: (n, e) => patchValue(i, n, e) },
@@ -1639,7 +1787,7 @@ print(torch.allclose(y, (x - mu${im ? '[:, None, None]' : ''}) / torch.sqrt(var$
         const C = lay.ch, sd = Float32Array.from(lay.rvar, (v) => Math.sqrt(v));
         const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.24, 0.44, 0.33], out: [0, 0.66, 0.44, 0.32], mu: [0.52, 0.24, 0.48, 0.13], sd: [0.52, 0.44, 0.48, 0.13], g: [0.52, 0.64, 0.48, 0.13], bb: [0.52, 0.84, 0.48, 0.13] },
           { t: [0, 0, 1, 0.12], in: [0, 0.17, 1, 0.2], out: [0, 0.42, 1, 0.2], mu: [0, 0.68, 0.47, 0.12], sd: [0.53, 0.68, 0.47, 0.12], g: [0, 0.87, 0.47, 0.12], bb: [0.53, 0.87, 0.47, 0.12] });
-        const vin = tensorView(`bni${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(i - 1, q2), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`bni${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         const vout = tensorView(`bno${i}`, sO, r.out, LY.out, { id: 'y', caption: 'out: zoom into any number', make: (q2) => bnValue(i, q2), name: blockTitle(i), tone: base.tone, tiles: 16 });
         const stats = [['mu', 'running mean μ', lay.rmean], ['sd', 'running spread σ', sd], ['g', 'scale γ (learned)', lay.g.w], ['bb', 'shift β (learned)', lay.b.w]];
         return Object.assign(base, {
@@ -1664,7 +1812,7 @@ print(torch.allclose(y[0, 0, 0, 0], x[0, 0, :${c.size}, :${c.size}].mean()))   #
         const about0 = `Average pooling replaces each ${c.size} × ${c.size} window by its mean, channel by channel. The picture shrinks ${c.size} times in each direction and the next filters see a wider area. Max pooling keeps only the strongest response; the average keeps a smoother summary in which every pixel counts. No weights to learn.`;
         if (!have) return plain([`y[c, i, j] = mean of a ${c.size} × ${c.size} window`], [about0], code);
         const LY = W2({ t: [0, 0, 1, 0.12], in: [0, 0.22, 0.45, 0.76], out: [0.55, 0.22, 0.45, 0.76] }, { t: [0, 0, 1, 0.13], in: [0, 0.2, 1, 0.37], out: [0, 0.62, 1, 0.37] });
-        const vin = tensorView(`api${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(i - 1, q2), name: `Block ${i + 1} input`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`api${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
         const vout = tensorView(`apo${i}`, sO, r.out, LY.out, { id: 'y', caption: `out: ${shapeText(sO)}, open a channel`, make: (q2) => avgPoolValue(i, q2), name: blockTitle(i), tone: base.tone, tiles: 16 });
         return Object.assign(base, {
           summary: sum(`aps${i}`, sO, r.out),
@@ -1690,8 +1838,8 @@ noise.eval();  print(noise(x))                     # when the model is used: unc
         if (!have) return plain(['training: y = x + σ·ε (ε ~ N(0, 1));  in use: y = x'], [about0], code);
         const LY = W2({ t: [0, 0, 1, 0.16], in: [0, 0.3, 1, 0.27], tr: [0, 0.7, 1, 0.27] }, { t: [0, 0, 1, 0.16], in: [0, 0.27, 1, 0.28], tr: [0, 0.68, 1, 0.3] });
         const rng = new NA.RNG(613 * (i + 1) + 7), tr = Float32Array.from(xin, (v) => v + sg * rng.gauss()), both = Math.max(maxAbs(xin), maxAbs(tr));
-        const vin = tensorView(`nzi${i}`, sI, xin, LY.in, { id: 'y', max: both, caption: 'when the model is used, as here: y = x, unchanged', make: (q2) => Object.assign(valueNode(i - 1, q2), { sub: 'unchanged by noise when the model is used' }), name: `Block ${i + 1}`, tone: base.tone, tiles: 16 });
-        const vtr = tensorView(`nzt${i}`, sI, tr, LY.tr, { id: 't', max: both, caption: `one training step: every number nudged by σ·ε (σ = ${fmt(sg, 2)})`, make: (q2) => Dp.stored(X, tr[q2], `${fmt(xin[q2], 3)} + noise ${fmt(tr[q2] - xin[q2], 3)}`), name: `Block ${i + 1} (one training step)`, tone: base.tone, tiles: 16 });
+        const vin = tensorView(`nzi${i}`, sI, xin, LY.in, { id: 'y', max: both, caption: 'when the model is used, as here: y = x, unchanged', make: (q2) => Object.assign(valueNode(PV(i), q2), { sub: 'unchanged by noise when the model is used' }), name: `Block ${blockNo(i)}`, tone: base.tone, tiles: 16 });
+        const vtr = tensorView(`nzt${i}`, sI, tr, LY.tr, { id: 't', max: both, caption: `one training step: every number nudged by σ·ε (σ = ${fmt(sg, 2)})`, make: (q2) => Dp.stored(X, tr[q2], `${fmt(xin[q2], 3)} + noise ${fmt(tr[q2] - xin[q2], 3)}`), name: `Block ${blockNo(i)} (one training step)`, tone: base.tone, tiles: 16 });
         return Object.assign(base, {
           summary: sum(`nzs${i}`, sO, r.out),
           inner: (ctx, q, S) => {
@@ -1743,7 +1891,7 @@ y = torch.cat([x, torch.sin(a), torch.cos(a)], -1)   # (1, ${sO ? sO[0] : '?'})`
             S.caption(ctx, 'out: x, then the sines, then the cosines; zoom into one', yr, { size: u * 0.8, minW: 160 }); S.bars(ctx, r.out, yr);
           },
           grids: [
-            { id: 'x', rect: LY.x, rows: 1, cols: Fi, make: (a, f) => valueNode(i - 1, f) },
+            { id: 'x', rect: LY.x, rows: 1, cols: Fi, make: (a, f) => valueNode(PV(i), f) },
             { id: 'B', rect: LY.B, rows: m, cols: Fi, make: (a, f) => Dp.stored(X, freq[a * Fi + f], `B[${a}, ${f}], a random frequency (fixed)`) },
             { id: 'y', rect: LY.y, rows: 1, cols: sO[0], make: (a, kk) => fourierValue(i, kk) },
           ],
@@ -1781,7 +1929,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
               for (const [key, cap, vals] of cols) { const cr = at(key); S.caption(ctx, cap, cr, { size: u * 0.78, minW: 20 }); hbars(ctx, vals, cr, { max: m2 }); }
             },
             grids: [
-              { id: 'x', rect: LY.x, rows: 1, cols: F, make: (a, p) => valueNode(i - 1, p) },
+              { id: 'x', rect: LY.x, rows: 1, cols: F, make: (a, p) => valueNode(PV(i), p) },
               { id: 'W1', rect: LY.W1, rows: U, cols: F, make: (j, p) => Dp.stored(X, W1[j * F + p], `W₁[${j}, ${p}]: unit ${j + 1}'s value weight`) },
               { id: 'W2', rect: LY.W2, rows: U, cols: F, make: (j, p) => Dp.stored(X, W2w[j * F + p], `W₂[${j}, ${p}]: unit ${j + 1}'s gate weight`) },
               { id: 'v', rect: LY.v, rows: U, cols: 1, make: (j) => gatedLinear(i, 0, j, 1) },
@@ -1804,7 +1952,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
             S.caption(ctx, `out: ${T} × ${U}, zoom into one`, orr, { size: u * 0.8, minW: 120 }); drawHeat(ctx, heatImg(cache, `glo${i}`, T, U, (t, j) => r.out[t * U + j]), orr, T, U);
           },
           grids: [
-            { id: 'x', rect: LY.x, rows: T, cols: F, make: (t, p) => valueNode(i - 1, t * F + p) },
+            { id: 'x', rect: LY.x, rows: T, cols: F, make: (t, p) => valueNode(PV(i), t * F + p) },
             { id: 'W', rect: LY.W, rows: 2 * U, cols: F, make: (a, p) => Dp.stored(X, a < U ? W1[a * F + p] : W2w[(a - U) * F + p], a < U ? `W₁[${a}, ${p}] (value)` : `W₂[${a - U}, ${p}] (gate)`) },
             { id: 'o', rect: LY.o, rows: T, cols: U, make: (t, j) => gatedValue(i, t * U + j) },
           ],
@@ -1832,7 +1980,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
             S.caption(ctx, 'out: zoom into one', orr, { size: u * 0.8, minW: 80 }); drawHeat(ctx, heatImg(cache, `pso${i}`, T, D, (t, p) => r.out[t * D + p]), orr, T, D);
           },
           grids: [
-            { id: 'x', rect: LY.x, rows: T, cols: D, make: (t, p) => valueNode(i - 1, t * D + p) },
+            { id: 'x', rect: LY.x, rows: T, cols: D, make: (t, p) => valueNode(PV(i), t * D + p) },
             { id: 'P', rect: LY.P, rows: T, cols: D, make: (t, p) => Dp.stored(X, Ptab[t * D + p], `${learned ? 'P' : 'PE'}[${t}, ${p}]`) },
             { id: 'o', rect: LY.o, rows: T, cols: D, make: (t, p) => positionValue(i, t, p) },
           ],
@@ -1942,7 +2090,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
       }), { about: [`The distance from this example to training example ${j + 1}: subtract one from the other input by input, square the differences and add them up (then a square root). It is a dot product of the difference with itself, so the same circuits compute it as compute a neuron.`, 'k-NN does this for every training example and keeps the k smallest: the model is the training data, and answering is the slow part.'] });
     }
     function classicLevel(i, base, prob) {
-      const b = blocks[i], s = cfgOf(b), kind = b.type, mdl = nums && model && model.classic ? model : null;
+      const b = BK(i), s = cfgOf(b), kind = b.type, mdl = nums && model && model.classic ? model : null;
       const subs = { linear: out.kind === 'classes' ? `logistic regression${s.lambda ? ` · λ ${fmt(s.lambda, 3)}` : ''}` : s.lambda ? `ridge, λ = ${fmt(s.lambda, 3)}` : 'least squares', knn: `k = ${s.k}${s.weights === 'distance' ? ' · by distance' : ''}`, tree: `depth ≤ ${s.depth}`, forest: `${s.trees} trees · depth ≤ ${s.depth}`, boost: `${s.rounds} rounds · η ${fmt(s.eta, 2)} · depth ${s.depth}` };
       base.sub = subs[kind];
       const cls = out.kind === 'classes';
@@ -2155,7 +2303,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
             S.lines(ctx, [`${whose}:`, `${exampleText()}`, `${H} × ${Wd} pixels${C > 1 ? ` × ${C} channels` : ''}, 0 = paper, 1 = ink`, nums ? answerText() : ''].filter(Boolean), S.place(r, W2([0, 0, 0.46, 0.4], [0, 0, 1, 0.2])), { size: u * 0.95, strong: (k) => k === 1 });
             drawHeat(ctx, heatImg(cache, 'in', H, Wd, (i, j) => P.x[i * Wd + j], { ink: true }), S.place(r, pic), H, Wd, true);
           },
-          grids: [{ id: 'px', rect: pic, rows: H, cols: Wd, square: true, make: (i, j) => Dp.stored(X, P.x[i * Wd + j], inputLabel(i * Wd + j)) }],
+          grids: [{ id: 'px', rect: pic, rows: H, cols: Wd, square: true, make: (i, j) => Dp.stored(X, P.x[i * Wd + j], inputLabel(i * Wd + j), 'input') }],
           about: [about0, `Shown: ${whose}, ${exampleText()}. Zoom into a pixel to see its number as the 32 bits stored in memory.`], code,
         });
       }
@@ -2178,7 +2326,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
             if (nums) { ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(X0(n), Y0(P.logits[0]), 3.4, 0, Math.PI * 2); ctx.fill(); }
             S.caption(ctx, 'the window, value by value: zoom into one', br, { size: u * 0.8, minW: 150 }); S.bars(ctx, vals, br);
           },
-          grids: [{ id: 'x', rect: bars, rows: 1, cols: n, make: (i, j) => Dp.stored(X, vals[j], inputLabel(j)) }],
+          grids: [{ id: 'x', rect: bars, rows: 1, cols: n, make: (i, j) => Dp.stored(X, vals[j], inputLabel(j), 'input') }],
           about: [about0, `Shown: ${whose}, ${exampleText()}. Every number inside the model is computed from these ${n} values. Zoom into a bar to see a value as the 32 bits stored in memory.`], code,
         });
       }
@@ -2227,7 +2375,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
           S.caption(ctx, 'the input numbers: zoom into one', br, { size: u * 0.8, minW: 150 }); S.bars(ctx, P.x, br, { max: 1 });
           colLabels(ctx, S, Array.from(P.x, (v, k) => `${inputLabel(k)} = ${fmt(v, 3)}`), br, { size: u * 0.8 });
         },
-        grids: [{ id: 'x', rect: bars, rows: 1, cols: q.dim, make: (i, j) => Dp.stored(X, P.x[j], inputLabel(j)) }],
+        grids: [{ id: 'x', rect: bars, rows: 1, cols: q.dim, make: (i, j) => Dp.stored(X, P.x[j], inputLabel(j), 'input') }],
         about: [about0, `Shown: ${whose}, ${exampleText()}. Every number inside the model, at every level, is computed from this one example. Zoom into a bar to see the number as the 32 bits stored in memory.`], code,
       });
     }
@@ -2275,8 +2423,8 @@ print(torch.allclose(out, glu(x)))                 # True`;
 z = grab['z']                                      # ${out.kind === 'tokens' ? `(1, ${T0}, ${K}): a score for every token at every position` : `(1, ${K})`}
 ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # the answer and the target' : `p = z.softmax(-1)                                  # probabilities\nprint(p.argmax(-1), p.max(-1).values)              # the answer${out.kind === 'tokens' ? 's' : ''} and how sure`}`;
       if (model && model.classic && nums) return classicOut(base);
-      if (!nums) return Object.assign(base, { inner: plainLevel([out.kind === 'value' ? (isClassicB((blocks[0] || {}).type) ? 'ŷ: the model\'s answer' : 'ŷ = W·x + b') : isClassicB((blocks[0] || {}).type) ? 'p: a probability per class' : 'z = W·x + b;  p = softmax(z)'], prob), about: [about0], code });
-      const lay = model.layers[nb], Wt = lay.W.w, bb = lay.b.w, xin = inVals(nb), Fn = lay.nIn;
+      if (!nums) return Object.assign(base, { inner: plainLevel([out.kind === 'value' ? (isClassicB((BK(0) || {}).type) ? 'ŷ: the model\'s answer' : 'ŷ = W·x + b') : isClassicB((BK(0) || {}).type) ? 'p: a probability per class' : 'z = W·x + b;  p = softmax(z)'], prob), about: [about0], code });
+      const lay = layOf(nb), Wt = lay.W.w, bb = lay.b.w, xin = inVals(nb), Fn = lay.nIn;
       const lossLine = `loss for this example: ${lossText()}`;
       if (out.kind === 'tokens') {
         const T = T0, V = K, labels = Array.from(P.ids, word), probsAll = new Float32Array(T * V);
@@ -2387,9 +2535,9 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
     //      of tokens, or of feature maps), wired by their weights; operations that act on every number alone (an
     //      activation, a norm, dropout, pooling) are thin pills between them. A column opens its layer, a node its
     //      neuron, token or channel, exactly as in the boxes view; a part of your own is a dashed box whose tab opens it.
-    const SHORT = { conv: 'Conv', conv1d: 'Conv1d', transformer: 'Transf.', attention: 'Attention', patches: 'Patches', fourier: 'Fourier', gated: 'GLU', rnn: 'RNN', dense: 'Dense', position: 'Pos.', forest: 'Forest', boost: 'Boosting', knn: 'k-NN', linear: 'Linear', tree: 'Tree' };
+    const SHORT = { parallel: 'Parallel', conv: 'Conv', conv1d: 'Conv1d', transformer: 'Transf.', attention: 'Attention', patches: 'Patches', fourier: 'Fourier', gated: 'GLU', rnn: 'RNN', dense: 'Dense', position: 'Pos.', forest: 'Forest', boost: 'Boosting', knn: 'k-NN', linear: 'Linear', tree: 'Tree' };
     const PILLS = new Set(['activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'pool', 'avgpool', 'flatten', 'gap', 'seqpool', 'position']);
-    const sampled = (n, m) => (n <= m ? NA.range(n) : Array.from({ length: m }, (_, k) => Math.round((k * (n - 1)) / (m - 1))));
+    const sampled = (n, m) => (n <= m ? NA.range(n) : m <= 1 ? [0] : Array.from({ length: m }, (_, k) => Math.round((k * (n - 1)) / (m - 1))));
     const pillText = (b) => { const c = cfgOf(b); return { activation: ACT(c.act).label, dropout: `dropout ${Math.round(c.p * 100)}%`, noise: `noise σ ${c.sigma}`, layernorm: 'LayerNorm', batchnorm: 'BatchNorm', pool: `max pool ${c.size}×${c.size}`, avgpool: `avg pool ${c.size}×${c.size}`, flatten: 'flatten', gap: 'global average', seqpool: `${c.mode} position${c.mode === 'last' ? '' : 's'}`, position: `+ positions` }[b.type] || NAME[b.type] || b.type; };
     // one position of a sequence, as its vector of numbers
     function vectorNode(title, sub, vals, make, about, code) {
@@ -2408,50 +2556,78 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
       const cols = [];
       cols.push({ role: 'input', bi: -1, node: inputNode(), kind: d.error ? 'pill' : inp.kind === 'vector' ? 'neurons' : inp.kind === 'image' ? 'image' : 'seq', n: inp.dim, C: inp.c, Hh: inp.h, Ww: inp.w, T: inp.len, D: inp.kind === 'series' ? inp.dim : inp.embed });
       if (seq && !d.error) cols.push({ role: 'embed', bi: -2, node: embedNode(), kind: 'seq', T: inp.len, D: inp.embed });
-      blocks.forEach((b, i) => {
+      const colFor = (i, b) => {
         const s = outS(i), c = { role: 'block', bi: i, b, node: blockNode(i) };
         if (isClassicB(b.type)) c.kind = 'classic';
         else if (PILLS.has(b.type) || !s) c.kind = 'pill';
         else if (s.length === 1) Object.assign(c, { kind: 'neurons', n: s[0] });
         else if (s.length === 2) Object.assign(c, { kind: 'seq', T: s[0], D: s[1] });
         else Object.assign(c, { kind: 'image', C: s[0], Hh: s[1], Ww: s[2] });
-        cols.push(c);
+        return c;
+      };
+      // parallel branches: their blocks in stacks of columns, one band (lane) per branch, then the merge's column
+      const regions = [];
+      blocks.forEach((b, i) => {
+        if (b.type === 'parallel' && Array.isArray(b.branches) && SH(i) && SH(i).branches) {
+          const lanes = b.branches.map((_, br) => laneSlots(i, br).map((q) => Object.assign(colFor(q, BK(q)), { lane: br, par: i })));
+          const len = Math.max(0, ...lanes.map((l) => l.length)), stacks = [];
+          for (let j = 0; j < len; j++) { const sk = { kind: 'stack', members: lanes.map((l) => l[j]).filter(Boolean), par: i }; if (!j) for (const q of sk.members) q.firstInLane = true; stacks.push(sk); cols.push(sk); }
+          const m = Object.assign(colFor(i, b), { merge: true, lanes, par: i });
+          cols.push(m);
+          regions.push({ i, lanes, stacks, m });
+          return;
+        }
+        cols.push(colFor(i, b));
       });
       if (!d.error) cols.push(out.kind === 'tokens' ? { role: 'output', bi: nb, node: outputNode(), kind: 'seq', T: T0, D: K } : { role: 'output', bi: nb, node: outputNode(), kind: 'neurons', n: K });
       const named = (c) => c.role === 'output' && c.kind === 'neurons'; // the answers, with their names beside them
-      const weight = (c) => (c.kind === 'pill' ? 0.36 : c.kind === 'classic' ? 1.4 : named(c) ? 1.6 : 1), total = cols.reduce((s, c) => s + weight(c), 0), unit = (W * 0.94) / total;
+      const weight = (c) => (c.kind === 'stack' ? Math.max(0.36, ...c.members.map((q) => weight(q))) : c.kind === 'pill' ? 0.36 : c.kind === 'classic' ? 1.4 : named(c) ? 1.6 : 1), total = cols.reduce((s, c) => s + weight(c), 0), unit = (W * 0.94) / total;
       let x = W * 0.045;
-      for (const c of cols) { const w = unit * weight(c); Object.assign(c, { x0: x, x1: x + w, cx: named(c) ? x + w * 0.3 : x + w / 2 }); x += w; }
+      for (const c of cols) {
+        const w = unit * weight(c);
+        Object.assign(c, { x0: x, x1: x + w, cx: named(c) ? x + w * 0.3 : x + w / 2 });
+        if (c.members) for (const q of c.members) Object.assign(q, { x0: c.x0, x1: c.x1, cx: c.cx });
+        x += w;
+      }
+      // each lane's band: its share of the height, with room at its top for its blocks' names
+      const headRoom = Math.min(18, areaH * 0.08);
+      for (const g of regions) {
+        const k = g.lanes.length, bandH = areaH / k;
+        g.bands = NA.range(k).map((br) => ({ y0: top + br * bandH, y1: top + (br + 1) * bandH }));
+        g.lanes.forEach((lane, br) => { for (const q of lane) Object.assign(q, { top: g.bands[br].y0 + headRoom, bot: g.bands[br].y1 - bandH * 0.05 }); });
+      }
+      const flat = cols.flatMap((c) => (c.kind === 'stack' ? c.members : [c]));
       // the values each column shows for the example, and the largest of them (the colour scale)
-      const valsOf = (c) => (!nums ? null : c.role === 'input' ? P.x : c.role === 'embed' ? P.emb : c.role === 'output' ? P.logits : P.layers[c.bi] && P.layers[c.bi].out);
+      const valsOf = (c) => (!nums ? null : c.role === 'input' ? P.x : c.role === 'embed' ? P.emb : c.role === 'output' ? P.logits : pOf(c.bi) && pOf(c.bi).out);
       // ---- the geometry of each column, and the grid that opens its nodes
-      cols.forEach((c, ci) => {
-        const slot = (c.x1 - c.x0) / (named(c) ? 1.6 : 1);
+      flat.forEach((c, ci) => {
+        const slot = (c.x1 - c.x0) / (named(c) ? 1.6 : 1), T0 = c.top ?? top, AH = (c.bot ?? bot) - T0;
+        c.mid = T0 + AH / 2;
         c.vals = valsOf(c); c.max = c.vals ? maxAbs(c.vals) : 1;
         if (c.kind === 'neurons') {
-          c.show = sampled(c.n, clamp(Math.floor(areaH / 15), 3, 16)); const m = c.show.length, cell = areaH / m;
+          c.show = sampled(c.n, clamp(Math.floor(AH / 15), c.lane === undefined ? 3 : 2, 16)); const m = c.show.length, cell = AH / m;
           c.s = clamp(Math.min(slot * 0.46, cell * 0.8), 7, 36); c.nw = c.s; c.nh = c.s;
-          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: top + cell * (k + 0.5) }));
-          if (nums) c.grid = { id: `n${ci}`, rect: [(c.cx - c.s / 2) / W, top / H, c.s / W, areaH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
+          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: T0 + cell * (k + 0.5) }));
+          if (nums) c.grid = { id: `n${ci}`, rect: [(c.cx - c.s / 2) / W, T0 / H, c.s / W, AH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
         } else if (c.kind === 'seq') {
-          c.show = sampled(c.T, clamp(Math.floor(areaH / 13), 3, 16)); const m = c.show.length, cell = areaH / m;
+          c.show = sampled(c.T, clamp(Math.floor(AH / 13), c.lane === undefined ? 3 : 2, 16)); const m = c.show.length, cell = AH / m;
           c.nw = clamp(slot * 0.62, 18, 120); c.nh = clamp(cell * 0.62, 4, 22);
-          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: top + cell * (k + 0.5) }));
-          if (nums) c.grid = { id: `t${ci}`, rect: [(c.cx - c.nw / 2) / W, top / H, c.nw / W, areaH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
+          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: T0 + cell * (k + 0.5) }));
+          if (nums) c.grid = { id: `t${ci}`, rect: [(c.cx - c.nw / 2) / W, T0 / H, c.nw / W, AH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
         } else if (c.kind === 'image') {
-          c.show = sampled(c.C, clamp(Math.floor(areaH / 50), 1, 6)); const m = c.show.length, cell = areaH / m;
-          c.nw = c.nh = clamp(Math.min(slot * 0.66, cell * 0.84), 14, 96);
-          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: top + cell * (k + 0.5) }));
-          if (nums) c.grid = { id: `c${ci}`, rect: [(c.cx - c.nw / 2) / W, top / H, c.nw / W, areaH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
-        } else if (c.kind === 'classic') { c.nw = c.nh = Math.min(slot * 0.82, areaH * 0.6); c.nodes = [{ idx: 0, x: c.cx, y: mid }]; }
-        else { c.nw = clamp(slot * 0.56, 14, 30); c.nh = areaH * 0.5; c.nodes = []; }
+          c.show = sampled(c.C, clamp(Math.floor(AH / 50), 1, 6)); const m = c.show.length, cell = AH / m;
+          c.nw = c.nh = clamp(Math.min(slot * 0.66, cell * 0.84), 10, 96);
+          c.nodes = c.show.map((idx, k) => ({ idx, x: c.cx, y: T0 + cell * (k + 0.5) }));
+          if (nums) c.grid = { id: `c${ci}`, rect: [(c.cx - c.nw / 2) / W, T0 / H, c.nw / W, AH / H], rows: m, cols: 1, make: (row) => openNode(c, c.show[row]) };
+        } else if (c.kind === 'classic') { c.nw = c.nh = Math.min(slot * 0.82, AH * 0.6); c.nodes = [{ idx: 0, x: c.cx, y: c.mid }]; }
+        else { c.nw = clamp(slot * 0.56, 14, 30); c.nh = AH * (c.lane === undefined ? 0.5 : 0.7); c.nodes = []; }
       });
       // ---- what a node opens: the same levels as the boxes view
       function openNode(c, idx) {
         if (c.role === 'input') {
-          if (c.kind === 'neurons') return Dp.stored(X, P.x[idx], inputLabel(idx));
-          if (c.kind === 'image') return channelNode('in', inputShape(), P.x, idx, { name: 'Input', tone: 's3', make: (q) => Dp.stored(X, P.x[q], inputLabel(q)) });
-          if (inp.kind === 'series') return Dp.stored(X, P.x[idx], inputLabel(idx));
+          if (c.kind === 'neurons') return Dp.stored(X, P.x[idx], inputLabel(idx), 'input');
+          if (c.kind === 'image') return channelNode('in', inputShape(), P.x, idx, { name: 'Input', tone: 's3', make: (q) => Dp.stored(X, P.x[q], inputLabel(q), 'input') });
+          if (inp.kind === 'series') return Dp.stored(X, P.x[idx], inputLabel(idx), 'input');
           return Object.assign(Dp.stored(X, P.ids[idx], `token ${idx}: ${quote(P.ids[idx])}`), { sub: `token id ${P.ids[idx]}` });
         }
         if (c.role === 'embed') return vectorNode(`x₀ at ${tok(idx)}`, `${D0} numbers: its token's row plus its position's`, P.emb.subarray(idx * D0, (idx + 1) * D0), (j) => valueNode(-1, idx * D0 + j), ['The vector the model starts from at this position: the token\'s row of the embedding table plus the row for its position. Zoom into a number for the addition.'], `x0 = model.tok(ids) + model.pos(torch.arange(ids.shape[1]))\nprint(x0[0, ${idx}])`);
@@ -2461,7 +2637,7 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           return denseNeuron(nb, 0, idx);
         }
         if (c.kind === 'neurons') return valueNode(c.bi, idx);
-        if (c.kind === 'seq') return vectorNode(`${blockTitle(c.bi)} at ${tok(idx)}`, `${c.D} numbers`, c.vals.subarray(idx * c.D, (idx + 1) * c.D), (j) => valueNode(c.bi, idx * c.D + j), [`What block ${c.bi + 1} hands on at ${tok(idx)}: ${c.D} numbers. Zoom into any of them for the computation behind it.`], `# what block ${c.bi + 1} hands on, at position ${idx}\nprint(grab['out'][0, ${idx}])`);
+        if (c.kind === 'seq') return vectorNode(`${blockTitle(c.bi)} at ${tok(idx)}`, `${c.D} numbers`, c.vals.subarray(idx * c.D, (idx + 1) * c.D), (j) => valueNode(c.bi, idx * c.D + j), [`What block ${blockNo(c.bi)} hands on at ${tok(idx)}: ${c.D} numbers. Zoom into any of them for the computation behind it.`], `# what block ${blockNo(c.bi)} hands on, at position ${idx}\nprint(grab['out'][0, ${idx}])`);
         const s3 = [c.C, c.Hh, c.Ww];
         return channelNode(`nc${c.bi}`, s3, c.vals, idx, { name: blockTitle(c.bi), tone: tone(c.bi), make: (q) => valueNode(c.bi, q) });
       }
@@ -2470,20 +2646,36 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
       const anchorOut = (c, k) => [c.cx + c.nw / 2, c.nodes[k].y], anchorIn = (c, k) => [c.cx - c.nw / 2, c.nodes[k].y];
       const weightsOf = (c) => {
         if (!nums || !model || model.classic) return null;
-        if (c.role === 'output') { const lay = model.layers[nb]; return { F: lay.nIn, w: (j, i) => lay.W.w[j * lay.nIn + i] }; }
-        const lay = model.layers[c.bi];
+        if (c.role === 'output') { const lay = layOf(nb); return { F: lay.nIn, w: (j, i) => lay.W.w[j * lay.nIn + i] }; }
+        const lay = layOf(c.bi);
         if (!lay) return null;
         if (c.b.type === 'dense') return { F: lay.nIn, w: (j, i) => lay.W.w[j * lay.nIn + i] };
         if (c.b.type === 'gated') return { F: lay.nIn, w: (j, i) => lay.W1.w[j * lay.nIn + i] };
         if (c.b.type === 'fourier') return { F: lay.F, w: (j, i) => (j < lay.F ? (i === j ? 1 : 0) : lay.freq[((j - lay.F) % lay.m) * lay.F + i]) };
         return null;
       };
-      for (let ci = 1; ci < cols.length; ci++) {
-        const B = cols[ci];
+      // the wires into a merge: each number of a branch to where it lands (joined: after the earlier branches' numbers)
+      function mergeWires(A, B, br, pair) {
+        if (A.kind !== B.kind || !A.show || !B.show) { bands.push([A, B]); return; }
+        const merge = cfgOf(B.b).merge || 'concat', g = regions.find((q) => q.m === B);
+        let off = 0;
+        if (merge === 'concat' && B.kind !== 'seq') for (let q = 0; q < br; q++) { const sh = shapeAfter(laneEnd(g.i, q)); off += sh ? sh[0] : 0; }
+        for (const [q, i2] of A.show.entries()) { const k2 = B.show.indexOf(merge === 'concat' && B.kind !== 'seq' ? off + i2 : i2); if (k2 >= 0) pair.list.push({ a: anchorOut(A, q), b: anchorIn(B, k2), v: 1, kind: 'id' }); }
+      }
+      // which column feeds which: one after another, and through every lane of parallel branches into their merge
+      const spine = cols.filter((c) => c.kind !== 'stack'), links = [];
+      for (let j = 1; j < spine.length; j++) {
+        const B = spine[j];
         if (B.kind === 'pill') continue;
-        let ai = ci - 1;
-        while (ai > 0 && cols[ai].kind === 'pill') ai--;
-        const A = cols[ai], pair = { from: ai, to: ci, list: [] };
+        let a = j - 1;
+        while (a > 0 && spine[a].kind === 'pill') a--;
+        const A = spine[a];
+        if (!B.merge) { links.push({ A, B }); continue; }
+        B.lanes.forEach((lane, br) => { let from = A; for (const q of lane) { if (q.kind === 'pill') continue; links.push({ A: from, B: q }); from = q; } links.push({ A: from, B, lane: br }); });
+      }
+      for (const { A, B, lane } of links) {
+        const pair = { list: [] };
+        if (lane !== undefined) { mergeWires(A, B, lane, pair); if (pair.list.length) { pair.max = 1; edges.push(pair); } continue; }
         if (B.kind === 'neurons' && A.kind === 'neurons') {
           const Wt = weightsOf(B);
           if (Wt && Wt.F === A.n) { for (const [k, j] of B.show.entries()) for (const [q, i] of A.show.entries()) pair.list.push({ a: anchorOut(A, q), b: anchorIn(B, k), v: Wt.w(j, i), kind: 'w' }); }
@@ -2491,9 +2683,9 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           else if (!nums && B.role === 'output') { for (const k of B.nodes.keys()) for (const q of A.nodes.keys()) pair.list.push({ a: anchorOut(A, q), b: anchorIn(B, k), v: 0, kind: 'n' }); }
           else bands.push([A, B]);
         } else if (B.kind === 'seq' && A.kind === 'seq' && A.T === B.T && B.role !== 'embed') {
-          const lay = nums && B.role === 'block' ? model.layers[B.bi] : null, type = B.b ? B.b.type : 'dense';
+          const lay = nums && B.role === 'block' ? layOf(B.bi) : null, type = B.b ? B.b.type : 'dense';
           if (type === 'attention' || type === 'transformer') {
-            const r = nums ? P.layers[B.bi] : null, T = B.T, Hh = lay ? lay.heads : 1, causal = cfgOf(B.b).causal !== false;
+            const r = nums ? pOf(B.bi) : null, T = B.T, Hh = lay ? lay.heads : 1, causal = cfgOf(B.b).causal !== false;
             for (const [k, t] of B.show.entries()) for (const [q, s2] of A.show.entries()) {
               if (causal && s2 > t) continue;
               let w = 0;
@@ -2555,6 +2747,13 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           ctx.fillStyle = theme.c('ink', 0.86); rrect(x + 6, y - 1, tw, H * 0.05 * ky, 7); ctx.fill();
           S.text(ctx, g.name, x + 6 + tw / 2, y - 1 + H * 0.025 * ky, { size: Math.min(u * 0.9, H * 0.032 * ky), w: 650, align: 'center', color: theme.c('panel'), maxW: tw - 8 });
         }
+        // parallel branches: a box around their lanes and merge, a letter on each lane
+        for (const g of regions) {
+          const xA = X0(g.stacks.length ? g.stacks[0].x0 : g.m.x0) + 3, xB = X0(g.m.x1) - 3, y = Y0(H * 0.03), h = Y0(H * 0.885) - y;
+          ctx.fillStyle = theme.c('s3', theme.dark ? 0.05 : 0.035); rrect(xA, y, xB - xA, h, 12); ctx.fill();
+          ctx.setLineDash([3, 4]); ctx.strokeStyle = theme.c('s3', 0.6); ctx.lineWidth = 1.2; rrect(xA, y, xB - xA, h, 12); ctx.stroke(); ctx.setLineDash([]);
+          g.bands.forEach((bd, br) => { if (br) { ctx.strokeStyle = theme.c('line', 0.9); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(xA + 6, Y0(bd.y0)); ctx.lineTo(X0(g.m.x0) - 2, Y0(bd.y0)); ctx.stroke(); } });
+        }
         // bands where the shape changes (a picture into a vector, a sequence pooled, a classic model's answer)
         for (const [A, B] of bands) {
           const ax = X0(A.cx + A.nw / 2) + 2, bx = X0(B.cx - B.nw / 2) - 2, ay0 = Y0(A.nodes.length ? A.nodes[0].y - A.nh / 2 : mid - 20), ay1 = Y0(A.nodes.length ? A.nodes[A.nodes.length - 1].y + A.nh / 2 : mid + 20);
@@ -2585,24 +2784,35 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           }
         }
         // the columns
-        for (const c of cols) {
+        for (const c of flat) {
           const cx = X0(c.cx), slot = ((c.x1 - c.x0) * kx) / (named(c) ? 1.6 : 1);
+          // in a lane: a small name over its band
+          if (c.lane !== undefined && c.kind !== 'pill') {
+            const fs = Math.max(6.5, Math.min(u * 0.78, headRoom * ky * 0.62));
+            let t1 = blockTitle(c.bi);
+            ctx.font = S.font(600, fs);
+            if (ctx.measureText(t1).width > slot - 4) t1 = `${blockNo(c.bi)} · ${SHORT[c.b.type] || NAME[c.b.type] || c.b.type}`;
+            // clear of the lane's letter, which sits at the top left of the first column of the lanes
+            const tw = Math.min(ctx.measureText(t1).width, slot - 2), chipR = c.firstInLane ? X0(c.x0) + 9 + u * 1.4 : -Infinity, ty = Y0(c.top - headRoom * 0.5);
+            if (cx - tw / 2 < chipR) S.text(ctx, t1, chipR, ty, { size: fs, w: 600, color: theme.c('ink-2'), maxW: Math.max(20, X0(c.x1) - chipR - 2) });
+            else S.text(ctx, t1, cx, ty, { size: fs, w: 600, align: 'center', color: theme.c('ink-2'), maxW: slot - 2 });
+          }
           // the header: what the layer is, and what it is made of
-          if (c.kind !== 'pill') {
+          if (c.kind !== 'pill' && c.lane === undefined) {
             let t1 = c.role === 'input' ? 'Input' : c.role === 'embed' ? 'Embedding' : c.role === 'output' ? 'Output' : blockTitle(c.bi), t2 = c.node.sub || '';
             const fs = Math.min(u * 1.02, H * 0.04 * ky);
             ctx.font = S.font(650, fs);
-            if (c.b && ctx.measureText(t1).width > slot - 4) t1 = `${c.bi + 1} · ${SHORT[c.b.type] || t1.replace(/^\d+ · /, '')}`; // a narrow column: the short name
+            if (c.b && ctx.measureText(t1).width > slot - 4) t1 = `${blockNo(c.bi)} · ${SHORT[c.b.type] || t1.replace(/^\S+ · /, '')}`; // a narrow column: the short name
             S.text(ctx, t1, cx, Y0(H * 0.085), { size: fs, w: 650, align: 'center', maxW: slot - 4 });
             const fs2 = Math.min(u * 0.82, H * 0.032 * ky);
             S.text(ctx, fitting([t2, t2.split(' · ')[0], ''], slot - 4, 500, fs2), cx, Y0(H * 0.13), { size: fs2, align: 'center', color: theme.c('muted'), maxW: slot - 4 });
             if (c.b && c.b.type === 'dense' && !b2acts(c.b)) { const a = ACT(cfgOf(c.b).act); if (a.id !== 'linear') NA.ui.drawActGlyph(ctx, a, cx - 11, Y0(H * 0.155), 22, Math.min(11, H * 0.03 * ky), theme.c('ink'), theme.c('line-2')); }
           }
           if (c.kind === 'pill') {
-            const w = c.nw * kx, h = c.nh * ky, x = cx - w / 2, y = Y0(mid) - h / 2, bad = c.bi >= 0 && problemOf(c.bi);
+            const w = c.nw * kx, h = c.nh * ky, x = cx - w / 2, y = Y0(c.mid) - h / 2, bad = c.bi >= 0 && problemOf(c.bi);
             ctx.fillStyle = theme.c('panel-2'); rrect(x, y, w, h, w / 2); ctx.fill();
             ctx.strokeStyle = theme.c(bad ? 'critical' : c.bi >= 0 ? tone(c.bi) : 'line-2', 0.8); ctx.lineWidth = 1.3; rrect(x, y, w, h, w / 2); ctx.stroke();
-            ctx.save(); ctx.translate(cx, Y0(mid)); ctx.rotate(-Math.PI / 2);
+            ctx.save(); ctx.translate(cx, Y0(c.mid)); ctx.rotate(-Math.PI / 2);
             S.text(ctx, c.b ? pillText(c.b) : 'no data', 0, 0, { size: Math.min(u * 0.85, w * 0.6), w: 600, align: 'center', color: theme.c('ink-2'), maxW: h - 10 });
             ctx.restore();
             continue;
@@ -2662,11 +2872,21 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           // how many there are when only some are drawn
           const total = c.kind === 'neurons' ? c.n : c.kind === 'seq' ? c.T : c.kind === 'image' ? c.C : 0;
           const fs3 = Math.min(u * 0.78, H * 0.03 * ky);
-          if (total > c.nodes.length) S.text(ctx, fitting([`${c.nodes.length} of ${fmtInt(total)} shown`, `${c.nodes.length} of ${fmtInt(total)}`, `${c.nodes.length}/${fmtInt(total)}`], slot - 2, 500, fs3), cx, Y0(H * 0.872), { size: fs3, align: 'center', color: theme.c('muted'), maxW: slot - 2 });
+          if (total > c.nodes.length && c.lane === undefined) S.text(ctx, fitting([`${c.nodes.length} of ${fmtInt(total)} shown`, `${c.nodes.length} of ${fmtInt(total)}`, `${c.nodes.length}/${fmtInt(total)}`], slot - 2, 500, fs3), cx, Y0(H * 0.872), { size: fs3, align: 'center', color: theme.c('muted'), maxW: slot - 2 });
+        }
+        // the lanes' letters, over the wires; an empty lane says what it does
+        for (const g of regions) {
+          const x0 = g.stacks.length ? g.stacks[0].x0 : g.m.x0, xA = X0(x0) + 3, fs = u * 0.85;
+          g.bands.forEach((bd, br) => {
+            const y = Y0(bd.y0) + fs * 0.95;
+            ctx.fillStyle = theme.c('panel', 0.92); rrect(xA + 3, y - fs * 0.78, fs * 1.6, fs * 1.56, 4); ctx.fill();
+            S.text(ctx, 'ABCD'[br], xA + 3 + fs * 0.8, y, { size: fs, w: 700, align: 'center', color: theme.c('s3') });
+            if (!g.lanes[br].length) S.text(ctx, 'the input passes through', (xA + X0(g.m.x0)) / 2, Y0((bd.y0 + bd.y1) / 2) - fs * 0.9, { size: fs * 0.85, align: 'center', color: theme.c('muted'), maxW: Math.max(40, X0(g.m.x0) - xA - 12) });
+          });
         }
         // how to read it
         const legend = [GP && GP.dims === 2 ? 'Each square is a neuron, showing its output at every point of the input plane (blue +, orange −; the dot is this example).' : GP ? 'Each square is a neuron, showing its output along x (the line marks this example).' : 'Each square is a neuron, coloured by its output on this example (blue +, orange −); strips are positions of a sequence, tiles are feature maps.',
-          `Wires: the learned weights${seq || cols.some((c) => c.b && (c.b.type === 'attention' || c.b.type === 'transformer')) ? ', and purple: where attention looks' : ''}. Blue +, orange −, thicker is larger. Click a layer or a node to open it.`];
+          `Wires: the learned weights${seq || flat.some((c) => c.b && (c.b.type === 'attention' || c.b.type === 'transformer')) ? ', and purple: where attention looks' : ''}. Blue +, orange −, thicker is larger. Click a layer or a node to open it.`];
         S.lines(ctx, legend, { x: r.x, y: Y0(H * 0.905), w: r.w, h: H * 0.095 * ky }, { size: u * 0.8, colorOf: () => theme.c('muted') });
       };
       const b2acts = (b) => Array.isArray(b.acts);
@@ -2709,13 +2929,13 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
       }
       // ---- your parts: their boxes, and a tab on each that opens it
       const groupBoxes = runs.map((run) => {
-        const inside = cols.filter((c) => c.role === 'block' && c.bi >= run.from && c.bi < run.to), def = (L.setup.parts || []).find((p) => p.id === run.part) || { name: 'Your part' };
+        const inside = flat.filter((c) => c.role === 'block' && ((c.bi >= run.from && c.bi < run.to) || (c.par !== undefined && c.par >= run.from && c.par < run.to))), def = (L.setup.parts || []).find((p) => p.id === run.part) || { name: 'Your part' };
         return { run, name: def.name, x0: Math.min(...inside.map((c) => c.x0)), x1: Math.max(...inside.map((c) => c.x1)), tabW: Math.min(W * 0.3, def.name.length * 7.5 + 24) };
       });
       const tabs = groupBoxes.map((g) => Object.assign(groupNode(g.run), { shape: 'ghost', rect: [(g.x0 + 9) / W, 0, Math.min(g.x1 - g.x0 - 12, g.tabW) / W, 0.062] }));
-      const children = [...tabs, ...cols.map((c) => Object.assign(c.node, { shape: 'ghost', rect: [c.x0 / W, 0.065, (c.x1 - c.x0) / W, 0.83] }))];
+      const children = [...tabs, ...flat.map((c) => Object.assign(c.node, { shape: 'ghost', rect: c.lane !== undefined ? [c.x0 / W, (c.top - headRoom) / H, (c.x1 - c.x0) / W, (c.bot - c.top + headRoom) / H] : [c.x0 / W, 0.065, (c.x1 - c.x0) / W, 0.83] }))];
       return {
-        id: 'model', title: 'Your model', sub: rootSub, gridsFirst: true, inner, children, grids: cols.filter((c) => c.grid).map((c) => c.grid),
+        id: 'model', title: 'Your model', sub: rootSub, gridsFirst: true, inner, children, grids: flat.filter((c) => c.grid).map((c) => c.grid),
         get about() { return rootAbout('network'); },
         get code() { return rootCode(); },
         codeLabel: 'Python · PyTorch · your model, its data and its training',
@@ -2728,7 +2948,7 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
     const firstProblem = !ok ? (d.error ? { reason: d.error } : chk.problem || (shapes.find((s) => s && s.problem) || {}).problem) : null;
     const rootSub = ok ? `${fmtInt(nParams)} parameters · ${st.live ? `trained, step ${fmtInt(L.step)}` : 'untrained'}` : 'does not fit together yet';
     const rootAbout = (style) => [
-      `${style === 'network' ? 'The model you built, drawn as a network: the input on the left, every layer as a column of its neurons (or of the positions of a sequence, or of feature maps) wired to the one before by its learned weights, and the answer on the right. Thin pills are operations on every number alone (activations, norms, dropout, pooling).' : isClassicB((blocks[0] || {}).type) && nb === 1 ? `The model you chose, as boxes: the input, the ${(NAME[blocks[0].type] || '').toLowerCase()} (a whole model on its own, not a network) and its answer.` : `The model you built, as boxes: the input, ${nb ? `the ${nb} block${nb === 1 ? '' : 's'} you stacked` : 'no hidden blocks (a linear model)'}${seq ? ', the embedding' : ''} and the output head, with the shape of the data on every arrow.`}${ok ? ` It has ${fmtInt(nParams)} learned numbers (parameters).` : ` It does not fit together yet: ${firstProblem ? firstProblem.reason : 'see the red block'}`}`,
+      `${style === 'network' ? 'The model you built, drawn as a network: the input on the left, every layer as a column of its neurons (or of the positions of a sequence, or of feature maps) wired to the one before by its learned weights, and the answer on the right. Thin pills are operations on every number alone (activations, norms, dropout, pooling).' : isClassicB((BK(0) || {}).type) && nb === 1 ? `The model you chose, as boxes: the input, the ${(NAME[BK(0).type] || '').toLowerCase()} (a whole model on its own, not a network) and its answer.` : `The model you built, as boxes: the input, ${nb ? `the ${nb} block${nb === 1 ? '' : 's'} you stacked` : 'no hidden blocks (a linear model)'}${seq ? ', the embedding' : ''} and the output head, with the shape of the data on every arrow.`}${ok ? ` It has ${fmtInt(nParams)} learned numbers (parameters).` : ` It does not fit together yet: ${firstProblem ? firstProblem.reason : 'see the red block'}`}`,
       P ? `Everything inside is computed on one example, ${whose}: ${exampleText()}. ${answerText()[0] ? answerText()[0].toUpperCase() + answerText().slice(1) : ''}.${st.live ? '' : ' These are untrained weights, the ones the next run starts from: train to see learned ones.'}` : ok ? 'There is no example to run yet.' : 'Once it fits, every box shows what it computes on one example.',
       style === 'network' ? 'Click a column (or zoom in) to open that layer, or a node to open that neuron, position or channel, and keep going down to the arithmetic, the logic gates and the electrons. A dashed box is a part of your own: its tab opens it. The Boxes view shows the same model as blocks with the shapes between them.'
         : 'Click a box or zoom in to open it, and keep going: a dense layer opens into its neurons, a convolution into its channels and the windows they weigh, attention into its heads and what each position looks at. Every number opens what produced it, down to the arithmetic, the logic gates and the electrons. Zoom out or use the path at the top to come back. The Python tab shows each part in PyTorch, and here the whole script.',
@@ -2809,5 +3029,6 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
     return root;
   }
 
-  NA.archBuilder = { build };
+  // probe: the example run through the model the view shows (each layer, nested ones too), for checks
+  NA.archBuilder = { build, probe: (L) => current(L).P };
 })(window.NA);

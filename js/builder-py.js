@@ -403,7 +403,7 @@ def story():
 
   /* One block: its layers (for __init__) and its lines in forward(), with n in its attribute names. Inside a part of
      your own, a size can be a name (the part's argument, or a size no layer depends on) instead of a number. */
-  function emitBlock(b, si, so, n, helpers) {
+  function emitBlock(b, si, so, n, helpers, par) {
     const init = [], fwd = [], last = si[si.length - 1];
     const put = (code) => fwd.push(/ # /.test(code) ? `${code}, ${shp(so)}` : code.padEnd(54) + `# ${shp(so)}`); // a line with its own comment gets the shape at its end
     const same = (p, q) => (typeof p === 'number' && typeof q === 'number' ? p === q : null);
@@ -457,10 +457,35 @@ def story():
         init.push(`self.patch${n} = nn.Conv2d(${si[0]}, ${c.dim}, ${c.size}, stride=${c.size})   # one projection for every ${c.size}×${c.size} patch`, `self.pos${n} = nn.Parameter(0.02 * torch.randn(${so[0]}, ${c.dim}))   # each patch's learned place`);
         put(`x = self.patch${n}(x).flatten(2).transpose(1, 2) + self.pos${n}`);
       } else if (b.type === 'avgpool') put(`x = F.avg_pool2d(x, ${c.size})`);
+      else if (b.type === 'parallel' && par) {
+        const name = `${par.name}${n}`;
+        parallelClasses(b, si, so, helpers, name, par.sink);
+        init.push(`self.par${n} = ${name}()`);
+        put(`x = self.par${n}(x)`);
+      }
     }
     return { init, fwd };
   }
 
+
+  // ------------------------------------------------------------------ parallel branches: a class per branch, and one that runs them all
+  const MERGE_PY = { concat: (dim) => `torch.cat(outs, ${dim})`, add: () => 'sum(outs)', mul: () => 'torch.stack(outs).prod(0)', mean: () => 'torch.stack(outs).mean(0)' };
+  const MERGE_SAY = { concat: 'joined side by side', add: 'added number by number', mul: 'multiplied number by number', mean: 'averaged number by number' };
+  function parallelClasses(b, si, so, helpers, name, sink) {
+    const merge = cfg(b).merge || 'concat', label = NA.builderLab && NA.builderLab.blockLabel ? NA.builderLab.blockLabel : (q) => q.type, made = [];
+    b.branches.forEach((list, br) => {
+      if (!list.length) { made.push('nn.Identity()'); return; } // an empty branch hands on its input
+      let sh = si;
+      const init = [], fwd = [];
+      list.forEach((q, k) => { const o2 = symShape(q, sh), e = emitBlock(q, sh, o2, k + 1, helpers, null); init.push(...e.init); fwd.push(...e.fwd); sh = o2; });
+      const cname = `${name}${'ABCD'[br]}`;
+      sink.push(lines(`class ${cname}(nn.Module):`, `    """Branch ${'ABCD'[br]} of ${name}: ${list.map(label).join(' → ')}."""`, '    def __init__(self):', '        super().__init__()', init.map((l) => '        ' + l), '',
+        '    def forward(self, x):'.padEnd(50) + `# x: ${shp(si)}`, fwd.map((l) => '        ' + l), '        return x'));
+      made.push(`${cname}()`);
+    });
+    sink.push(lines(`class ${name}(nn.Module):`, `    """${b.branches.length} branches side by side on the same input, ${MERGE_SAY[merge]}."""`, '    def __init__(self):', '        super().__init__()', `        self.branches = nn.ModuleList([${made.join(', ')}])`, '',
+      '    def forward(self, x):'.padEnd(50) + `# x: ${shp(si)}`, '        outs = [branch(x) for branch in self.branches]   # every branch reads the same x', `        return ${MERGE_PY[merge](so.length === 3 ? 1 : -1)}`.padEnd(58) + `# ${shp(so)}`));
+  }
   // ------------------------------------------------------------------ parts of your own: a class each
   /* Blocks you boxed into a part become a class, and every copy an instance of it with its own weights. A size that
      differs between the copies (a first copy that reads 2 numbers, a second that reads 16) becomes an argument of the
@@ -520,6 +545,12 @@ def story():
       case 'rnn': return [s[0], c.units];
       case 'conv1d': return [s[0], c.filters];
       case 'patches': return [SX.mul(SX.div(s[1], c.size), SX.div(s[2], c.size)), c.dim];
+      case 'parallel': {
+        const outs = (b.branches || []).map((list) => list.reduce((sh, q) => symShape(q, sh), s));
+        if ((c.merge || 'concat') !== 'concat' || !outs.length) return (outs[0] || s).slice();
+        const sum = (j) => outs.map((o) => o[j]).reduce((a, q) => SX.add(a, q));
+        return k === 1 ? [sum(0)] : k === 2 ? [outs[0][0], sum(1)] : [sum(0), outs[0][1], outs[0][2]];
+      }
       default: return s.slice();
     }
   }
@@ -533,17 +564,18 @@ def story():
       const pc = names.cls[pid], groups = [];
       for (const r of names.runs.filter((q) => q.part === pid)) {
         const inS = (chk.shapes[r.from] || {}).in || [], specs = JSON.stringify(setup.blocks.slice(r.from, r.to).map(specOf));
-        let g = groups.find((q) => q.rank === inS.length && q.specs === specs);
-        if (!g) groups.push((g = { rank: inS.length, specs, runs: [], ins: [] }));
+        const exact = /"type":"parallel"/.test(specs) ? JSON.stringify(inS) : '';
+        let g = groups.find((q) => q.rank === inS.length && q.specs === specs && q.exact === exact);
+        if (!g) groups.push((g = { rank: inS.length, specs, exact, runs: [], ins: [] }));
         g.runs.push(r); g.ins.push(inS);
       }
       groups.forEach((g, gi) => {
         const R = g.rank, blocks = setup.blocks.slice(g.runs[0].from, g.runs[0].to), name = gi ? `${pc.name}_v${gi + 1}` : pc.name, helpers = new Set();
         const emit = (inShape) => {
           let sh = inShape;
-          const init = [], fwd = [];
-          blocks.forEach((b, k) => { const so = symShape(b, sh), e = emitBlock(b, sh, so, k + 1, helpers); init.push(...e.init); fwd.push(...e.fwd); sh = so; });
-          return { init, fwd, out: sh };
+          const init = [], fwd = [], sink = [];
+          blocks.forEach((b, k) => { const so = symShape(b, sh), e = emitBlock(b, sh, so, k + 1, helpers, { name: `${name}Par`, sink }); init.push(...e.init); fwd.push(...e.fwd); sh = so; });
+          return { init, fwd, out: sh, sink };
         };
         // a size the copies share is a number; one they do not is a name: an argument when a layer needs it
         const sym = g.ins[0].map((v, j) => (g.ins.every((q) => q[j] === v) ? v : (ARGS[R] || [])[j] || `s${j}`));
@@ -556,10 +588,10 @@ def story():
           `    def __init__(self${args.map((q) => ', ' + q).join('')}):`.padEnd(args.length ? 50 : 0) + (args.length ? `# ${args.map((q) => `${q}: ${ARG_TEXT[q] || 'a size'}`).join('; ')}` : ''),
           '        super().__init__()', e.init.map((l) => '        ' + l), '',
           '    def forward(self, x):'.padEnd(50) + `# x: ${shp(shown)}`, e.fwd.map((l) => '        ' + l), '        return x');
-        classes.push({ name, text, helpers });
+        classes.push({ name, text, helpers, before: e.sink });
         g.runs.forEach((r, ci) => {
           const vals = args.map((q) => `${q}=${g.ins[ci][sym.indexOf(q)]}`).join(', ');
-          byGrp[r.grp] = { cls: name, text, helpers, inst: names.inst[r.grp], make: `self.${names.inst[r.grp]} = ${name}(${vals})`, out: (chk.shapes[r.to - 1] || {}).out };
+          byGrp[r.grp] = { cls: name, text, helpers, before: e.sink, inst: names.inst[r.grp], make: `self.${names.inst[r.grp]} = ${name}(${vals})`, out: (chk.shapes[r.to - 1] || {}).out };
         });
       });
     }
@@ -572,7 +604,7 @@ def story():
       init.push(`self.tok = nn.Embedding(${inp.vocab}, ${inp.embed})           # a learned vector for each token`, `self.pos = nn.Embedding(${inp.len}, ${inp.embed})           # and one for each position`);
       fwd.push(`x = self.tok(x) + self.pos(torch.arange(x.shape[1]))`.padEnd(54) + `# ${shp([inp.len, inp.embed])}`);
     }
-    const names = partNames(setup), parts = planParts(setup, chk, names);
+    const names = partNames(setup), parts = planParts(setup, chk, names), parSink = [];
     for (const c of parts.classes) for (const h of c.helpers) helpers.add(h);
     for (let i = 0; i < blocks.length;) {
       const run = names.runs.find((r) => r.from === i);
@@ -584,7 +616,7 @@ def story():
         i = run.to;
         continue;
       }
-      const sh = chk.shapes[i] || {}, e = emitBlock(blocks[i], sh.in || [], sh.out || [], i + 1, helpers);
+      const sh = chk.shapes[i] || {}, e = emitBlock(blocks[i], sh.in || [], sh.out || [], i + 1, helpers, { name: 'Parallel', sink: parSink });
       init.push(...e.init); fwd.push(...e.fwd);
       i++;
     }
@@ -599,7 +631,8 @@ def story():
     if (helpers.has('gated')) pre.push(GATED_PY, '', '');
     if (helpers.has('noise')) pre.push(NOISE_PY, '', '');
     if (helpers.has('sine')) pre.push(SINE_PY, '', '');
-    for (const c of parts.classes) pre.push(c.text, '', '');
+    for (const t of parSink) pre.push(t, '', '');
+    for (const c of parts.classes) pre.push(...c.before.flatMap((t) => [t, '', '']), c.text, '', '');
     return lines('# ---------------------------------------------------------------- the model', ...pre,
       'class Model(nn.Module):', '    def __init__(self):', '        super().__init__()', init.map((l) => '        ' + l), '',
       '    def forward(self, x):' + `                                   # x: ${shp(inp.kind === 'tokens' ? [inp.len] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w])}`, fwd.map((l) => '        ' + l));
@@ -614,7 +647,7 @@ def story():
     const names = partNames(setup), g = planParts(setup, chk, names).byGrp[run.grp];
     if (!g) return '';
     const uses = [...g.helpers].map((h) => HELPER_NAME[h]).filter(Boolean);
-    return lines(uses.length ? `# uses ${uses.join(', ')}: see the whole script (the Python tab)` : null, g.text, '', `# in the model:         ${g.make}`, `# and in its forward(): x = self.${g.inst}(x)`);
+    return lines(uses.length ? `# uses ${uses.join(', ')}: see the whole script (the Python tab)` : null, ...g.before.flatMap((t) => [t, '']), g.text, '', `# in the model:         ${g.make}`, `# and in its forward(): x = self.${g.inst}(x)`);
   };
 
   // ------------------------------------------------------------------ loss, optimizer, training
@@ -654,8 +687,9 @@ def story():
     out.push('');
     if (d.input.kind === 'tokens') out.push('nn.init.normal_(model.tok.weight, 0.0, 0.1)', 'nn.init.normal_(model.pos.weight, 0.0, 0.1)');
     const where = partNames(setup).where;
-    setup.blocks.forEach((b, i) => {
-      const at = (stem) => `${where[i].pre}${stem}${where[i].n}`, attn = (m) => `for layer in (${['q', 'k', 'v', 'o'].map((x) => `${m}.${x}`).join(', ')}):`;
+    const initBlock = (b, at) => {
+      const attn = (m) => `for layer in (${['q', 'k', 'v', 'o'].map((x) => `${m}.${x}`).join(', ')}):`;
+      if (b.type === 'parallel') (b.branches || []).forEach((list, br) => list.forEach((q, k) => initBlock(q, (stem) => `${at('par')}.branches[${br}].${stem}${k + 1}`)));
       if (b.type === 'dense') out.push(call(at('dense'), b.acts && !small ? b.acts.map((a) => gain(HE(a))) : gain(HE(b.act))));
       else if (b.type === 'conv') out.push(call(at('conv'), gain(HE(b.act))));
       else if (b.type === 'conv1d') out.push(call(at('conv'), gain(HE(cfg(b).act))));
@@ -668,7 +702,8 @@ def story():
       }
       else if (b.type === 'attention') out.push(attn(at('attn')), '    init_(layer)');
       else if (b.type === 'transformer') out.push(attn(`${at('block')}.attn`), '    init_(layer)', call(`${at('block')}.mlp[0]`, gain(true)), call(`${at('block')}.mlp[2]`, mode === 'he' ? 2 : 1));
-    });
+    };
+    setup.blocks.forEach((b, i) => initBlock(b, (stem) => `${where[i].pre}${stem}${where[i].n}`));
     out.push('init_(model.out)');
     return out;
   }

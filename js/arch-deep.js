@@ -364,6 +364,9 @@
           ? `A dot product: ${n} pairs of numbers multiplied together and the products added up${s.scale ? `, then scaled by ${s.scale.label}` : ''}: ${zn} = ${fmt(z, 4)}. It has the same shape as a neuron's weighted sum, but neither row is a learned weight: both were computed from this prompt a moment ago.`
           : `A neuron does two things. First a weighted sum: each of its ${n} inputs aᵢ is multiplied by its own learned weight wᵢ, the products are added up${b != null ? ', and the bias b is added' : ''}: ${zn} = ${fmt(z, 4)}. ${act ? `Then a function bends the result: ${on} = ${act.label}(${zn}) = ${fmt(out, 4)}.` : 'Here the sum is the output; there is no activation.'}`,
         `So this is ${n} multiplications and ${n} additions. The rows show the two sets of numbers and their products; zoom into any bar to open that number. The boxes below lead to the PyTorch code, one multiplication, one step of the sum${act ? ' and the activation' : ''}, and from each of them down to the circuits and electrons that compute it.`,
+        s.kind === 'dot'
+          ? 'Why the scale: a dot product of n random numbers grows like √n, so large vectors would give huge scores, and a softmax over huge scores puts almost all the weight on one position, where its slope is nearly 0 and learning stalls. Dividing by √n keeps the scores in a range where the softmax stays soft.'
+          : `How it learns: when the model trains, each weight moves by the learning rate times its input times δ, how much the loss changes when this sum changes (δ arrives from the layers above). So the weights on inputs that were large for this example move the most, and a weight on an input of 0 does not move at all. ${act && act.id === 'relu' ? 'With ReLU, a negative sum has slope 0, so δ is 0 and nothing in this neuron learns from this example. ' : ''}A model does this for every weight and every example of a batch, then averages.`,
       ],
       code: s.code || code,
     }, () => [
@@ -633,6 +636,7 @@
         'Inside the chip a float32 is 32 bits: 1 sign bit (violet), 8 exponent bits (amber) and 23 mantissa bits (blue), standing for ±1.mantissa × 2^(exponent − 127). The leading 1 is not stored ("the hidden bit").',
         M.special ? 'One of these numbers is zero (or too small to be normal), a special bit pattern that the multiplier handles without arithmetic.' : `Multiplying two floats is three separate jobs, each opened by a box: XOR the sign bits (${M.A.s} XOR ${M.B.s} = ${M.s}), add the exponents and subtract the bias 127 (${M.A.e} + ${M.B.e} − 127${M.top ? ' + 1' : ''} = ${M.e}), and multiply the two 24-bit significands, 1.mantissa with the hidden bit put back. The 48-bit product is rounded to the nearest 24-bit value (ties go to the even one), which gives exactly what a × b is in float32.`,
         'A hardware float multiplier does all of this in a few clock cycles with tens of thousands of transistors; a modern GPU has tens of thousands of these units.',
+        'To go faster and fit more, models often use smaller formats: bfloat16 keeps float32\'s 8 exponent bits but only 7 mantissa bits, FP16 has 5 and 10, and models in use may run on 8-bit or even 4-bit numbers. Fewer mantissa bits mean coarser rounding, so the products are usually added up in float32 (mixed precision), the job of the tensor cores in modern GPUs.',
       ],
       code: `import struct\n\ndef f32_bits(x):\n    u = struct.unpack('>I', struct.pack('>f', x))[0]\n    return u >> 31, (u >> 23) & 0xFF, u & 0x7FFFFF       # sign, exponent, mantissa\n\ndef f32(s, e, m):\n    return struct.unpack('>f', struct.pack('>I', (s << 31) | (e << 23) | m))[0]\n\ndef fmul32(a, b):\n    """float32 multiply the hardware way (normal numbers)."""\n    (sa, ea, ma), (sb, eb, mb) = f32_bits(a), f32_bits(b)\n    sign = sa ^ sb                              # an XOR gate\n    if ea == 0 or eb == 0:                      # a zero (or a tiny denormal): the product is zero\n        return f32(sign, 0, 0)\n    prod = (ma | 1 << 23) * (mb | 1 << 23)      # 24 x 24 -> 48-bit integer product\n    top = prod >> 47                            # 1 if the product is 2 or more\n    exp = ea + eb - 127 + top                   # an 8-bit adder, minus the bias\n    shift = 23 + top\n    keep, rest, half = prod >> shift, prod & ((1 << shift) - 1), 1 << (shift - 1)\n    if rest > half or (rest == half and keep & 1):   # round to nearest, ties to even\n        keep += 1\n    if keep >> 24:\n        keep >>= 1\n        exp += 1\n    if exp <= 0:                                # too small for a float32: flush to zero\n        return f32(sign, 0, 0)\n    if exp >= 255:                              # too large: infinity\n        return f32(sign, 255, 0)\n    return f32(sign, exp, keep & 0x7FFFFF)\n\na, b = f32(*f32_bits(${num(M.a, 7)})), f32(*f32_bits(${num(M.b, 7)}))\nprint(fmul32(a, b), f32(*f32_bits(a * b)))    # the same float32`,
     }, () => (M.special ? [] : [
@@ -660,6 +664,7 @@
       about: [
         'Adding floats is harder than multiplying them, because the two numbers first have to be lined up. The one with the smaller exponent has its significand shifted right by the difference of the exponents' + (A.d !== undefined ? ` (here d = ${A.d})` : '') + ', so both are counted in the same power of two. Then the significands are added, or subtracted if the signs differ, and the sum is shifted back so it starts with a 1 again, adjusting the exponent.',
         'Three extra bits (guard, round and sticky) remember what was shifted out, so the final rounding to 24 bits is still correctly rounded. The result is exactly what a + b is in float32. The boxes open the two integer adders that do the work.',
+        'Because every addition rounds, float addition is not associative: (a + b) + c can differ from a + (b + c) in the last bits. A GPU adds the terms of a long sum in parallel, in an order that can change from run to run, which is why two runs of the same model can disagree in the seventh digit. Long sums can use compensated (Kahan) summation, which carries the lost bits along.',
       ],
       code: `import struct\n\ndef f32_bits(x):\n    u = struct.unpack('>I', struct.pack('>f', x))[0]\n    return u >> 31, (u >> 23) & 0xFF, u & 0x7FFFFF\n\ndef f32(s, e, m):\n    return struct.unpack('>f', struct.pack('>I', (s << 31) | (e << 23) | m))[0]\n\ndef fadd32(a, b):\n    """float32 add the way an FPU does it (normal numbers), with guard, round and sticky bits."""\n    if a == 0 or b == 0:                          # adding zero changes nothing\n        return f32(*f32_bits(a + b))\n    (sa, ea, ma), (sb, eb, mb) = f32_bits(a), f32_bits(b)\n    pa, pb = (ma | 1 << 23) << 3, (mb | 1 << 23) << 3\n    if (eb, pb) > (ea, pa):                       # a gets the larger magnitude\n        sa, ea, pa, sb, eb, pb = sb, eb, pb, sa, ea, pa\n    d = min(ea - eb, 27)\n    sticky = 1 if pb & ((1 << d) - 1) else 0\n    pb = (pb >> d) | sticky                       # align the smaller significand\n    s = pa + pb if sa == sb else pa - pb          # a 28-bit adder (subtract: add the complement + 1)\n    if s == 0:\n        return 0.0\n    e = ea\n    while s >> 27:                                # carried out: shift right\n        s = (s >> 1) | (s & 1); e += 1\n    while not s >> 26:                            # cancelled: shift left\n        s <<= 1; e -= 1\n    keep, low = s >> 3, s & 7                     # round to nearest, ties to even\n    if low > 4 or (low == 4 and keep & 1):\n        keep += 1\n        if keep >> 24:\n            keep >>= 1; e += 1\n    return f32(sa, e, keep & 0x7FFFFF)\n\na, b = f32(*f32_bits(${num(A.a, 7)})), f32(*f32_bits(${num(A.b, 7)}))\nprint(fadd32(a, b), f32(*f32_bits(a + b)))     # the same float32`,
     }, () => (A.special || A.zero ? [] : [
@@ -751,6 +756,7 @@
       Object.assign(D.gate(X, 'OR', [g1, g2]), { id: 'o1', rect: R.o1, title: 'OR', sub: `→ ${cout}` }),
     ]);
   };
+  const GATE_DEPTH = 'Gates are the vocabulary of every digital chip: NAND (or NOR) alone can build any logic function, and adders, multipliers, memories and control are all made of them. A modern GPU has tens of billions of transistors, billions of gates, each switching in a few picoseconds and using a tiny amount of energy every time it does, which is where a chip\'s power goes.';
   const GATE_ABOUT = {
     XOR: 'XOR built from four NAND gates: N1 = NAND(A, B), then NAND(A, N1) and NAND(B, N1), then the NAND of those two. NAND alone can build any logic function. Chips often make XOR from fewer transistors with other arrangements, but the logic is the same.',
     AND: 'In CMOS the natural gates invert their result: NAND and NOR. An AND gate is a NAND followed by an inverter (NOT), 6 transistors in all.',
@@ -790,7 +796,7 @@
           S.text(ctx, `Y = ${out}`, r.x + r.w, o[1] - u, { size: u, mono: true, w: 700, align: 'right', color: out ? theme.c('pos') : theme.c('ink-2') });
         }
       },
-      about: [GATE_ABOUT[type], `With inputs ${ins.join(' and ')} the output is ${out}. Zoom into a gate to see its transistors.`],
+      about: [GATE_ABOUT[type], `With inputs ${ins.join(' and ')} the output is ${out}. Zoom into a gate to see its transistors.`, GATE_DEPTH],
       code: type === 'XOR' ? `nand = lambda a, b: 1 - (a & b)\n\ndef xor(a, b):\n    n1 = nand(a, b)\n    return nand(nand(a, n1), nand(b, n1))\n\nprint(xor(${a}, ${b}))   # ${out}` : `nand = lambda a, b: 1 - (a & b)\nnor = lambda a, b: 1 - (a | b)\nnot_ = lambda a: 1 - a\nprint(${type === 'AND' ? `not_(nand(${a}, ${b}))` : `not_(nor(${a}, ${b}))`})   # ${out}`,
     }, () => parts.map(([id, t, pins, f]) => Object.assign(D.cmos(X, t, pins), { id, rect: f })));
   };
@@ -1014,7 +1020,33 @@
   };
 
   // ------------------------------------------------------------------ stored numbers: bits in memory
-  D.stored = function (X, v, label) {
+  /* What kind of number a stored value is: the caller says (kind), or its label does. An input is data, a weight or
+     bias was learned, an activation was computed for this example, and a few are constants, fixed at random,
+     running averages or random noise; each is stored the same way, but lives in memory for different reasons. */
+  const KIND_TESTS = [
+    ['constant', /zero padding|padding outside|before the first step|^1\/\d+$/i],
+    ['stat', /running (mean|variance|spread)/i],
+    ['fixed', /\(fixed\)|random frequency|^PE\[/],
+    ['random', /noise number|^ε/],
+    ['activation', /^weight on\b|attention/i],
+    ['bias', /\bbias\b|β|\bshift\b/],
+    ['weight', /^W[\d₀-₉]*\[|^w[\d₀-₉]|^U\[|^E\[|^P\[|^pos\[|kernel|projection|learned|γ|leaf value|in this leaf|\bweight\b/],
+    ['input', /\(an input\)|\binput\b|pixel|raw sample|^x₀, |x coordinate|noisy point|^x = 2t/i],
+  ];
+  const kindOf = (label) => { const s = String(label || ''); for (const [k, re] of KIND_TESTS) if (re.test(s)) return k; return 'activation'; };
+  const CELL = ' Zoom into a bit to see the memory cell that holds it.';
+  const KIND_TEXT = {
+    input: 'This is an input: a number of the example itself, data rather than something the model learned. Inputs, weights and activations all sit in memory the same way: in the computer’s main memory (DRAM, or a GPU’s high-bandwidth memory), copied into caches and registers when a calculation needs them.' + CELL,
+    weight: 'This is a learned weight, one of the model’s parameters: training set it, and it is the same for every example. The weights stay in the computer’s main memory (DRAM, or a GPU’s high-bandwidth memory) for as long as the model is used, and are copied into caches and registers for every calculation that needs them.' + CELL,
+    bias: 'This is a learned bias (or shift), one of the model’s parameters: training set it, and it is the same for every example. Like the weights, it stays in main memory (DRAM, or a GPU’s high-bandwidth memory) and is copied into caches and registers when it is used.' + CELL,
+    activation: 'This is an activation: a number the model computed for this one example from what came before, so another example gives another value. It lives in memory only as long as it is needed: while training it is kept until the backward pass has used it, and when the model is only used it can go as soon as the next layer has read it.' + CELL,
+    constant: 'This is a constant: a fixed number the computation starts from or pads with, the same for every example and never learned. It is stored like any other number.' + CELL,
+    fixed: 'This number was set when the model was made (at random, or by a formula) and is never trained: it is the same for every example and every step. It is stored like any other number.' + CELL,
+    stat: 'This is a running statistic: an average gathered over the training batches, not learned by the gradient, and used in place of a batch’s own statistics when the model is used. It is stored like any other number.' + CELL,
+    random: 'This number was drawn at random for this example (noise), so it is different every time. It is stored like any other number.' + CELL,
+  };
+  D.storedKind = kindOf;
+  D.stored = function (X, v, label, kind) {
     const B = bitsOf(v), g = W2(X, [0, 0.3, 1, 0.16], [0, 0.32, 1, 0.12]);
     return node({
       title: label || 'A stored number', sub: `${fmt(B.v, 5)} as float32`, tone: 's3',
@@ -1027,7 +1059,7 @@
         S.lines(ctx, [`(−1)^${B.s} × 1.${bin(B.m, 23).replace(/0+$/, '') || '0'} (binary) × 2^(${B.e} − 127)`, `= ${B.s ? '−' : ''}${fmt(1 + B.m / 2 ** 23, 7)} × 2^${B.e - 127}${B.e === 0 ? '   (zero / denormal)' : ''}`], S.place(r, [0, 0.56, 1, 0.2]), { mono: true, size: u * 0.95 });
       },
       grids: [{ id: 'bit', rect: g, rows: 1, cols: 32, make: (i, j) => Object.assign(D.memCell(X, Math.floor(B.u / 2 ** (31 - j)) % 2, j), { title: `Bit ${31 - j} (${j === 0 ? 'sign' : j <= 8 ? 'exponent' : 'mantissa'})` }) }],
-      about: [`In memory, ${label ? label + ' is' : 'this number is'} just these 32 bits: 1 sign bit, 8 exponent bits and 23 mantissa bits, meaning (−1)^sign × 1.mantissa × 2^(exponent − 127). Float32 keeps about 7 significant decimal digits, which is why the stored value can differ slightly from the exact one.`, 'Model weights live like this in the computer\'s main memory (DRAM, or the GPU\'s high-bandwidth memory) and are copied into caches and registers to be used. Zoom into a bit to see the memory cell that holds it.'],
+      about: [`In memory, ${label ? label + ' is' : 'this number is'} just these 32 bits: 1 sign bit, 8 exponent bits and 23 mantissa bits, meaning (−1)^sign × 1.mantissa × 2^(exponent − 127). Float32 keeps about 7 significant decimal digits, which is why the stored value can differ slightly from the exact one.`, KIND_TEXT[kind || kindOf(label)] || KIND_TEXT.activation],
       code: `import struct\nv = ${num(v, 7)}\nu = struct.unpack('>I', struct.pack('>f', v))[0]\nbits = format(u, '032b')\nprint(bits[0], bits[1:9], bits[9:])        # sign, exponent, mantissa\nprint(struct.unpack('>f', struct.pack('>I', u))[0])   # the float32 value`,
     });
   };
@@ -1035,7 +1067,7 @@
     const B = bitsOf(z);
     return Object.assign(D.gate(X, 'AND', [Math.floor(B.u / 2 ** 22) % 2, 1 - B.s]), {
       title: 'Sign test', sub: `sign bit ${B.s}: ${B.s ? 'blocked' : 'passed'}`,
-      about: [`ReLU keeps z only if its sign bit is 0. In hardware each of z's bits goes through an AND gate whose other input is NOT(sign bit): with sign ${B.s} the gates ${B.s ? 'block every bit, giving 0' : 'pass every bit unchanged'}. This is one of those gates, for one mantissa bit.`],
+      about: [`ReLU keeps z only if its sign bit is 0. In hardware each of z's bits goes through an AND gate whose other input is NOT(sign bit): with sign ${B.s} the gates ${B.s ? 'block every bit, giving 0' : 'pass every bit unchanged'}. This is one of those gates, for one mantissa bit.`, 'That is why ReLU is so cheap: no multiplication and no exponential, only the sign bit choosing between the number and 0. A sigmoid, tanh or GELU needs an exponential, computed by a library routine, a lookup table or a polynomial, which costs many operations: one reason ReLU took over deep learning around 2011.'],
     });
   };
   D.memCell = function (X, bit, idx) {
@@ -1056,7 +1088,7 @@
         S.text(ctx, `${read ? 'charge shared with the bit line, sensed, written back' : bit ? 'charged: a 1' : 'empty: a 0'}`, r.x + r.w * 0.74, c.y + c.h / 2, { size: u * 0.85, color: theme.c('ink-2'), maxW: r.w * 0.26 });
         timeline(ctx, S, { x: r.x + r.w * 0.1, y: r.y + r.h * 0.74, w: r.w * 0.6, h: u * 2.2 }, ['idle', 'word line on', 'read', 'rewritten']);
       },
-      about: [`A DRAM memory cell stores one bit as charge on a capacitor, reached through one transistor: ${bit ? 'this one is charged, a 1' : 'this one is empty, a 0'}. To read it, the word line turns the transistor on and the charge spills onto the bit line, where a sense amplifier detects the tiny change. Reading drains the cell, so the bit is written straight back. Billions of these cells make up a memory chip.`, 'Zoom into the transistor or the capacitor.'],
+      about: [`A DRAM memory cell stores one bit as charge on a capacitor, reached through one transistor: ${bit ? 'this one is charged, a 1' : 'this one is empty, a 0'}. To read it, the word line turns the transistor on and the charge spills onto the bit line, where a sense amplifier detects the tiny change. Reading drains the cell, so the bit is written straight back. Billions of these cells make up a memory chip.`, 'Fetching a number from DRAM costs far more time and energy than doing arithmetic with it: hundreds of picojoules against about one for a multiply-add. That is why chips keep numbers in caches and registers as long as they can, why GPUs have very wide memory buses, and why large models are often limited by how fast memory can feed them rather than by arithmetic.', 'Zoom into the transistor or the capacitor.'],
       code: `class DRAMCell:\n    def __init__(self, bit):\n        self.charge = 1.0 if bit else 0.0   # fraction of a full capacitor\n\n    def read(self, bitline=0.5):\n        bit = 1 if self.charge > bitline else 0   # the sense amplifier compares\n        self.charge = float(bit)                    # and writes the bit back\n        return bit\n\nprint(DRAMCell(${bit}).read())`,
     }, () => [
       Object.assign(D.mos(X, { kind: 'n', on: true, before: false, path: !!bit, input: 'word line', v: 1, vBefore: 0, charge: false }), { id: 'fet', rect: fet, title: 'Access transistor', sub: 'opened by the word line', summary: (ctx, r) => fetGlyph(ctx, 'n', r, stage() === 2) }),

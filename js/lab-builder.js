@@ -10,7 +10,7 @@
   const ACTS = NA.engine.ACTIVATIONS, ACT_ORDER = NA.engine.ACTIVATION_ORDER;
 
   // ------------------------------------------------------------------ the parts
-  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6', 'Classic ML': 's5' };
+  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6', Combine: 's3', 'Classic ML': 's5' };
   const PARTS = [
     { type: 'dense', group: 'Layers', label: 'Dense', name: 'Dense layer', make: () => ({ type: 'dense', units: 16, act: 'relu' }),
       hint: 'Neurons that each weigh every input, add a bias and bend the sum with an activation.' },
@@ -54,6 +54,8 @@
       hint: 'Lines all the numbers up into one vector, for dense layers.' },
     { type: 'gap', group: 'Reshape', label: 'Global pool', name: 'Global average pool', make: () => ({ type: 'gap' }),
       hint: 'Averages each channel over every position: one vector, whatever the size.' },
+    { type: 'parallel', group: 'Combine', label: 'Parallel', name: 'Parallel branches', make: () => ({ type: 'parallel', merge: 'concat', auto: true, branches: [[], []] }),
+      hint: 'Two to four branches side by side on the same input, joined or added at the end: Inception modules, wide-and-deep models, mixtures.' },
     { type: 'linear', group: 'Classic ML', label: 'Linear model', name: 'Linear model', make: () => ({ type: 'linear', lambda: 0 }), classic: true,
       hint: 'Linear regression for numbers, logistic regression for classes: one weight per input, the classic baseline.' },
     { type: 'knn', group: 'Classic ML', label: 'k-NN', name: 'k-nearest neighbours', make: () => ({ type: 'knn', k: 5, weights: 'uniform' }), classic: true,
@@ -68,6 +70,15 @@
   const isClassic = (type) => !!(PART[type] && PART[type].classic);
   const PART = Object.fromEntries(PARTS.map((p) => [p.type, p]));
   const toneOf = (t) => (t === 'input' ? 's3' : t === 'output' ? 's2' : GROUP_TONE[(PART[t] || PART.dense).group]);
+  // how a parallel block's branches meet
+  const MERGE_TEXT = { concat: 'joined side by side', add: 'added number by number', mul: 'multiplied number by number', mean: 'averaged number by number' };
+  const MERGE_WORD = { concat: 'joined', add: 'added', mul: 'multiplied', mean: 'averaged' }, MERGE_SIGN = { concat: '‖', add: '+', mul: '×', mean: 'x̄' };
+  const MERGE_NOTE = {
+    concat: 'The outputs are laid side by side: a vector’s numbers one after another, each position’s features of a sequence, or the channels of a picture. Every branch keeps its own numbers, so the next layer can weigh them separately. Branches may give different sizes, but the same kind of data, with the same positions or picture size.',
+    add: 'The outputs are added number by number, so every branch must give the same shape. An empty branch adds the input itself: a residual connection around the other branches, as in a ResNet.',
+    mul: 'The outputs are multiplied number by number. With a sigmoid branch, one branch becomes a gate that opens or shuts the other’s numbers, example by example: the idea behind the gates of an LSTM and of gated layers.',
+    mean: 'The outputs are averaged number by number, like a small ensemble of models that vote. Every branch must give the same shape.',
+  };
   // what each block does, for the inspector
   const ABOUT = {
     dense: 'Every neuron computes a weighted sum of all its inputs, adds a bias, and bends the result with its activation function. More neurons let the layer represent more patterns at once; more layers let later patterns be built out of earlier ones.',
@@ -80,6 +91,7 @@
     pool: 'Keeps the largest value in each patch. The picture shrinks (and later filters see a wider area), and small shifts of a feature stop mattering.',
     flatten: 'Lines up all the numbers of an image or a sequence into one long vector, so dense layers (and the output) can use them. It keeps every number but forgets which were neighbours.',
     gap: 'Averages each channel over every position, so a whole image or sequence becomes one short vector. Unlike flatten, it works for any size and has no position information left.',
+    parallel: 'Runs two to four branches side by side on the same input, then joins what they give (or adds, multiplies or averages it). Each branch can look at the data its own way at once: big and small filters, a recurrent and a convolutional reader, a deep path and a wide one.',
     gated: 'Two projections of the same input: one carries the values, the other (bent by a gate function) decides how much of each value passes. Gating lets the layer switch features on and off per example.',
     noise: 'While training, adds a small random jitter to every number. The model learns to ignore tiny differences, which smooths what it learns. Nothing happens when the model is used.',
     batchnorm: 'Rescales each feature to mean 0 and spread 1 using the statistics of the current batch, then applies a learned scale and shift. Training gets faster and steadier; when the model is used, averages from training replace the batch statistics.',
@@ -128,6 +140,7 @@
     forest: ['M6 4v5', 'M3 9h6l-3 6z', 'M18 4v5', 'M15 9h6l-3 6z', 'M12 8v5', 'M9 13h6l-3 6z'],
     boost: ['M4 18h3v-3H4z', 'M10 18h3v-6h-3z', 'M16 18h3V7h-3z', 'M5 12l6-5 6-3'],
     part: ['M4 8l8-4 8 4v8l-8 4-8-4z', 'M4 8l8 4 8-4', 'M12 12v8'],
+    parallel: ['M2 12h4', 'M6 12l4-6h5', 'M6 12l4 6h5', 'M15 6l4 6-4 6', 'M19 12h3'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -157,13 +170,25 @@
   BL.ps = function () { const id = this.setup.problem; return this.setup.ps[id] || (this.setup.ps[id] = BT.defaults(BT.byId[id])); };
   BL.family = function () { return this.problem().family; };
   const bid = () => 'b' + BL.nextId++;
-  const withIds = (blocks) => blocks.map((b) => Object.assign({ id: bid() }, b));
+  // a parallel block's branches hold blocks with ids of their own: fresh ones whenever a block is made or copied
+  const freshIds = (b) => { if (b && Array.isArray(b.branches)) b.branches = b.branches.map((list) => list.map((q) => Object.assign({}, q, { id: bid() }))); return b; };
+  const withIds = (blocks) => blocks.map((b) => freshIds(Object.assign({ id: bid() }, b)));
+  // a block anywhere in the model: at the top, or in a branch of a parallel block (its owner)
+  function findBlock(S, id) {
+    for (let i = 0; i < S.blocks.length; i++) {
+      const b = S.blocks[i];
+      if (b.id === id) return { b, i, owner: null, br: -1, k: -1 };
+      if (Array.isArray(b.branches)) for (let br = 0; br < b.branches.length; br++) { const k = b.branches[br].findIndex((q) => q.id === id); if (k >= 0) return { b: b.branches[br][k], i, owner: b, br, k }; }
+    }
+    return null;
+  }
+  const LETTERS = 'ABCD';
   /* Parts of your own: blocks boxed together under a name, like a function, and added again as copies. The model stays
      a flat list of blocks (the engine, the checks and every view work on it as before); the blocks of one copy carry
      the same grp (the copy) and part (the definition in setup.parts), and sit next to each other. A copy has its own
      weights; changing a block inside one copy changes the definition and every other copy too. */
   const gid = () => 'g' + BL.nextId++, pid = () => 'p' + BL.nextId++;
-  const cleanSpec = (b) => { const c = JSON.parse(JSON.stringify(b)); delete c.id; delete c.grp; delete c.part; return c; };
+  const cleanSpec = (b) => { const c = JSON.parse(JSON.stringify(b)); delete c.id; delete c.grp; delete c.part; if (Array.isArray(c.branches)) c.branches.forEach((list) => list.forEach((q) => { delete q.id; })); return c; };
   const cleanName = (s) => String(s || '').replace(/[^\p{L}\p{N} _\-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 32);
   const runsOf = (s) => BT.groupsOf(s.blocks);
   const runOf = (s, b) => (b && b.grp ? runsOf(s).find((g) => g.grp === b.grp) : null);
@@ -178,7 +203,7 @@
       const t = s.blocks[g.from + k];
       if (!t) continue;
       for (const key of Object.keys(t)) if (key !== 'id' && key !== 'grp' && key !== 'part') delete t[key];
-      Object.assign(t, JSON.parse(JSON.stringify(spec)));
+      freshIds(Object.assign(t, JSON.parse(JSON.stringify(spec))));
     }
   }
   // the k-th block of a part: removed, moved or inserted in the definition and in every copy at once
@@ -260,8 +285,10 @@
   // A stored or shared setup is usable when its problem, blocks, loss and training settings are all there.
   function usable(S) {
     if (!S || typeof S !== 'object' || !BT.byId[S.problem] || !Array.isArray(S.blocks) || !S.loss || typeof S.loss !== 'object' || !S.train || typeof S.train !== 'object' || !S.ps || typeof S.ps !== 'object') return false;
-    if (S.parts !== undefined && !(Array.isArray(S.parts) && S.parts.length <= 16 && S.parts.every((p) => p && typeof p.name === 'string' && p.name.length <= 40 && Array.isArray(p.blocks) && p.blocks.length && p.blocks.length <= 12 && p.blocks.every((b) => b && typeof b === 'object' && NA.bx.BLOCKS[b.type])))) return false;
-    return S.blocks.length <= 40 && S.blocks.every((b) => b && typeof b === 'object' && (NA.bx.BLOCKS[b.type] || isClassic(b.type)));
+    // a parallel block: 2 to 4 branches of up to 8 blocks each, none of them another parallel block or a classic model
+    const okBlock = (b, nested) => !!b && typeof b === 'object' && (NA.bx.BLOCKS[b.type] ? b.type !== 'parallel' || (!nested && Array.isArray(b.branches) && b.branches.length >= 2 && b.branches.length <= 4 && b.branches.every((l) => Array.isArray(l) && l.length <= 8 && l.every((q) => okBlock(q, true)))) : !nested && isClassic(b.type));
+    if (S.parts !== undefined && !(Array.isArray(S.parts) && S.parts.length <= 16 && S.parts.every((p) => p && typeof p.name === 'string' && p.name.length <= 40 && Array.isArray(p.blocks) && p.blocks.length && p.blocks.length <= 12 && p.blocks.every((b) => okBlock(b, false) && !isClassic(b.type))))) return false;
+    return S.blocks.length <= 40 && S.blocks.every((b) => okBlock(b, false));
   }
   function tidy(S) {
     S.custom = S.custom && Array.isArray(S.custom.points) ? S.custom : { points: [] };
@@ -272,7 +299,7 @@
     // a copy is its part's blocks, in order and side by side: anything else becomes ordinary blocks again
     let prev = null, cur = null;
     S.blocks.forEach((b) => {
-      b.id = bid();
+      b.id = bid(); freshIds(b);
       if (b.grp && pmap[b.part]) {
         if (!(prev && prev.grp === b.grp && prev.part === b.part)) cur = gid();
         prev = { grp: b.grp, part: b.part };
@@ -297,7 +324,8 @@
   BL.loadShare = function (S) {
     if (!usable(S)) return false;
     const num = (v, lo, hi) => typeof v === 'number' && isFinite(v) && v >= lo && v <= hi;
-    for (const b of [...S.blocks, ...(S.parts || []).flatMap((p) => p.blocks)]) for (const k of Object.keys(b)) if (typeof b[k] === 'number' && !num(b[k], -512, 512)) return false; // your parts too: a copy is made from them
+    const every = (list) => list.flatMap((b) => [b, ...(Array.isArray(b.branches) ? b.branches.flat() : [])]);
+    for (const b of every([...S.blocks, ...(S.parts || []).flatMap((p) => p.blocks)])) for (const k of Object.keys(b)) if (typeof b[k] === 'number' && !num(b[k], -512, 512)) return false; // your parts and branches too
     for (const ps of Object.values(S.ps)) if (ps && typeof ps === 'object') for (const k of Object.keys(ps)) if (typeof ps[k] === 'number' && !num(ps[k], -1e4, 1e4)) return false;
     const T = Object.assign({}, DEFAULT_TRAIN, S.train);
     if (!num(T.lr, 1e-6, 10) || !num(T.batch, 1, 1024) || (T.steps !== undefined && !num(T.steps, 0, 2e5)) || !OPT_LABEL[T.opt] || !SCHED_LABEL[T.sched || 'const']) return false;
@@ -463,12 +491,12 @@
   // training proceeds (learning rate, optimizer, batch, steps, schedule, weight decay, clipping).
   const TRAINING_ONLY = ['lr', 'opt', 'batch', 'steps', 'sched', 'wd', 'clip'];
   function sameModel(a, b) {
-    const strip = (S) => { const c = JSON.parse(JSON.stringify(S)); for (const k of TRAINING_ONLY) delete c.train[k]; delete c.parts; (c.blocks || []).forEach((q) => { delete q.id; delete q.grp; delete q.part; }); return JSON.stringify(c); };
+    const strip = (S) => { const c = JSON.parse(JSON.stringify(S)); for (const k of TRAINING_ONLY) delete c.train[k]; delete c.parts; (c.blocks || []).forEach((q) => { delete q.id; delete q.grp; delete q.part; (q.branches || []).forEach((l) => l.forEach((x) => { delete x.id; })); }); return JSON.stringify(c); };
     return strip(a) === strip(b);
   }
   // What changed between two setups, in words: the run list shows it next to each run's result.
   function diffSetups(a, b) {
-    const out = [], P = (id) => BT.byId[id].label;
+    const out = [], P = (id) => BT.byId[id].label, val = (k, v) => JSON.stringify(k === 'branches' && Array.isArray(v) ? v.map((l) => l.map(cleanSpec)) : v);
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
       const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
@@ -482,7 +510,7 @@
     while (i < n || j < m) {
       if (i < n && j < m && A[i].type === Bb[j].type) {
         const diffs = [];
-        for (const k of new Set([...Object.keys(A[i]), ...Object.keys(Bb[j])])) if (k !== 'id' && k !== 'grp' && k !== 'part' && JSON.stringify(A[i][k]) !== JSON.stringify(Bb[j][k])) diffs.push(k === 'acts' ? 'neuron activations' : `${k} ${fmtVal(k, A[i][k])} → ${fmtVal(k, Bb[j][k])}`);
+        for (const k of new Set([...Object.keys(A[i]), ...Object.keys(Bb[j])])) if (k !== 'id' && k !== 'grp' && k !== 'part' && val(k, A[i][k]) !== val(k, Bb[j][k])) diffs.push(k === 'acts' ? 'neuron activations' : k === 'branches' ? 'its branches' : `${k} ${fmtVal(k, A[i][k])} → ${fmtVal(k, Bb[j][k])}`);
         if (diffs.length) out.push(`${blockName(Bb[j])} ${j + 1}: ${diffs.join(', ')}`);
         i++; j++;
       } else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) { out.push(`added ${blockLabel(Bb[j])}`); j++; }
@@ -501,6 +529,7 @@
     if (k === 'act') return (ACTS[v] || {}).label || v;
     if (k === 'opt') return OPT_LABEL[v] || v;
     if (k === 'sched') return SCHED_LABEL[v] || v;
+    if (k === 'merge') return MERGE_WORD[v] || v;
     if (k === 'steps') return v ? fmtInt(v) : 'until paused';
     if (typeof v === 'boolean') return v ? 'on' : 'off';
     return String(v);
@@ -518,6 +547,7 @@
     if (b.type === 'seqpool') return `Sequence pool (${b.mode})`;
     if (b.type === 'forest') return `Random forest (${b.trees} trees)`;
     if (b.type === 'boost') return `Gradient boosting (${b.rounds} rounds)`;
+    if (b.type === 'parallel') return `Parallel ×${(b.branches || []).length} (${MERGE_WORD[b.merge || 'concat']})`;
     return blockName(b);
   }
   BL.blockLabel = blockLabel;
@@ -649,11 +679,11 @@
     BV.preview(ctx, W, Hh, this.dataFor());
   };
   // the parts that suit each kind of data (the others still work where shapes allow, or say why not)
-  const VECTOR_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'fourier'], CLASSIC_PARTS = ['linear', 'knn', 'tree', 'forest', 'boost'];
-  const SEQ_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'attention', 'transformer', 'rnn', 'conv1d', 'position', 'seqpool', 'flatten', 'gap'];
+  const VECTOR_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'fourier', 'parallel'], CLASSIC_PARTS = ['linear', 'knn', 'tree', 'forest', 'boost'];
+  const SEQ_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'attention', 'transformer', 'rnn', 'conv1d', 'position', 'seqpool', 'flatten', 'gap', 'parallel'];
   const FITS = {
     plane: [...VECTOR_PARTS, ...CLASSIC_PARTS], curve: [...VECTOR_PARTS, ...CLASSIC_PARTS], surface: [...VECTOR_PARTS, ...CLASSIC_PARTS], table: [...VECTOR_PARTS, ...CLASSIC_PARTS],
-    digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'conv', 'pool', 'avgpool', 'patches', 'flatten', 'gap', 'attention', 'transformer', 'position', 'seqpool', ...CLASSIC_PARTS],
+    digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'conv', 'pool', 'avgpool', 'patches', 'flatten', 'gap', 'parallel', 'attention', 'transformer', 'position', 'seqpool', ...CLASSIC_PARTS],
     series: [...SEQ_PARTS, ...CLASSIC_PARTS], seqclass: SEQ_PARTS, sequence: SEQ_PARTS.filter((t) => t !== 'seqpool' && t !== 'gap' && t !== 'flatten'),
   };
   BL.fitsHere = function (type) { return (FITS[this.family()] || FITS.plane).includes(type); };
@@ -698,7 +728,7 @@
     if (p.classic || this.setup.blocks.some((b) => isClassic(b.type))) {
       const had = this.setup.blocks.length, was = had ? (this.setup.blocks.some((b) => isClassic(b.type)) ? 'classic' : 'network') : null;
       if (p.classic || was === 'classic') {
-        const b = Object.assign({ id: bid() }, p.make());
+        const b = this.prepSpec(p.make(), 0);
         this.edit((s) => { s.blocks = [b]; }, { flip: true });
         this.selectBlock({ kind: 'block', id: b.id }, true);
         if (had) NA.ui.toast.show(p.classic ? `A ${p.name.toLowerCase()} is a whole model on its own, so it replaces the ${was === 'classic' ? 'other one' : 'network'}. Undo brings ${was === 'classic' ? 'it' : 'the network'} back.` : `A layer starts a new network in place of the classic model. Undo brings the model back.`);
@@ -723,15 +753,32 @@
     }
     return S.blocks.length;
   };
+  // a new block for position at: its id, fresh ids inside its branches, and for a new parallel block two branches
+  // that suit the data arriving there
+  BL.prepSpec = function (spec, at) {
+    const b = Object.assign({ id: bid() }, spec);
+    if (b.type === 'parallel' && b.auto) { delete b.auto; b.branches = defaultLanes(this.shapeAt(at), this.family()); }
+    return freshIds(b);
+  };
+  BL.shapeAt = function (at) {
+    const chk = this.check || this.recheck(), q = this.dataFor().input || {};
+    if (at > 0 && chk.shapes[at - 1] && chk.shapes[at - 1].out) return chk.shapes[at - 1].out;
+    return q.kind === 'tokens' ? [q.len, q.embed] : q.kind === 'series' ? [q.len, q.dim] : q.kind === 'image' ? [q.c, q.h, q.w] : [q.dim || 2];
+  };
+  const defaultLanes = (s, fam) => (s && s.length === 3 ? [[{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }], [{ type: 'conv', filters: 8, k: 5, stride: 1, act: 'relu' }]]
+    : s && s.length === 2 ? [[{ type: 'conv1d', filters: 16, k: 3, dilation: 1, causal: fam === 'sequence', act: 'relu' }], [{ type: 'dense', units: 16, act: 'gelu' }]]
+      : [[{ type: 'dense', units: 16, act: 'relu' }], [{ type: 'dense', units: 16, act: 'tanh' }]]);
   BL.insert = function (spec, at) {
     if (this.setup.blocks.length >= 24) { NA.ui.toast.show('That is plenty of blocks: remove one first.'); return; }
     const inside = runsOf(this.setup).find((g) => at > g.from && at < g.to);
     if (inside) at = inside.to; // never into the middle of a copy of one of your parts
-    const b = Object.assign({ id: bid() }, spec);
+    const b = this.prepSpec(spec, at);
     this.edit((s) => { s.blocks.splice(at, 0, b); }, { flip: true });
     this.selectBlock({ kind: 'block', id: b.id }, true);
   };
   BL.removeBlock = function (id) {
+    const fb = findBlock(this.setup, id);
+    if (fb && fb.owner) { this.removeFromLane(fb.owner.id, fb.br, fb.k); return fb.i; } // from a branch of a parallel block
     const i = this.setup.blocks.findIndex((b) => b.id === id), b = this.setup.blocks[i], run = runOf(this.setup, b);
     if (run) {
       // a block inside one of your parts goes from the part, and so from every copy
@@ -861,7 +908,7 @@
       this.stack.append(this.gap(i, sh.in ? shapeOf(sh.in) : ''));
       if (run) { this.stack.append(this.groupCard(run, chk)); i = run.to; continue; }
       const shown = Object.assign({}, b, { residualOk: residualFits(b, sh) });
-      this.stack.append(this.card({ kind: 'block', id: b.id, type: b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, b: shown, i, title: blockName(b), sum: blockSummary(shown), params: sh.params, problem: sh.problem, sel: this.sel && this.sel.id === b.id }));
+      this.stack.append(this.card({ kind: 'block', id: b.id, type: b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, b: shown, i, title: blockName(b), sum: blockSummary(shown), params: sh.params, problem: sh.problem, sel: this.sel && this.sel.id === b.id, extra: b.type === 'parallel' ? this.lanesEl(b, sh) : null }));
       i++;
     }
     // what flows into the output: the last block's shape, or the input's when there are no blocks
@@ -909,6 +956,7 @@
     if (b.type === 'tree') return `depth ${b.depth}`;
     if (b.type === 'forest') return `${b.trees} trees · depth ${b.depth}`;
     if (b.type === 'boost') return `${b.rounds} rounds · depth ${b.depth} · η ${b.eta}`;
+    if (b.type === 'parallel') return `${(b.branches || []).length} branches · ${MERGE_TEXT[b.merge || 'concat']}`;
     return '';
   }
   BL.gap = function (i, label) {
@@ -926,12 +974,13 @@
     if (o.b && o.b.type === 'dense') card.append(this.neuronRow(o.b));
     if (o.b && o.b.type === 'transformer') card.append(el('div', { class: 'bd-mini' }, ...['norm', 'attention', '+', 'norm', 'MLP', '+'].map((t) => el('span', { class: t === '+' ? 'bd-mini-add' : 'bd-mini-part', text: t }))));
     if (o.b && o.b.residual && o.b.residualOk !== false && (o.b.type === 'dense' || o.b.type === 'attention')) card.append(el('span', { class: 'bd-res-arc', title: 'Residual: the block’s input is added to its output' }));
+    if (o.extra) card.append(o.extra);
     if (o.problem) {
       const fix = o.problem.fix;
       card.append(el('div', { class: 'bd-problem' }, el('span', { text: o.problem.reason }),
         fix ? el('button', { class: 'btn btn-quiet bd-fix', type: 'button', onclick: (e) => { e.stopPropagation(); this.fixBlock(o.kind === 'output' ? this.setup.blocks.length : o.i, fix); } }, `Add ${fix.map(blockLabel).join(' + ')}`) : null));
     }
-    card.addEventListener('pointerdown', (e) => { if (e.target.closest('button')) return; this.pressStart(e, { kind: io ? o.kind : 'block', id: o.id, el: card }); });
+    card.addEventListener('pointerdown', (e) => { if (e.target.closest('button, select, .bd-lane')) return; this.pressStart(e, { kind: io ? o.kind : 'block', id: o.id, el: card }); });
     card.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.selectBlock({ kind: o.kind, id: o.id }); }
       else if (!io && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); this.refocus(null, this.removeBlock(o.id)); }
@@ -959,6 +1008,88 @@
     });
     return card;
   };
+
+  // ------------------------------------------------------------------ parallel branches
+  // a parallel block's branches on the model: one lane each, its blocks as chips, a list to add one, how they meet
+  BL.lanesEl = function (b, sh) {
+    const lanes = b.branches || [], brs = sh.branches || [], fits = PARTS.filter((p) => !p.classic && p.type !== 'parallel' && this.fitsHere(p.type));
+    const wrap = el('div', { class: 'bd-lanes', style: { '--n': String(lanes.length) } });
+    lanes.forEach((list, br) => {
+      const shs = brs[br] || [], out = shs.length ? shs[shs.length - 1].out : sh.in, bad = shs.findIndex((q) => q && q.problem);
+      const add = UI.select([{ value: '', label: '+ Add a block' }, ...fits.map((p) => ({ value: p.type, label: p.label }))], '', (v) => { if (v) this.addToLane(b.id, br, v); }, { class: 'bd-lane-add', 'aria-label': `Add a block to branch ${LETTERS[br]}` });
+      wrap.append(el('div', { class: 'bd-lane' + (bad >= 0 ? ' is-bad' : ''), dataset: { owner: b.id, br: String(br) }, title: `Branch ${LETTERS[br]}: drop a part here to add it to this branch.` },
+        el('div', { class: 'bd-lane-head' }, el('span', { class: 'bd-lane-letter', text: LETTERS[br] }), el('span', { class: 'bd-lane-shape', text: out ? NA.bx.shapeText(out) : '' })),
+        ...list.map((q, j) => el('button', { class: 'bd-gchip' + (this.sel && this.sel.id === q.id ? ' is-selected' : '') + (shs[j] && shs[j].problem ? ' is-bad' : ''), type: 'button', style: { '--bk': `var(--${toneOf(q.type)})` }, dataset: { bid: q.id }, title: `${blockLabel(q)}${shs[j] && shs[j].problem ? `: ${shs[j].problem.reason}` : ''}. ${Click()} to change it.`,
+          onclick: (e) => { e.stopPropagation(); this.selectBlock({ kind: 'block', id: q.id }); } }, el('span', { class: 'bd-card-ico' }, icon(q.type === 'dense' && q.units === 1 ? 'neuron' : q.type)), el('span', { class: 'bd-gchip-name', text: blockSummaryShort(q) }))),
+        list.length ? null : el('div', { class: 'bd-lane-empty', text: 'empty: passes the input through' }),
+        bad >= 0 && shs[bad].problem.fix ? el('button', { class: 'btn btn-quiet bd-fix', type: 'button', onclick: (e) => { e.stopPropagation(); this.fixInLane(b.id, br, bad, shs[bad].problem.fix); } }, `Add ${shs[bad].problem.fix.map(blockLabel).join(' + ')}`) : null,
+        add));
+    });
+    return el('div', { class: 'bd-lanes-wrap' }, wrap, el('div', { class: 'bd-merge' }, el('span', { class: 'bd-merge-sign', text: MERGE_SIGN[b.merge || 'concat'] }), el('span', { text: `${MERGE_TEXT[b.merge || 'concat']}${sh.out ? ` → ${NA.bx.shapeText(sh.out)}` : ''}` })));
+  };
+  // a change to a parallel block (its branches, how they meet): in every copy too, when it sits in one of your parts
+  BL.editOwner = function (ownerId, fn, o) { this.edit((s) => { const f = findBlock(s, ownerId); if (!f || f.owner) return; fn(f.b, s); if (f.b.grp) syncPart(s, f.b); }, o || { flip: true }); };
+  BL.addToLane = function (ownerId, br, type) {
+    const p = PART[type], f = findBlock(this.setup, ownerId);
+    if (!p || p.classic || p.custom || type === 'parallel' || !f || !f.b.branches || !f.b.branches[br]) return;
+    if (f.b.branches[br].length >= 8) { NA.ui.toast.show('A branch holds up to 8 blocks.'); return; }
+    const q = Object.assign({ id: bid() }, p.make());
+    this.editOwner(ownerId, (o) => { o.branches[br].push(q); });
+    this.selectBlock({ kind: 'block', id: q.id }, true);
+  };
+  // a block dragged from the model onto a branch moves into it
+  BL.laneDroppable = function (src) {
+    if (src.kind === 'part') return !src.part.custom && !src.part.classic && src.part.type !== 'parallel';
+    if (src.kind !== 'block') return false;
+    const b = this.setup.blocks.find((q) => q.id === src.id);
+    return !!b && b.type !== 'parallel' && !b.grp && !isClassic(b.type);
+  };
+  BL.moveIntoLane = function (id, ownerId, br) {
+    const b = this.setup.blocks.find((q) => q.id === id), f = findBlock(this.setup, ownerId);
+    if (!b || !f || f.owner || b.type === 'parallel' || b.grp || isClassic(b.type) || !f.b.branches[br]) return;
+    if (f.b.branches[br].length >= 8) { NA.ui.toast.show('A branch holds up to 8 blocks.'); return; }
+    this.edit((s) => { const at = s.blocks.findIndex((x) => x.id === id), [q] = s.blocks.splice(at, 1), o = s.blocks.find((x) => x.id === ownerId); o.branches[br].push(q); if (o.grp) syncPart(s, o); }, { flip: true });
+    NA.ui.toast.show(`Moved ${blockName(b)} into branch ${LETTERS[br]}.`);
+  };
+  BL.removeFromLane = function (ownerId, br, k) {
+    const f = findBlock(this.setup, ownerId), q = f && f.b.branches && f.b.branches[br] && f.b.branches[br][k];
+    if (!q) return;
+    this.editOwner(ownerId, (o) => { o.branches[br].splice(k, 1); });
+    if (this.sel && this.sel.id === q.id) this.selectBlock({ kind: 'block', id: ownerId }, true);
+    NA.ui.toast.show(`Removed ${blockName(q)} from branch ${LETTERS[br]}. Undo brings it back.`);
+  };
+  BL.moveInLane = function (ownerId, br, k, dir) {
+    this.editOwner(ownerId, (o) => { const l = o.branches[br], j = k + dir; if (!l || j < 0 || j >= l.length) return; const t = l[k]; l[k] = l[j]; l[j] = t; });
+  };
+  BL.dupInLane = function (ownerId, br, k) {
+    const f = findBlock(this.setup, ownerId), l = f && f.b.branches && f.b.branches[br];
+    if (!l || !l[k]) return;
+    if (l.length >= 8) { NA.ui.toast.show('A branch holds up to 8 blocks.'); return; }
+    const q = Object.assign(cleanSpec(l[k]), { id: bid() });
+    this.editOwner(ownerId, (o) => { o.branches[br].splice(k + 1, 0, q); });
+    this.selectBlock({ kind: 'block', id: q.id }, true);
+  };
+  BL.fixInLane = function (ownerId, br, k, fix) {
+    this.editOwner(ownerId, (o) => { o.branches[br].splice(k, 0, ...fix.map((x) => Object.assign({ id: bid() }, x))); });
+    NA.ui.toast.show(`Added ${fix.map(blockLabel).join(' and ')} in branch ${LETTERS[br]}.`);
+  };
+  BL.addLane = function (ownerId) { this.editOwner(ownerId, (o) => { if (o.branches.length < 4) o.branches.push([]); }); };
+  BL.removeLane = function (ownerId, br) { this.editOwner(ownerId, (o) => { if (o.branches.length > 2) o.branches.splice(br, 1); }); };
+  // the parallel block's own settings: how the branches meet, and what each holds
+  BL.parallelSettings = function (sec, b, sh, set) {
+    const k = (b.branches || []).length, brs = sh.branches || [], merge = b.merge || 'concat';
+    sec.push(UI.section('How the branches meet', UI.seg([{ value: 'concat', label: 'Join side by side' }, { value: 'add', label: 'Add' }, { value: 'mul', label: 'Multiply' }, { value: 'mean', label: 'Average' }], merge, (v) => set((q) => { q.merge = v; }), 'How the branches meet'),
+      UI.note(MERGE_NOTE[merge])));
+    sec.push(UI.section('Branches', ...(b.branches || []).map((list, br) => {
+      const shs = brs[br] || [], out = shs.length ? shs[shs.length - 1].out : sh.in;
+      return el('div', { class: 'bd-branch-row' },
+        el('div', { class: 'bd-branch-head' }, el('span', { class: 'bd-lane-letter', text: LETTERS[br] }), el('span', { class: 'sec-note', text: `${list.length ? `${list.length} block${list.length === 1 ? '' : 's'}` : 'empty: passes the input through'}${out ? ` → ${NA.bx.shapeText(out)}` : ''}` }),
+          k > 2 ? el('button', { class: 'btn btn-quiet', type: 'button', title: `Remove branch ${LETTERS[br]} and its blocks`, onclick: () => this.removeLane(b.id, br) }, 'Remove') : null),
+        list.length ? el('div', { class: 'bd-gchips bd-gchips-col' }, ...list.map((q, j) => el('button', { class: 'bd-gchip' + (shs[j] && shs[j].problem ? ' is-bad' : ''), type: 'button', style: { '--bk': `var(--${toneOf(q.type)})` }, onclick: () => this.selectBlock({ kind: 'block', id: q.id }) },
+          el('span', { class: 'bd-card-ico' }, icon(q.type === 'dense' && q.units === 1 ? 'neuron' : q.type)), el('span', { class: 'bd-gchip-name', text: `${j + 1}. ${blockLabel(q)}${shs[j] && shs[j].out ? ` → ${NA.bx.shapeText(shs[j].out)}` : ''}` })))) : null);
+    }), el('div', { class: 'btn-row' }, el('button', { class: 'btn', type: 'button', disabled: k >= 4, onclick: () => this.addLane(b.id) }, '+ Add a branch')),
+      UI.note(`Add blocks with a branch’s “+ Add a block” list on the model, or drag a part from the palette (or a block from the model) onto a branch. ${Click()} a block in a branch to change it.`)));
+  };
   const blockSummaryShort = (b) => (b.type === 'dense' ? `${b.units === 1 ? 'Neuron' : 'Dense ' + b.units} ${ACTS[b.act].short || ACTS[b.act].label}` : blockLabel(b));
   // copies of your parts: add one, take one apart, remove one, move one; and the parts themselves: box, rename, delete
   BL.addCopy = function (partId, at) {
@@ -969,7 +1100,7 @@
     if (at === undefined) at = this.insertAt();
     const inside = runsOf(S).find((g) => at > g.from && at < g.to);
     if (inside) at = inside.to;
-    const g = gid(), classic = this.isClassicSetup(), copy = def.blocks.map((b) => Object.assign({ id: bid() }, JSON.parse(JSON.stringify(b)), { grp: g, part: def.id }));
+    const g = gid(), classic = this.isClassicSetup(), copy = def.blocks.map((b) => freshIds(Object.assign({ id: bid() }, JSON.parse(JSON.stringify(b)), { grp: g, part: def.id })));
     this.edit((s) => { if (classic) s.blocks = []; s.blocks.splice(classic ? 0 : at, 0, ...copy); }, { flip: true });
     this.selectBlock({ kind: 'group', id: g }, true);
     NA.ui.toast.show(`Added a copy of ${def.name}${classic ? ' in place of the classic model' : ''}: same blocks, its own weights.`);
@@ -1100,6 +1231,11 @@
         const b = over && this.setup.blocks.find((q) => q.id === over.dataset.bid);
         if (b && b.type === 'dense') target = { kind: 'into', id: b.id, el: over };
       }
+      // a part, or a block from the model, dropped on a branch of a parallel block joins that branch
+      if (!target && this.laneDroppable(drag.src)) {
+        const lane = NA.$$('.bd-lane', this.stack).find((l) => { const q = l.getBoundingClientRect(); return y >= q.top && y <= q.bottom && x >= q.left && x <= q.right; });
+        if (lane && lane.dataset.owner !== drag.src.id) target = { kind: 'lane', id: lane.dataset.owner, br: +lane.dataset.br, el: lane };
+      }
       if (!target) {
         let best = null, bd = Infinity;
         for (const g of NA.$$('.bd-gap', this.stack)) { const q = g.getBoundingClientRect(), dd = Math.abs(y - (q.top + q.height / 2)); if (dd < bd) { bd = dd; best = g; } }
@@ -1116,11 +1252,11 @@
       const run = runsOf(this.setup).find((g) => g.grp === drag.src.id);
       if (run && target.at >= run.from && target.at <= run.to) target = { kind: 'stay', el: target.el };
     }
-    const key = target ? target.kind + (target.at ?? target.id ?? '') : '';
+    const key = target ? target.kind + (target.at ?? target.id ?? '') + (target.br ?? '') : '';
     if (key !== drag.key) {
       drag.key = key;
-      NA.$$('.bd-gap.is-target, .bd-card.is-drop-into', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into'));
-      if (target && target.kind === 'gap') target.el.classList.add('is-target');
+      NA.$$('.bd-gap.is-target, .bd-lane.is-target, .bd-card.is-drop-into', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into'));
+      if (target && (target.kind === 'gap' || target.kind === 'lane')) target.el.classList.add('is-target');
       if (target && target.kind === 'into') target.el.classList.add('is-drop-into');
       drag.ghost.classList.toggle('is-remove', !!target && target.kind === 'remove');
     }
@@ -1130,9 +1266,10 @@
     const t = cancelled ? null : drag.target, src = drag.src;
     drag.ghost.remove();
     document.body.classList.remove('bd-dragging');
-    NA.$$('.bd-gap.is-target, .bd-card.is-drop-into, .bd-card.is-lifted', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into', 'is-lifted'));
+    NA.$$('.bd-gap.is-target, .bd-lane.is-target, .bd-card.is-drop-into, .bd-card.is-lifted', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into', 'is-lifted'));
     this.drag = null;
     if (!t) return;
+    if (t.kind === 'lane') { if (src.kind === 'part') this.addToLane(t.id, t.br, src.part.type); else if (src.kind === 'block') this.moveIntoLane(src.id, t.id, t.br); return; }
     if (src.kind === 'part' && src.part.custom) { if (t.kind === 'gap') this.addCopy(src.part.custom, t.at); return; }
     if (src.kind === 'group') {
       if (t.kind === 'remove') this.removeGroup(src.id);
@@ -1348,11 +1485,11 @@
     if (sel.kind === 'input') { this.renderProblemSettings(body); return; }
     if (sel.kind === 'output') { this.renderLossSettings(body); return; }
     if (sel.kind === 'group') { this.renderGroupTab(body, sel.id); return; }
-    const b = S.blocks.find((q) => q.id === sel.id);
+    const fb = findBlock(S, sel.id), b = fb && fb.b;
     if (!b) { body.append(UI.note('That block is gone.')); return; }
-    // a block inside one of your parts: a change to it changes the part, and every copy of it
-    const set = (fn) => this.edit((s) => { const q = s.blocks.find((x) => x.id === b.id); fn(q); if (q.grp) syncPart(s, q); });
-    const i = S.blocks.indexOf(b), sh = (this.check.shapes || [])[i] || {}, run = runOf(S, b), def = run ? defOf(S, run.part) : null;
+    // a block inside one of your parts (or in a branch of a parallel block that is): a change changes every copy
+    const set = (fn) => this.edit((s) => { const g = findBlock(s, b.id); if (!g) return; fn(g.b); const top = g.owner || g.b; if (top.grp) syncPart(s, top); });
+    const i = fb.i, top = fb.owner || b, chkS = (this.check.shapes || [])[i] || {}, sh = fb.owner ? ((chkS.branches || [])[fb.br] || [])[fb.k] || {} : chkS, run = runOf(S, top), def = run ? defOf(S, run.part) : null;
     const actSel = (v, fn) => UI.select(ACT_ORDER.map((a) => ({ value: a, label: ACTS[a].label })), v, fn);
     body.append(el('div', { class: 'bd-insp-head', style: { '--bk': `var(--${toneOf(b.type)})` } }, el('span', { class: 'bd-card-ico' }, icon(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type)), el('div', null, el('h3', { class: 'bd-insp-title', text: blockName(b) }), el('div', { class: 'sec-note', text: sh.in ? `${NA.bx.shapeText(sh.in)} → ${NA.bx.shapeText(sh.out)} · ${fmtInt(sh.params || 0)} learned numbers` : '' }))));
     if (sh.problem) body.append(el('div', { class: 'diag bd-warn' }, el('p', { class: 'diag-body', text: sh.problem.reason })));
@@ -1361,6 +1498,11 @@
       body.append(el('div', { class: 'bd-inpart' }, el('span', { class: 'bd-card-ico', style: { '--bk': 'var(--ink-2)' } }, icon('part')),
         el('span', null, `Inside your part ${def.name}: a change here changes ${copies > 1 ? `all ${copies} copies` : 'the part, and any copy you add'}.`),
         el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock({ kind: 'group', id: run.grp }) }, `Select ${def.name}`)));
+    }
+    if (fb.owner) {
+      body.append(el('div', { class: 'bd-inpart' }, el('span', { class: 'bd-card-ico', style: { '--bk': 'var(--s3)' } }, icon('parallel')),
+        el('span', null, `In branch ${LETTERS[fb.br]} of a parallel block (block ${fb.k + 1} of ${fb.owner.branches[fb.br].length}). It gets the same input as the other branches, and what it gives is ${MERGE_TEXT[fb.owner.merge || 'concat']} with theirs.`),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock({ kind: 'block', id: fb.owner.id }) }, 'Select the parallel block')));
     }
     const sec = [];
     if (b.type === 'dense') {
@@ -1375,8 +1517,9 @@
         UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; delete q.acts; }))),
         el('div', { class: 'chip-row' }, UI.chip('Residual (add the input back)', !!b.residual, (on) => set((q) => { q.residual = on; }), 'Only works when the layer keeps the size of its input')),
         b.residual && !resOk ? UI.note(`The residual is off for now: it needs as many neurons as the layer has inputs (${sh.in[sh.in.length - 1]}).`, 'lm-warn') : null,
-        b.acts ? UI.note('Some neurons have their own activation (outlined dots). Choosing one activation for the layer resets them.') : UI.note(`${Click()} a neuron dot on the block to give that neuron its own activation.`)));
+        b.acts ? UI.note('Some neurons have their own activation (outlined dots). Choosing one activation for the layer resets them.') : fb.owner ? null : UI.note(`${Click()} a neuron dot on the block to give that neuron its own activation.`)));
       sec.push(UI.section('The activation', el('div', { class: 'fx' }, el('div', { class: 'fx-line fx-strong', text: `${ACTS[b.act].label}: ${ACTS[b.act].formula}` }), el('div', { class: 'fx-line', text: `slope: ${ACTS[b.act].dformula}` }))));
+    } else if (b.type === 'parallel') { this.parallelSettings(sec, b, sh, set);
     } else if (b.type === 'activation') sec.push(UI.section('Settings', UI.field('Function', actSel(b.act, (v) => set((q) => { q.act = v; }))), el('div', { class: 'fx' }, el('div', { class: 'fx-line', text: `${ACTS[b.act].label}: ${ACTS[b.act].formula}` }))));
     else if (b.type === 'dropout') sec.push(UI.section('Settings', UI.slider({ label: 'Fraction dropped while training', min: 0, max: 0.7, step: 0.05, value: b.p, format: (v) => fmtPct(v, 0), onChange: (v) => set((q) => { q.p = v; }) })));
     else if (b.type === 'attention' || b.type === 'transformer') {
@@ -1389,7 +1532,7 @@
         UI.note(`${D} numbers per position, split into ${b.heads} head${b.heads > 1 ? 's' : ''} of ${D / b.heads}.`)));
     } else if (b.type === 'conv') {
       sec.push(UI.section('Settings', UI.slider({ label: 'Filters', min: 1, max: 32, step: 1, value: b.filters, format: String, onChange: (v) => set((q) => { q.filters = v; }) }),
-        UI.field('Filter size', UI.seg([{ value: 3, label: '3×3' }, { value: 5, label: '5×5' }], b.k, (v) => set((q) => { q.k = +v; }), 'Filter size')),
+        UI.field('Filter size', UI.seg([{ value: 1, label: '1×1' }, { value: 3, label: '3×3' }, { value: 5, label: '5×5' }], b.k, (v) => set((q) => { q.k = +v; }), 'Filter size')),
         UI.field('Stride', UI.seg([{ value: 1, label: '1' }, { value: 2, label: '2 (halves it)' }], b.stride, (v) => set((q) => { q.stride = +v; }), 'Stride')),
         UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; })))));
     } else if (b.type === 'pool' || b.type === 'avgpool') sec.push(UI.section('Settings', UI.field('Patch', UI.seg([{ value: 2, label: '2×2' }, { value: 3, label: '3×3' }], b.size, (v) => set((q) => { q.size = +v; }), 'Patch'))));
@@ -1430,9 +1573,18 @@
       UI.field('Inputs per tree', UI.select([0.5, 0.8, 1].map((v) => ({ value: v, label: fmtPct(v, 0) })), b.colsample, (v) => set((q) => { q.colsample = +v; })))));
     if (b.type === 'conv') sec.push(el('div', { class: 'chip-row' }, UI.chip('Residual (ResNet-style)', !!b.residual, (on) => set((q) => { q.residual = on; }), 'Adds the input back: needs as many filters as input channels and stride 1')));
     if (this.model && this.model.classic && !this.stale && isClassic(b.type)) sec.push(UI.section('Trained so far', UI.note(`${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'} · ${fmtInt(this.model.paramCount)} learned numbers. Zoom into it in the Architecture view to see ${b.type === 'knn' ? 'its neighbours' : b.type === 'linear' ? 'its weights' : 'its trees'}.`)));
-    sec.push(UI.section('What it does', UI.note(ABOUT[b.type] || '')));
+    const gd = NA.partGuide && NA.partGuide.G[b.type === 'dense' && b.units === 1 ? 'neuron' : b.type], hereText = NA.partGuide && NA.partGuide.inModel ? NA.partGuide.inModel(b, sh) : '';
+    sec.push(UI.section('What it does', ...(gd && gd.deep ? gd.deep.map((t) => el('p', { class: 'sec-note bd-deep', text: t })) : [UI.note(ABOUT[b.type] || '')]),
+      hereText ? el('div', { class: 'bd-here' }, el('div', { class: 'bd-here-title', text: 'Here, in your model' }), el('p', { text: hereText })) : null));
     if (NA.partGuide) sec.push(NA.partGuide.details(b.type === 'dense' && b.units === 1 ? 'neuron' : b.type, { open: false }));
-    if (run) {
+    if (fb.owner) {
+      const o = fb.owner, n = o.branches[fb.br].length;
+      sec.push(el('div', { class: 'btn-row bd-block-actions' },
+        el('button', { class: 'btn', type: 'button', disabled: fb.k === 0, title: 'Move it up in its branch', onclick: () => this.moveInLane(o.id, fb.br, fb.k, -1) }, '↑ Move up'),
+        el('button', { class: 'btn', type: 'button', disabled: fb.k === n - 1, title: 'Move it down in its branch', onclick: () => this.moveInLane(o.id, fb.br, fb.k, 1) }, '↓ Move down'),
+        el('button', { class: 'btn', type: 'button', onclick: () => this.dupInLane(o.id, fb.br, fb.k) }, 'Duplicate'),
+        el('button', { class: 'btn', type: 'button', onclick: () => this.removeFromLane(o.id, fb.br, fb.k) }, 'Remove from the branch')));
+    } else if (run) {
       const k = i - run.from, n = run.to - run.from;
       sec.push(el('div', { class: 'btn-row bd-block-actions' },
         el('button', { class: 'btn', type: 'button', disabled: k === 0, title: 'Move it up inside the part (Alt+↑)', onclick: () => this.moveBlock(b.id, i - 1) }, '↑ Move up'),

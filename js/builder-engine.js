@@ -289,7 +289,11 @@
     seqpool: { label: 'Sequence pool', defaults: { mode: 'last' } },
     patches: { label: 'Patches', defaults: { size: 2, dim: 32 } },
     avgpool: { label: 'Average pool', defaults: { size: 2 } },
+    parallel: { label: 'Parallel branches', defaults: { merge: 'concat' } },
   };
+  // how parallel branches are joined: side by side (their features, or an image's channels), or number by number
+  const MERGES = { concat: 'join', add: 'add', mul: 'multiply', mean: 'average' };
+  const LETTERS = 'ABCD';
   const LOSSES = {
     xent: { id: 'xent', label: 'Cross-entropy', outputs: ['classes', 'tokens'] },
     mse: { id: 'mse', label: 'Squared error', outputs: ['classes', 'value'] },
@@ -471,8 +475,43 @@
       case 'gap':
         if (kind === 1) return fail(`Global average pooling averages over the positions of an image or a sequence, but this is already ${describe(inS)}.`);
         return ok(kind === 3 ? [inS[0]] : [inS[1]], 0);
+      case 'parallel': {
+        const list = Array.isArray(spec.branches) ? spec.branches : [];
+        if (list.length < 2 || list.length > 4 || !list.every(Array.isArray)) return fail('Parallel branches need 2 to 4 branches, each a list of blocks (an empty one passes the input through).');
+        if (!own(MERGES, s.merge)) return fail(`"${s.merge}" is not a way to join branches this builder knows (join, add, multiply or average).`);
+        const lanes = list.map((bl) => stackShape(bl, inS)), outs = lanes.map((q) => q.out), params = lanes.reduce((t, q) => t + q.params, 0);
+        const r = (res) => Object.assign(res, { branches: lanes.map((q) => q.shapes) });
+        const bad = lanes.findIndex((q) => q.problem);
+        if (bad >= 0) {
+          const k = lanes[bad].shapes.findIndex((q) => q.problem);
+          return r(fail(`Branch ${LETTERS[bad]}, block ${k + 1}: ${lanes[bad].problem.reason}`, null, inS, params));
+        }
+        const R = outs[0].length;
+        if (s.merge !== 'concat') {
+          if (!outs.every((o) => sameShape(o, outs[0]))) return r(fail(`To ${MERGES[s.merge]} the branches number by number, each must give the same shape, but they give ${outs.map((o, b) => `${LETTERS[b]} ${shapeText(o)}`).join(', ')}. Join them side by side instead, or change a branch.`, null, outs[0], params));
+          return r(ok(outs[0], params));
+        }
+        // joined side by side: a vector's numbers, each position's features, or an image's channels
+        if (!outs.every((o) => o.length === R)) return r(fail(`Joined branches must give the same kind of data, but they give ${outs.map((o, b) => `${LETTERS[b]}: ${describe(o)}`).join(', ')}. Flatten or pool the ones that differ.`, null, outs[0], params));
+        if (R === 2 && !outs.every((o) => o[0] === outs[0][0])) return r(fail(`Joined sequences must have the same positions, but they have ${outs.map((o) => o[0]).join(', ')}.`, null, outs[0], params));
+        if (R === 3 && !outs.every((o) => o[1] === outs[0][1] && o[2] === outs[0][2])) return r(fail(`Joined images must have the same height and width, but they are ${outs.map((o) => `${o[1]} × ${o[2]}`).join(', ')}. Pool or stride the larger ones the same way.`, null, outs[0], params));
+        const sum = (j) => outs.reduce((t, o) => t + o[j], 0);
+        return r(ok(R === 1 ? [sum(0)] : R === 2 ? [outs[0][0], sum(1)] : [sum(0), outs[0][1], outs[0][2]], params));
+      }
     }
     return fail(`"${spec.type}" is not a kind of block this builder knows.`);
+  }
+  // A stack of blocks (one parallel branch) on a shape: each block's shape, and the first problem among them.
+  function stackShape(list, inS) {
+    let shape = inS, params = 0, problem = null;
+    const shapes = [];
+    for (const spec of list) {
+      const r = spec && spec.type === 'parallel' ? { out: shape.slice(), params: 0, problem: { reason: 'A branch cannot hold more parallel branches: put the second set after this one instead.', fix: null } } : blockShape(spec, shape);
+      shapes.push({ in: shape.slice(), out: r.out, params: r.params, problem: r.problem });
+      if (r.problem && !problem) problem = r.problem;
+      params += r.params; shape = r.out;
+    }
+    return { shapes, out: shape, params, problem };
   }
 
   // The output head on the last shape: { out, params, problem }, out and params again as if any fix were in.
@@ -509,8 +548,9 @@
     }
     let shape = inp.shape, params = inp.params;
     for (const spec of blocks) {
-      const r = blockShape(spec, shape);
-      res.shapes.push({ in: shape.slice(), out: r.out, params: r.params, problem: r.problem });
+      const r = blockShape(spec, shape), e = { in: shape.slice(), out: r.out, params: r.params, problem: r.problem };
+      if (r.branches) e.branches = r.branches; // parallel branches: the shapes of the blocks in each
+      res.shapes.push(e);
       if (r.problem) res.ok = false;
       params += r.params; shape = r.out;
     }
@@ -1420,8 +1460,82 @@
     }
   }
 
+  /* Parallel branches: each branch is its own stack of layers on the same input, and their outputs are joined side by
+     side (a vector's numbers, each position's features, an image's channels), added, multiplied or averaged, number
+     by number. An empty branch passes the input through, so adding it to the others is a residual connection.
+     Backward: each branch gets its share of the gradient (its slice, all of it, all of it times the other branches'
+     outputs, or a k-th of it), runs it back through its own layers, and the input's gradient is the sum. */
+  class Parallel {
+    constructor(spec, cfg, inS, outS, ctx) {
+      Object.assign(this, { type: 'parallel', spec, inShape: inS, outShape: outS, merge: cfg.merge, inSize: size(inS), outSize: size(outS), mem: new Mem(ctx.Arr) });
+      this.lanes = spec.branches.map((list) => { const sh = stackShape(list, inS).shapes; return list.map((s, k) => new LAYERS[s.type](s, withDefaults(s), sh[k].in, sh[k].out, ctx)); });
+      this.k = this.lanes.length;
+      this.laneOut = spec.branches.map((list) => stackShape(list, inS).out);
+      this.sizes = this.laneOut.map(size);
+      this.rows = outS.length === 2 ? outS[0] : 1; // joined side by side: one row per position of a sequence
+      this.inner = this.lanes.flat();
+      this.params = [].concat(...this.inner.map((L) => L.params));
+    }
+    alloc(B) {
+      for (const L of this.inner) L.alloc(B);
+      this.out = this.mem.view('out', B * this.outSize);
+      this.dx = this.mem.view('dx', B * this.inSize);
+      this.dh = this.sizes.map((n, b) => this.mem.view('dh' + b, B * n));
+    }
+    forward(x, B, train) {
+      this.x = x;
+      const ys = (this.ys = this.lanes.map((lane) => { let h = x; for (const L of lane) h = L.forward(h, B, train); return h; }));
+      const out = this.out, n = B * this.outSize;
+      if (this.merge === 'concat') {
+        const R = this.rows, row = this.outSize / R;
+        let off = 0;
+        ys.forEach((y, b) => {
+          const c = this.sizes[b] / R;
+          for (let e = 0, rows = B * R; e < rows; e++) { const src = e * c, dst = e * row + off; for (let j = 0; j < c; j++) out[dst + j] = y[src + j]; }
+          off += c;
+        });
+      } else {
+        const y0 = ys[0];
+        for (let i = 0; i < n; i++) out[i] = y0[i];
+        for (let b = 1; b < this.k; b++) { const y = ys[b]; if (this.merge === 'mul') for (let i = 0; i < n; i++) out[i] *= y[i]; else for (let i = 0; i < n; i++) out[i] += y[i]; }
+        if (this.merge === 'mean') { const s = 1 / this.k; for (let i = 0; i < n; i++) out[i] *= s; }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const n = B * this.outSize, ys = this.ys, dh = this.dh, k = this.k;
+      // each branch's share of the gradient, all of them before any branch runs back
+      if (this.merge === 'concat') {
+        const R = this.rows, row = this.outSize / R;
+        let off = 0;
+        dh.forEach((g, b) => {
+          const c = this.sizes[b] / R;
+          for (let e = 0, rows = B * R; e < rows; e++) { const dst = e * c, src = e * row + off; for (let j = 0; j < c; j++) g[dst + j] = dy[src + j]; }
+          off += c;
+        });
+      } else if (this.merge === 'mul') {
+        for (let b = 0; b < k; b++) { const g = dh[b]; for (let i = 0; i < n; i++) { let p = dy[i]; for (let c = 0; c < k; c++) if (c !== b) p *= ys[c][i]; g[i] = p; } }
+      } else {
+        const s = this.merge === 'mean' ? 1 / k : 1;
+        for (let b = 0; b < k; b++) { const g = dh[b]; for (let i = 0; i < n; i++) g[i] = dy[i] * s; }
+      }
+      // back through each branch, last layer first; a layer passes a gradient back when anything before it learns
+      const dx = needDx ? this.dx : null, m = B * this.inSize;
+      if (dx) dx.fill(0);
+      this.lanes.forEach((lane, b) => {
+        const flags = [];
+        let learns = needDx;
+        for (const L of lane) { flags.push(learns); if (L.params.length) learns = true; }
+        let g = dh[b];
+        for (let j = lane.length - 1; j >= 0 && g; j--) g = lane[j].backward(g, B, flags[j]);
+        if (dx && g) for (let i = 0; i < m; i++) dx[i] += g[i];
+      });
+      return dx;
+    }
+  }
+
   const LAYERS = { dense: Dense, activation: Act, dropout: Dropout, layernorm: LayerNormBlock, attention: Attention, transformer: Transformer, conv: Conv, pool: Pool, flatten: Flatten, gap: Gap,
-    gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool };
+    gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool, parallel: Parallel };
 
   // ------------------------------------------------------------------ losses
   function resolveLoss(loss, kind) {
@@ -1447,6 +1561,8 @@
       const head = { type: 'dense', units: K, act: 'linear' };
       this.layers.push(new Dense(head, head, last, chk.outShape, ctx, true));
       this.params = (this.embed ? this.embed.params : []).concat(...this.layers.map((L) => L.params));
+      // the layers inside parallel branches, in order: block by block, branch by branch
+      this.nested = [].concat(...this.layers.map((L) => L.inner || []));
       this.paramCount = this.params.reduce((s, p) => s + p.w.length, 0);
       // a layer sends a gradient back to its input only when something before it learns
       let learns = !!this.embed;
@@ -1649,5 +1765,5 @@
     return new Model(blocks || [], input, output, opts || {}, chk);
   }
 
-  NA.bx = { BLOCKS, LOSSES, OPTIMIZERS, check, build, shapeText };
+  NA.bx = { BLOCKS, LOSSES, OPTIMIZERS, MERGES, check, build, shapeText, stackShape };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

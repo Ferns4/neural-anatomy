@@ -21,7 +21,9 @@
       inputNode: (i) => neuron(X, l - 1, i),
       vars: { w: `layer${l}.weight[${j}]`, a: l === 1 ? 'x' : `a${l - 1}`, b: `layer${l}.bias[${j}]` },
       codeHead: [`# ${name}, for the probe input`], codeWhat: `as one row of nn.Linear(${nIn}, ${net.sizes[l]})`,
-      about: [`${name} of this network, for the probe input${App.ds.kind === 'plane' ? ` (${App.ds.featureLabels.map((f, i) => `${f} = ${fmt(tr.a[0][i], 2)}`).join(', ')})` : ''}. Zoom into an input bar to open the neuron that produced it, all the way back to the inputs.`],
+      about: [`${name} of this network, for the probe input${App.ds.kind === 'plane' ? ` (${App.ds.featureLabels.map((f, i) => `${f} = ${fmt(tr.a[0][i], 2)}`).join(', ')})` : ''}. Zoom into an input bar to open the neuron that produced it, all the way back to the inputs.`,
+        out ? `This is an output: its ${soft ? 'probability comes from the softmax of all the output sums, so raising one output lowers the others' : 'value is the answer itself'}, and training compares it with the right answer to work out how every weight before it should change.`
+          : `What it is for: this neuron is one ingredient of the next layer, which adds it, weighted, to the other neurons of its layer. Its square in the network shows its output at every point of the input plane; its weights and bias set where its sum crosses 0, and ${act.label} sets the shape on either side. ${tr.a[l][j] === 0 && act.id === 'relu' ? 'For this input it is silent (its sum is negative), so it passes nothing on and its weights learn nothing from this example.' : 'For this input it passes on ' + fmt(tr.a[l][j], 3) + '.'}`],
     };
     if (soft) {
       spec.actLine = `p = softmax(z)[${j}] = ${fmt(tr.a[l][j], 4)}   (over all ${net.sizes[l]} outputs)`;
