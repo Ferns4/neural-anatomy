@@ -7,10 +7,15 @@
    Node: { id, title, sub, tone, rect: [fx, fy, fw, fh] in the parent's content box, shape: 'box' | 'op' | 'zone',
            summary(ctx, r, S) when drawn small inside its parent, inner(ctx, c, S) when it is the open level,
            children: [nodes], grids: [{ id, rect, rows, cols, square, make(i, j) → node }], animate,
-           about: [paragraphs], code: 'python', codeLabel }
+           about: [paragraphs], code: 'python', codeLabel,
+           terms: [{ key, words, ids, cells(id) }] (phrases of the explanation that point at parts of the picture),
+           count: 'what it is made of', tools(view) → [buttons], toolsKey, onPick(part, view), pickHint(part, view),
+           portal(view) (entering the part leaves this view instead) }
    A 'zone' child is part of its parent's own drawing (a call in a line of code, a row of maths): it is only
    outlined. A grid turns a heatmap or a row of bars into cells that open on demand, so any number under the
-   cursor can be zoomed into. Levels marked animate are redrawn every frame (S.now is the time). */
+   cursor can be zoomed into. Levels marked animate are redrawn every frame (S.now is the time). Words of the
+   explanation that name a part are linked to it: pointing at the words lights the part up, and pointing at a
+   part lights its words (S.hl is the lit key while a level draws). */
 (function (NA) {
   'use strict';
   const { el, clear, clamp, theme } = NA;
@@ -48,20 +53,27 @@
       ctx.font = font(o.w || 500, size, o.mono);
       const widest = Math.max(...lines.map((l) => ctx.measureText(l).width), 1);
       if (widest > r.w) size = Math.max(Math.min(size, o.min || 9), size * (r.w / widest));
-      ctx.font = font(o.w || 500, size, o.mono);
-      const rows = [];
-      lines.forEach((l, i) => {
-        let rest = l, ind = '';
-        while (ctx.measureText(ind + rest).width > r.w) {
-          let cut = -1;
-          for (let k = rest.length - 1; k > 0; k--) if (rest[k] === ' ' && rest[k - 1] !== ' ' && ctx.measureText(ind + rest.slice(0, k)).width <= r.w) { cut = k; break; }
-          if (cut <= 0) break;
-          rows.push([ind + rest.slice(0, cut), i]);
-          rest = rest.slice(cut).trimStart(); ind = '    ';
-        }
-        rows.push([ind + rest, i]);
-      });
-      const lh = size * (o.lh || 1.45), n = Math.max(1, Math.floor(r.h / lh));
+      const wrap = () => {
+        ctx.font = font(o.w || 500, size, o.mono);
+        const rows = [];
+        lines.forEach((l, i) => {
+          let rest = l, ind = '';
+          while (ctx.measureText(ind + rest).width > r.w) {
+            let cut = -1;
+            for (let k = rest.length - 1; k > 0; k--) if (rest[k] === ' ' && rest[k - 1] !== ' ' && ctx.measureText(ind + rest.slice(0, k)).width <= r.w) { cut = k; break; }
+            if (cut <= 0) break;
+            rows.push([ind + rest.slice(0, cut), i]);
+            rest = rest.slice(cut).trimStart(); ind = '    ';
+          }
+          rows.push([ind + rest, i]);
+        });
+        return rows;
+      };
+      let rows = wrap();
+      // more lines than the box is tall: a smaller font (down to a readable 8 px) rather than lines left out
+      const fit = r.h / ((o.lh || 1.45) * rows.length);
+      if (fit < size && size > 8) { size = Math.max(8, fit); rows = wrap(); }
+      const lh = size * (o.lh || 1.45), n = Math.max(1, Math.floor(r.h / lh + 0.01));
       rows.slice(0, n).forEach(([l, i], k) => S.text(ctx, l, r.x, r.y + lh * (k + 0.5), { size, mono: o.mono, w: (o.strong && o.strong(i)) ? 700 : o.w || 500, color: o.colorOf ? o.colorOf(i) : o.color }));
       return lh * Math.min(n, rows.length);
     },
@@ -118,6 +130,13 @@
     },
     caption(ctx, s, r, o = {}) { S.text(ctx, s, r.x, r.y - (o.size || 9) * 0.9, { size: o.size || 9, w: 600, color: o.color || theme.c('muted'), maxW: Math.max(r.w, o.minW || 0) }); },
     frame(ctx, r) { ctx.strokeStyle = theme.c('line'); ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); },
+    // a part the explanation is pointing at: a glowing outline
+    lit(ctx, r, rad = 6) {
+      ctx.save(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = theme.c('focus', 0.28); ctx.lineWidth = 6; ctx.beginPath(); NA.rr(ctx, r.x - 3, r.y - 3, r.w + 6, r.h + 6, rad + 3); ctx.stroke();
+      ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2; ctx.beginPath(); NA.rr(ctx, r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, rad + 1.5); ctx.stroke();
+      ctx.restore();
+    },
     // choose fractions by shape: wide (landscape) or tall (portrait) content
     pick: (c, wide, tall) => (c.w / c.h >= 1.05 ? wide : tall),
   };
@@ -139,7 +158,12 @@
       this.merge = false; this.mergeDepth = 0; this.mergeForm = null; this.mergeHits = null;
       this.mergeBtn = el('button', { class: 'arch-merge', type: 'button', 'aria-pressed': 'false', title: 'Merge: when you zoom out, keep this level of detail. The parts around this one are drawn the same way, side by side, each with a thin line around it and its name.', onclick: () => this.setMerge(!this.merge) }, el('span', { class: 'arch-merge-dot', 'aria-hidden': 'true' }), 'Merge');
       this.bar = el('div', { class: 'arch-bar' }, this.back, this.crumbs, this.mergeBtn);
-      stage.append(this.canvas, this.bar);
+      // the open level's own controls (flip a bit, step the clock…) at the right of its title, and the card of a
+      // guided walk through the levels
+      this.toolsEl = el('div', { class: 'arch-tools', role: 'toolbar', 'aria-label': 'Tools for this level', hidden: true });
+      this.followEl = el('section', { class: 'arch-follow', 'aria-label': 'Following one number', 'aria-live': 'polite', hidden: true });
+      this.hl = null; this.links = []; this.clock = null; this.queue = null; this.tour = null; this.flipMode = false;
+      stage.append(this.canvas, this.bar, this.toolsEl, this.followEl);
       this.zoom = new NA.ui.Zoom(this.canvas, {
         host: stage, panOne: true, max: 3, noDouble: true, wheel: 'always', wheelGate: () => this.wheelOpen(),
         onChange: () => { this.dirty = true; NA.tooltip.hide(); if (!this.locked() && this.zoom.k > 2.3) this.zoomedIn(); },
@@ -149,14 +173,15 @@
       this.canvas.addEventListener('pointermove', (e) => this.hover(e));
       const release = () => { if (this.zoom.ptrs.size === 0) this.gestureLock = false; };
       this.canvas.addEventListener('pointerup', release); this.canvas.addEventListener('pointercancel', release);
-      this.canvas.addEventListener('pointerleave', () => { this.hoverId = null; this.dirty = true; NA.tooltip.hide(); });
+      this.canvas.addEventListener('pointerleave', () => { this.hoverId = null; this.dirty = true; NA.tooltip.hide(); this.syncLinks(); });
       this.canvas.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); this.exit(); } });
       this.ro = new ResizeObserver(() => { this.dirty = true; });
       this.ro.observe(stage);
     }
     destroy() { this.ro.disconnect(); this.anim = null; }
     size() { return [Math.max(160, this.stage.clientWidth), Math.max(160, this.stage.clientHeight)]; }
-    levelRect() { const [W, H] = this.size(); return { x: 10, y: 46, w: W - 20, h: H - 56 }; }
+    // the open level's box: under the bar, and above a walk's card while one is going on
+    levelRect() { const [W, H] = this.size(), f = this.tour ? this.followH || 0 : 0; return { x: 10, y: 46, w: W - 20, h: H - 56 - f >= 220 ? H - 56 - f : H - 56 }; } // (a short stage: the card goes over it)
     content(node, r) { const hy = node.header ?? (this.hy || 0.07); return { x: r.x + r.w * 0.02, y: r.y + r.h * hy, w: r.w * 0.96, h: r.h * (1 - hy - 0.02) }; }
     node() { let n = this.root; for (const id of this.path.slice(1)) n = this.childOf(n, id) || n; return n; }
     /* A part of a level by id: a listed child, or a cell of one of its grids, made on demand: "grid:i:j", or
@@ -195,11 +220,12 @@
       this.draw();
     }
     draw() {
+      this.followH = this.tour ? this.followEl.offsetHeight + 8 : 0;
       const [W, H] = this.size(), ctx = NA.fitCanvas(this.canvas, W, H), R = this.levelRect();
       ctx.clearRect(0, 0, W, H);
-      S.now = performance.now();
+      S.now = performance.now(); S.hl = this.hl; S.flipMode = this.flipMode;
       this.mergeAnim = false;
-      this.hy = Math.max(0.07, 30 / R.h); // room for the level title, whatever the stage height
+      this.hy = Math.max(0.07, (30 + (this.anim ? 0 : this.toolsH || 0)) / R.h); // room for the level title (and tools stacked under it)
       const chip = this.zoom.chip;
       this.chipW = chip && chip.offsetParent ? chip.offsetWidth + 14 : 0;
       this.root = this.opts.build({ w: R.w * 0.96, h: R.h * 0.91 });
@@ -235,6 +261,7 @@
       }
       ctx.globalAlpha = 1;
       this.syncBar();
+      this.syncTools();
     }
     // fadeId: the part being entered, whose small preview fades as its own level grows inside it
     drawLevel(ctx, node, R, cam, alpha, cover, fadeId, fade = 0, k = 0) {
@@ -244,11 +271,44 @@
       if (cover) { ctx.fillStyle = theme.c('panel'); ctx.beginPath(); NA.rr(ctx, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 12); ctx.fill(); }
       const c = this.content(node, r), hits = k > 0 ? [] : null, merged = k > 0 ? this.drawMerged(ctx, node, c, k, alpha, hits) : null;
       if (!cover) { this.mergeHits = merged ? hits : null; this.mergeCut = merged && merged.cut ? merged.count : 0; }
-      // the zoom buttons sit at the top right, so the open level's title stops short of them
-      S.text(ctx, node.title + (node.sub ? '  ·  ' + node.sub : '') + (merged ? `  ·  merged: ${merged.count}${merged.cut ? '+' : ''} ${this.mergeForm ? formsOf(this.mergeForm, merged.count) : merged.count === 1 ? 'part' : 'parts'}` : ''), r.x + 2, r.y + 14, { size: clamp(14 * cam.k, 9, 40), w: 650, maxW: cam.k > 1.001 ? r.w : Math.max(60, r.w - (this.chipW || 0)) });
+      // the zoom buttons sit at the top right, and the open level's tools left of them, so its title stops short
+      const open = !cover && !this.anim;
+      S.text(ctx, node.title + (node.sub ? '  ·  ' + node.sub : '') + (merged ? `  ·  merged: ${merged.count}${merged.cut ? '+' : ''} ${this.mergeForm ? formsOf(this.mergeForm, merged.count) : merged.count === 1 ? 'part' : 'parts'}` : ''), r.x + 2, r.y + 14, { size: clamp(14 * cam.k, 9, 40), w: 650, maxW: cam.k > 1.001 ? r.w : Math.max(60, r.w - (this.chipW || 0) - (open ? this.toolsW || 0 : 0)) });
       if (merged) return;
+      // a level with a clock (an adder you step through) draws the moment it is set to
+      S.clock = open && this.clock && this.clock.key === this.path.join('/') ? this.clock : null;
       if (node.inner) { ctx.save(); ctx.globalAlpha = alpha; node.inner(ctx, c, S); ctx.restore(); }
-      for (const ch of node.children || []) this.drawClosed(ctx, ch, S.place(c, ch.rect), ch.id === fadeId ? alpha * (1 - fade) : alpha);
+      S.clock = null;
+      for (const ch of node.children || []) {
+        const r1 = S.place(c, ch.rect), lit = !!this.hl && this.isLit(ch.id, node);
+        this.drawClosed(ctx, ch, r1, ch.id === fadeId ? alpha * (1 - fade) : alpha, lit);
+        if (lit) S.lit(ctx, r1, ch.shape === 'op' ? Math.min(r1.w, r1.h) / 2 : 8);
+      }
+      if (this.hl) this.drawLitCells(ctx, node, c);
+    }
+    // is a part of this level the one the explanation points at (by its id, or one of a phrase's parts)?
+    isLit(id, node) {
+      const h = this.hl;
+      if (!h) return false;
+      if (h === id) return true;
+      const t = (node.terms || []).find((q) => q.key === h);
+      return !!t && !t.own && this.termHas(t, id);
+    }
+    termHas(t, id) { return !!t && ((!!t.ids && t.ids.includes(id)) || (!!t.cells && t.cells(id))); }
+    // grid cells lit by the explanation: one outline for each run of them along a row
+    drawLitCells(ctx, node, c) {
+      for (const g of node.grids || []) {
+        if (g.rows * g.cols > 4000) continue;
+        const gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
+        for (let i = 0; i < g.rows; i++) {
+          let run = -1;
+          for (let j = 0; j <= g.cols; j++) {
+            const on = j < g.cols && this.isLit(g.index ? `${g.id}:${i * g.cols + j}` : `${g.id}:${i}:${j}`, node);
+            if (on && run < 0) run = j;
+            else if (!on && run >= 0) { S.lit(ctx, { x: gr.x + run * cw, y: gr.y + i * ch, w: (j - run) * cw, h: ch }, 3); run = -1; }
+          }
+        }
+      }
     }
 
     /* Merge: zoom out without leaving the kind of view you were in. Turned on at a level, the view remembers that
@@ -549,6 +609,9 @@
       const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top);
       if (!f) { if (this.selected) { this.selected = null; this.dirty = true; this.notify(); } return; }
       if (f.rel) { this.jump(f.rel); return; }
+      // the level can take the click itself (flipping a bit, say)
+      const lvl = this.node();
+      if (lvl.onPick && lvl.onPick(f.node, this)) { this.dirty = true; NA.tooltip.hide(); return; }
       if (this.canEnter(f.node)) this.enter(f.node);
       else { this.selected = f.node.id; this.dirty = true; this.notify(); }
     }
@@ -556,9 +619,10 @@
       if (this.zoom.busy || this.anim) return;
       const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top), id = f ? f.node.id : null;
       const hid = f && f.rel ? '~' + f.node.id : id;
-      if (hid !== this.hoverId) { this.hoverId = hid; this.dirty = true; }
-      this.canvas.style.cursor = f ? (this.canEnter(f.node) ? 'zoom-in' : 'pointer') : 'default';
-      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: f.rel ? 'Click to open it' : this.canEnter(f.node) ? 'Click or zoom in to open it' : 'Click for the explanation and code' })], e.clientX, e.clientY);
+      if (hid !== this.hoverId) { this.hoverId = hid; this.dirty = true; this.syncLinks(); }
+      const lvl = this.node(), hint = f && !f.rel && lvl.pickHint ? lvl.pickHint(f.node, this) : null;
+      this.canvas.style.cursor = f ? (!hint && this.canEnter(f.node) ? 'zoom-in' : 'pointer') : 'default';
+      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: hint || (f.rel ? 'Click to open it' : this.canEnter(f.node) ? 'Click or zoom in to open it' : 'Click for the explanation and code') })], e.clientX, e.clientY);
       else NA.tooltip.hide();
     }
     // zoomed far enough into the level: open the part nearest the middle of the view
@@ -590,11 +654,12 @@
       this.zoomSet(1, 0, 0); this.lockUntil = performance.now() + 200; this.wheelHold = true;
       this.dirty = true; this.focusKey = null; NA.tooltip.hide();
     }
-    // animate into a part of the current level
-    enter(child) {
+    // animate into a part of the current level (dur: a quicker flight, for a walk through several levels)
+    enter(child, dur) {
+      if (child.portal) { child.portal(this); return; }
       const R = this.levelRect(), parent = this.node(), c = this.content(parent, R), cr = S.place(c, child.rect);
       const k1 = Math.min(R.w / cr.w, R.h / cr.h), c0 = this.camNow();
-      this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, c0, c1: { k: k1 }, bw: cr.w, bh: cr.h,
+      this.anim = { parent, child, s: 0, t0: performance.now(), dir: 1, dur, c0, c1: { k: k1 }, bw: cr.w, bh: cr.h,
         w0: [(R.x + R.w / 2 - c0.tx) / c0.k, (R.y + R.h / 2 - c0.ty) / c0.k], w1: [cr.x + cr.w / 2, cr.y + cr.h / 2], done: () => { this.path = this.path.concat(child.id); if (this.merge && this.path.length >= this.mergeDepth) { this.mergeDepth = this.path.length; this.mergeForm = formOf(this.node()) || this.mergeForm; } } };
       this.selected = null; this.wheelHold = true;
       this.dirty = true;
@@ -619,7 +684,7 @@
       this.dirty = true;
     }
     stepAnim(now) {
-      const a = this.anim, dur = NA.prefersReducedMotion() ? 1 : 560, p = clamp((now - a.t0) / dur, 0, 1), e = easeInOut(p);
+      const a = this.anim, dur = NA.prefersReducedMotion() ? 1 : a.dur || 560, p = clamp((now - a.t0) / dur, 0, 1), e = easeInOut(p);
       a.s = a.dir > 0 ? e : 1 - e;
       if (p >= 1) {
         this.anim = null;
@@ -629,7 +694,65 @@
         this.zoomSet(1, 0, 0);
         this.focusKey = null;
         this.notify();
+        if (this.queue) this.nextQueued();
       }
+    }
+    // end a flight at once, where it was going
+    finishAnim() {
+      const a = this.anim;
+      if (!a) return;
+      this.anim = null;
+      if (a.done) a.done();
+      this.zoomSet(1, 0, 0);
+      this.focusKey = null;
+    }
+
+    /* A guided walk through the levels: each step flies to a level (through the ones between), lights the part it
+       is about and says what happens there, with this model's own numbers. steps: [{ path, hl, text }] */
+    follow(steps, title) {
+      if (!steps || !steps.length) return;
+      this.tour = { steps, k: 0, title: title || 'Follow one number' };
+      this.goStep(0);
+    }
+    goStep(k) {
+      const T = this.tour;
+      if (!T) return;
+      if (this.anim) this.finishAnim();
+      T.k = clamp(k, 0, T.steps.length - 1);
+      const st = T.steps[T.k];
+      this.goPath(st.path);
+      this.hl = st.hl || null; this.dirty = true;
+      this.renderFollow();
+    }
+    endFollow() { this.tour = null; this.queue = null; this.hl = null; this.followEl.hidden = true; this.dirty = true; }
+    renderFollow() {
+      const T = this.tour, st = T.steps[T.k], last = T.k === T.steps.length - 1;
+      clear(this.followEl);
+      this.followEl.append(
+        el('div', { class: 'af-head' }, el('span', { class: 'af-kicker', text: T.title }), el('span', { class: 'af-count', text: `${T.k + 1} of ${T.steps.length}` }),
+          el('button', { type: 'button', class: 'icon-btn af-close', 'aria-label': 'Stop following', title: 'Stop following', onclick: () => this.endFollow() }, '✕')),
+        el('p', { class: 'af-text', text: st.text }),
+        el('div', { class: 'af-nav' },
+          el('button', { type: 'button', class: 'btn btn-quiet', disabled: T.k === 0, onclick: () => this.goStep(T.k - 1) }, '◀ Back'),
+          el('button', { type: 'button', class: 'btn btn-primary', onclick: () => (last ? this.endFollow() : this.goStep(T.k + 1)) }, last ? 'Done' : 'Next ▶')));
+      this.followEl.hidden = false;
+    }
+    // fly to a path: back out to where it branches off, then into each level in turn
+    goPath(target) {
+      let p = 0;
+      while (p < this.path.length && p < target.length && this.path[p] === target[p]) p++;
+      if (!p) return;
+      this.queue = target.slice(p);
+      this.selected = null; this.mergeHits = null;
+      if (this.path.length > p) this.exit(p - 1);
+      else this.nextQueued();
+    }
+    nextQueued() {
+      const q = this.queue;
+      if (!q || !q.length) { this.queue = null; this.dirty = true; this.notify(); return; }
+      const ch = this.childOf(this.node(), q.shift());
+      if (!ch || !this.canEnter(ch)) { this.queue = null; this.dirty = true; return; }
+      this.enter(ch, 420);
     }
     zoomSet(k, tx, ty) { const keep = this.zoom.onChange; this.zoom.onChange = () => {}; this.zoom.set(k, tx, ty); this.zoom.onChange = keep; this.zoom.rebase(); }
     // one long scroll or trackpad pinch should open one level, not several: once a level changes, the wheel
@@ -658,8 +781,96 @@
       for (const id of path.slice(1)) { n = this.childOf(n, id) || n; names.push(n.title); }
       const trail = node.id === path[path.length - 1] ? names.slice(0, -1) : names;
       const k = node.id === path[path.length - 1] ? this.mergeK(path.length) : 0;
-      const F = this.mergeForm, about = k > 0 && this.mergeHits ? [`Merged: every ${F || 'part'} within ${k === 1 ? 'one level' : `${k} levels`} of this one, side by side and drawn the way its own level looks, framed by the part of this level it belongs to (and inside that, by the part it sits in). ${F ? `Parts with no ${F} that close` : 'Parts with nothing that far down'} keep their usual boxes, under Other parts${this.mergeCut ? ' (so do any there was no room for)' : ''}. You see what surrounds the part you were in, in the same detail; click any of them to open it. Turn Merge off to see this level as it usually is.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`, ...(node.about || [])] : node.about;
-      return { kicker: [this.opts.kicker || 'Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about, code: node.code, codeLabel: node.codeLabel };
+      const F = this.mergeForm, merged = k > 0 && !!this.mergeHits, about = merged ? [`Merged: every ${F || 'part'} within ${k === 1 ? 'one level' : `${k} levels`} of this one, side by side and drawn the way its own level looks, framed by the part of this level it belongs to (and inside that, by the part it sits in). ${F ? `Parts with no ${F} that close` : 'Parts with nothing that far down'} keep their usual boxes, under Other parts${this.mergeCut ? ' (so do any there was no room for)' : ''}. You see what surrounds the part you were in, in the same detail; click any of them to open it. Turn Merge off to see this level as it usually is.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`, ...(node.about || [])] : node.about;
+      // the open level's words that name its parts are linked to them; what it is made of comes first
+      const level = node.id === path[path.length - 1] && path.join('/') === this.path.join('/');
+      this.links = [];
+      let out = level && !merged && about ? this.linkify(node, about) : about;
+      if (node.count) out = [el('p', { class: 'ip-count', text: node.count }), ...(out || [])];
+      return { kicker: [this.opts.kicker || 'Architecture', ...trail].join(' › '), title: node.title + (node.sub ? ' · ' + node.sub : ''), about: out, code: node.code, codeLabel: node.codeLabel };
+    }
+    /* Words that name a part of the level (its listed phrases, then its parts' own names) become links: pointing
+       at them lights that part of the picture. The first mention of each in a paragraph, longest names first. */
+    linkify(node, about) {
+      const targets = [];
+      for (const t of node.terms || []) for (const w of t.words || []) targets.push({ key: t.key, w, cs: !!t.cs });
+      for (const ch of node.children || []) {
+        const w = ch.title;
+        if (!w || w.length < 3 || ch.shape === 'ghost' || targets.some((q) => q.key === ch.id)) continue;
+        targets.push({ key: ch.id, w, cs: w === w.toUpperCase() }); // AND, OR, XOR: only as capitals
+      }
+      if (!targets.length) return about;
+      targets.sort((a, b) => b.w.length - a.w.length);
+      const wordChar = /[\p{L}\p{N}_]/u;
+      return about.map((para) => {
+        if (typeof para !== 'string') return para;
+        const low = para.toLowerCase(), found = [], used = new Set();
+        for (const t of targets) {
+          if (used.has(t.key)) continue;
+          const hay = t.cs ? para : low, needle = t.cs ? t.w : t.w.toLowerCase();
+          for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
+            const end = at + needle.length;
+            if ((at > 0 && wordChar.test(para[at - 1])) || (end < para.length && wordChar.test(para[end])) || found.some((f) => at < f.end && end > f.at)) continue;
+            found.push({ at, end, key: t.key }); used.add(t.key);
+            break;
+          }
+        }
+        if (!found.length) return para;
+        found.sort((a, b) => a.at - b.at);
+        const p = el('p');
+        let i = 0;
+        for (const f of found) { if (f.at > i) p.append(para.slice(i, f.at)); p.append(this.linkSpan(para.slice(f.at, f.end), f.key)); i = f.end; }
+        if (i < para.length) p.append(para.slice(i));
+        return p;
+      });
+    }
+    linkSpan(text, key) {
+      const s = el('span', { class: 'arch-link', tabindex: '0', text });
+      const on = () => this.setHl(key), off = () => { if (this.hl === key && !this.tour) this.setHl(null); };
+      s.addEventListener('pointerenter', on);
+      s.addEventListener('pointerleave', (e) => { if (e.pointerType !== 'touch') off(); });
+      s.addEventListener('focus', on); s.addEventListener('blur', off);
+      // a tap (a touch screen has no hover) lights the part for a moment
+      s.addEventListener('click', () => { on(); clearTimeout(this.hlTimer); this.hlTimer = setTimeout(off, 2400); });
+      this.links.push({ el: s, key });
+      return s;
+    }
+    setHl(key) { if (this.hl !== key) { this.hl = key; this.dirty = true; } }
+    // the words for the part under the pointer light up in the explanation
+    syncLinks() {
+      const node = this.root && this.node(), id = this.hoverId;
+      for (const L of this.links) {
+        const t = node && (node.terms || []).find((q) => q.key === L.key);
+        L.el.classList.toggle('is-lit', !!id && (L.key === id || this.termHas(t, id)));
+      }
+    }
+
+    // ------------------------------------------------------------------ the open level's tools
+    syncTools() {
+      const node = this.root && !this.anim ? this.node() : null;
+      const key = node ? `${this.path.join('/')}|${node.toolsKey || ''}|${this.toolsRev || 0}|${this.tour ? 1 : 0}` : '';
+      if (key === this.toolsKey) return;
+      this.toolsKey = key;
+      clear(this.toolsEl);
+      const items = node && node.tools && !this.tour ? node.tools(this).filter(Boolean) : []; // a walk drives the view itself
+      this.toolsEl.append(...items);
+      this.toolsEl.hidden = !items.length;
+      // on a narrow stage the tools get their own row(s) under the title, and the level starts below them
+      const stacked = this.narrow();
+      this.toolsEl.classList.toggle('is-stacked', stacked);
+      const w = items.length && !stacked ? this.toolsEl.offsetWidth + 12 : 0, h = items.length && stacked ? this.toolsEl.offsetHeight + 6 : 0;
+      if (w !== this.toolsW || h !== this.toolsH) { this.toolsW = w; this.toolsH = h; this.dirty = true; }
+    }
+    narrow() { return this.stage.clientWidth < 560; }
+    refreshTools() { this.toolsRev = (this.toolsRev || 0) + 1; this.dirty = true; }
+    // a level's tool: a small button; o.pressed makes it a toggle
+    tool(label, onClick, o = {}) {
+      return el('button', { type: 'button', class: 'arch-tool' + (o.primary ? ' is-primary' : ''), title: o.title, 'aria-pressed': o.pressed === undefined ? null : String(!!o.pressed), disabled: !!o.disabled, onclick: onClick }, label);
+    }
+    toolSelect(options, value, onChange, label) {
+      const s = el('select', { class: 'arch-tool arch-tool-select', 'aria-label': label, title: label }, ...options.map(([v, t]) => el('option', { value: v, selected: v === value }, t)));
+      s.addEventListener('change', () => onChange(s.value));
+      return s;
     }
     syncBar() {
       const key = this.path.join('/');

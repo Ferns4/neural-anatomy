@@ -9,6 +9,7 @@
   'use strict';
   const { fmt, theme, clamp } = NA;
   const D = {};
+  const int = (v) => Math.round(v).toLocaleString('en-US');
   const num = (v, d = 4) => NA.fmtCode(v, d); // numbers inside code
   // a Python list of numbers, eight to a line
   const pyList = (vals) => {
@@ -73,15 +74,45 @@
     o.ok = e > 0 && e < 255 && fromBits(x.s, e, keep - 0x800000) === c;
     return o;
   }
+  /* The full adder every adder in these views is made of: the standard one, or the one the visitor wired up
+     themselves and chose to use (js/circuit.js), right or wrong. → [sum, carry out] */
+  const faStd = (a, b, c) => [a ^ b ^ c, (a & b) | ((a ^ b) & c)];
+  const fa = (a, b, c) => (NA.circuit && NA.circuit.on ? NA.circuit.eval(a, b, c) : faStd(a, b, c));
   // ripple-carry addition of two n-bit numbers, keeping every bit and carry
   function ripple(x, y, n, cin = 0) {
     const r = { a: [], b: [], c: [cin], s: [], n };
     for (let i = 0; i < n; i++) {
-      const ai = Math.floor(x / 2 ** i) % 2, bi = Math.floor(y / 2 ** i) % 2, ci = r.c[i];
-      r.a.push(ai); r.b.push(bi); r.s.push(ai ^ bi ^ ci); r.c.push((ai & bi) | ((ai ^ bi) & ci));
+      const ai = Math.floor(x / 2 ** i) % 2, bi = Math.floor(y / 2 ** i) % 2, [si, co] = fa(ai, bi, r.c[i]);
+      r.a.push(ai); r.b.push(bi); r.s.push(si); r.c.push(co);
     }
     r.cout = r.c[n];
     return r;
+  }
+  const addBits = (x, y, n, cin = 0) => ripple(x, y, n, cin).s.reduce((p, v, i) => p + v * 2 ** i, 0);
+  /* The adder again with every gate taking one tick to answer, from the moment the inputs arrive (every output
+     starting at 0): what each sum and carry shows tick by tick, and how many gate outputs switch on each tick.
+     Each full adder is the five gates of the standard design: P = A XOR B, G = A AND B, S = P XOR Cin,
+     Q = P AND Cin, Cout = G OR Q. */
+  function rippleSim(R) {
+    const n = R.n, z = () => new Array(n).fill(0);
+    let st = { p: z(), g: z(), q: z(), s: z(), c: [R.c[0], ...z()] };
+    const frames = [{ s: st.s, c: st.c, sw: 0, total: 0, changed: [] }];
+    let total = 0, settle = 0;
+    for (let t = 1; t <= 2 * n + 6; t++) {
+      const nx = { p: [], g: [], q: [], s: [], c: [R.c[0]] }, changed = [];
+      let sw = 0;
+      for (let i = 0; i < n; i++) {
+        nx.p.push(R.a[i] ^ R.b[i]); nx.g.push(R.a[i] & R.b[i]);
+        nx.s.push(st.p[i] ^ st.c[i]); nx.q.push(st.p[i] & st.c[i]); nx.c.push(st.g[i] | st.q[i]);
+        const k = (nx.p[i] !== st.p[i]) + (nx.g[i] !== st.g[i]) + (nx.s[i] !== st.s[i]) + (nx.q[i] !== st.q[i]) + (nx.c[i + 1] !== st.c[i + 1]);
+        if (k) { sw += k; changed.push(i); }
+      }
+      st = nx; total += sw;
+      if (sw) settle = t;
+      frames.push({ s: nx.s, c: nx.c, sw, total, changed });
+      if (!sw) break;
+    }
+    return { frames, settle, final: frames[frames.length - 1] };
   }
   const GATE = { AND: (a, b) => a & b, OR: (a, b) => a | b, XOR: (a, b) => a ^ b, NAND: (a, b) => 1 - (a & b), NOR: (a, b) => 1 - (a | b), NOT: (a) => 1 - a };
   // inputs a gate had just before, chosen so that its output flips: the replay shows that switch
@@ -91,7 +122,89 @@
     const cands = [[1 - ins[0], ins[1]], [ins[0], 1 - ins[1]], [1 - ins[0], 1 - ins[1]]];
     return cands.find((p) => GATE[type](...p) !== out) || cands[0];
   }
-  D.math = { bitsOf, fromBits, mulSteps, addSteps, ripple, GATE };
+
+  /* a × b and a + b in float32 the way the circuits drawn here do them, every addition made by the full adder in
+     use: the exponent adder and the rows of the significand multiplier; the exponent subtractor and the
+     significand adder. With the standard full adder the results are exactly float32's. */
+  function mulFA(a, b) {
+    a = f32(a); b = f32(b);
+    const A = bitsOf(a), B = bitsOf(b), s = A.s ^ B.s;
+    if (!normal(A) || !normal(B)) return f32(a * b);
+    const ma = A.m + 0x800000, mb = B.m + 0x800000;
+    let prod = 0;
+    for (let i = 0; i < 24; i++) if (Math.floor(mb / 2 ** i) % 2) prod = addBits(prod, ma * 2 ** i, 48);
+    if (!prod) return s ? -0 : 0;
+    // the product's top bit sets the exponent; round what is below the 24 bits kept to nearest, ties to even
+    let p = Math.floor(Math.log2(prod));
+    if (2 ** p > prod) p--; else if (2 ** (p + 1) <= prod) p++;
+    const sh = p - 23;
+    let m24 = sh > 0 ? Math.floor(prod / 2 ** sh) : prod * 2 ** -sh, e = addBits(A.e, B.e, 9) - 127 + (p - 46);
+    if (sh > 0) { const rem = prod - m24 * 2 ** sh, half = 2 ** (sh - 1); if (rem > half || (rem === half && m24 % 2 === 1)) m24++; }
+    if (m24 >= 2 ** 24) { m24 /= 2; e++; }
+    if (e <= 0) return s ? -0 : 0;
+    if (e >= 255) return s ? -Infinity : Infinity;
+    return fromBits(s, e, m24 - 0x800000);
+  }
+  function addFA(a, b) {
+    a = f32(a); b = f32(b);
+    let x = bitsOf(a), y = bitsOf(b);
+    if (!normal(x) || !normal(y)) return f32(a + b);
+    if (y.e > x.e || (y.e === x.e && y.m > x.m)) [x, y] = [y, x];
+    const d = addBits(x.e, 255 - y.e, 8, 1), pa = (x.m + 0x800000) * 8, pb0 = (y.m + 0x800000) * 8, sh = Math.min(d, 27);
+    const sticky = sh && pb0 % 2 ** sh ? 1 : 0, pb = Math.floor(pb0 / 2 ** sh) + (sticky && Math.floor(pb0 / 2 ** sh) % 2 === 0 ? 1 : 0);
+    const sub = x.s !== y.s, sum = addBits(pa, sub ? 2 ** 28 - 1 - pb : pb, 28, sub ? 1 : 0);
+    if (!sum) return 0;
+    let v = sum, e = x.e;
+    while (v >= 2 ** 27) { v = Math.floor(v / 2) + (v % 2 && Math.floor(v / 2) % 2 === 0 ? 1 : 0); e++; }
+    while (v < 2 ** 26) { v *= 2; e--; }
+    let keep = Math.floor(v / 8);
+    const low = v % 8;
+    if (low > 4 || (low === 4 && keep % 2)) { keep++; if (keep >= 2 ** 24) { keep /= 2; e++; } }
+    if (e <= 0) return x.s ? -0 : 0;
+    if (e >= 255) return x.s ? -Infinity : Infinity;
+    return fromBits(x.s, e, keep - 0x800000);
+  }
+
+  /* Number formats a weight can be stored in: float32, and the 16- and 8-bit ones models use to save memory and
+     time. FP8 here is E4M3 as GPUs use it: no infinity, the largest number 448, values beyond it saturate. */
+  const FORMATS = {
+    f32: { id: 'f32', name: 'float32', E: 8, M: 23 },
+    bf16: { id: 'bf16', name: 'bfloat16', E: 8, M: 7 },
+    fp16: { id: 'fp16', name: 'FP16', E: 5, M: 10 },
+    fp8: { id: 'fp8', name: 'FP8 (E4M3)', E: 4, M: 3, fn: true },
+  };
+  // v (any double) in a format, rounded to nearest, ties to even: its bits u, fields s, e, m, and the value they hold
+  function encodeF(v, fm) {
+    if (fm.id === 'f32') { const B = bitsOf(v); return { u: B.u, s: B.s, e: B.e, m: B.m, v: B.v, n: 32 }; }
+    const E = fm.E, M = fm.M, bias = 2 ** (E - 1) - 1, emax = 2 ** E - 1, a = Math.abs(v), s = v < 0 || Object.is(v, -0) ? 1 : 0;
+    const rne = (q) => { const f = Math.floor(q), d = q - f; return d > 0.5 || (d === 0.5 && f % 2 === 1) ? f + 1 : f; };
+    let e, m;
+    if (Number.isNaN(a)) { e = emax; m = fm.fn ? 2 ** M - 1 : 2 ** (M - 1); }
+    else {
+      if (a === 0) { e = 0; m = 0; }
+      else if (a === Infinity) { e = Infinity; m = 0; }
+      else {
+        let e0 = Math.floor(Math.log2(a));
+        if (2 ** e0 > a) e0--; else if (2 ** (e0 + 1) <= a) e0++;
+        if (e0 < 1 - bias) { m = rne(a / 2 ** (1 - bias - M)); e = 0; if (m >= 2 ** M) { e = 1; m -= 2 ** M; } }
+        else { let q = rne(a / 2 ** (e0 - M)); if (q >= 2 ** (M + 1)) { q /= 2; e0++; } e = e0 + bias; m = q - 2 ** M; }
+      }
+      // too large: infinity, or for E4M3 (which has none) its largest number
+      if (fm.fn ? e > emax || (e === emax && m > 2 ** M - 2) : e >= emax) { e = emax; m = fm.fn ? 2 ** M - 2 : 0; }
+    }
+    const u = s * 2 ** (E + M) + e * 2 ** M + m;
+    return { u, s, e, m, v: decodeF(u, fm), n: 1 + E + M };
+  }
+  function decodeF(u, fm) {
+    if (fm.id === 'f32') { U[0] = u >>> 0; return F[0]; }
+    const E = fm.E, M = fm.M, bias = 2 ** (E - 1) - 1, emax = 2 ** E - 1;
+    const s = Math.floor(u / 2 ** (E + M)) % 2, e = Math.floor(u / 2 ** M) % 2 ** E, m = u % 2 ** M, sg = s ? -1 : 1;
+    if (e === emax && !fm.fn) return m ? NaN : sg * Infinity;
+    if (e === emax && m === 2 ** M - 1) return NaN;
+    return sg * (e === 0 ? m * 2 ** (1 - bias - M) : (1 + m / 2 ** M) * 2 ** (e - bias));
+  }
+  D.math = { bitsOf, fromBits, mulSteps, addSteps, ripple, rippleSim, GATE, mulFA, addFA, faStd, encodeF, decodeF, FORMATS };
+  D.FORMATS = FORMATS;
 
   // ------------------------------------------------------------------ drawing helpers
   let MONO = 0;
@@ -134,8 +247,9 @@
     B.lines.forEach((line, k) => S.text(ctx, line, r.x + B.area[0] * r.w, r.y + (B.area[1] + (k + 0.5) * B.rowH) * r.h, { size, mono: true, w: strong && strong(k) ? 700 : 500, color: line.startsWith('…') ? theme.c('muted') : theme.c('ink'), maxW: B.area[2] * r.w }));
   }
   const FIELD = (i) => (i === 0 ? 's7' : i <= 8 ? 's4' : 's1');
-  // 32 bits of a float32: sign (violet), exponent (amber), mantissa (blue); a filled cell is a 1
-  function drawBits(ctx, S, r, u, n = 32, field = FIELD) {
+  // 32 bits of a float32: sign (violet), exponent (amber), mantissa (blue); a filled cell is a 1. lit(i): bits the
+  // explanation points at, outlined as one run
+  function drawBits(ctx, S, r, u, n = 32, field = FIELD, lit) {
     const cw = r.w / n, h = Math.min(r.h, cw * 1.8), y = r.y + (r.h - h) / 2;
     for (let i = 0; i < n; i++) {
       const bit = Math.floor(u / 2 ** (n - 1 - i)) % 2, x = r.x + i * cw, col = field(i);
@@ -143,8 +257,22 @@
       if (cw > 7) { ctx.beginPath(); NA.rr(ctx, x + 0.75, y, cw - 1.5, h, Math.min(3, cw * 0.18)); ctx.fill(); } else ctx.fillRect(x + 0.5, y, Math.max(1, cw - 1), h);
       if (cw > 9) S.text(ctx, String(bit), x + cw / 2, y + h / 2, { size: Math.min(cw * 0.7, h * 0.7), mono: true, align: 'center', color: bit ? theme.c('panel') : theme.c('muted') });
     }
+    if (lit && S.lit) {
+      let run = -1;
+      for (let i = 0; i <= n; i++) {
+        const on = i < n && lit(i);
+        if (on && run < 0) run = i;
+        else if (!on && run >= 0) { S.lit(ctx, { x: r.x + run * cw, y, w: (i - run) * cw, h }, 3); run = -1; }
+      }
+    }
     return { cw, y, h };
   }
+  // which float32 field the explanation points at (the keys of the bit rows' phrases)
+  const fieldLit = (S) => (S.hl === 'f-sign' ? (i) => i === 0 : S.hl === 'f-exp' ? (i) => i >= 1 && i <= 8 : S.hl === 'f-mant' ? (i) => i > 8 : null);
+  const FIELD_TERMS = [{ key: 'f-sign', words: ['1 sign bit'], own: true }, { key: 'f-exp', words: ['8 exponent bits'], own: true }, { key: 'f-mant', words: ['23 mantissa bits'], own: true }];
+  // what a part is made of, in the site's own designs: NAND and NOR 4 transistors, NOT 2, AND and OR 6, XOR 16
+  // (four NANDs), a full adder 5 gates and 50 transistors
+  const TR = { NAND: 4, NOR: 4, NOT: 2, AND: 6, OR: 6, XOR: 16, FA: 50 };
   // A wire: a 1 glows and carries pulses travelling along it; a 0 is a plain dim line.
   function wire(ctx, pts, on, lw = 1.6) {
     const path = () => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); };
@@ -316,7 +444,39 @@
   const torchCall = (id, z) => (id === 'leaky' ? `F.leaky_relu(${z}, 0.05)` : id === 'gelu' ? `F.gelu(${z}, approximate='tanh')` : id === 'gaussian' ? `torch.exp(-${z}**2)` : `${TORCH[id]}(${z})`);
   /* s: { title, sub, terms: [{ a, w }], bias, scale: { v, label }, act: { id, label, f }, zName, outName,
           inLabel(i), wLabel(i), inputNode(i) (optional: what an input bar opens), vars: { w, a, b }, codeHead,
-          about: [model-specific paragraphs] } */
+          about: [model-specific paragraphs], wEdit(i) (a weight that can be changed: { format, set(v)… }),
+          followEx(i) (the loss and its gradient for weight i, for the end of a walk) } */
+  /* Follow one weight: its bits in memory, the multiplication that uses it, down through the significand
+     multiplier, a row adder, one full adder and its gates to the transistors, then back up through the sum to the
+     loss that trains it. base: the path of the neuron's level; k: the neuron's numbers. */
+  function followWeight(s, i, base, k) {
+    const t = s.terms[i], w = t.w, a = t.a, ed = s.wEdit ? s.wEdit(i) : null, mine = !!(NA.circuit && NA.circuit.on);
+    const fm = FORMATS[(ed && ed.format) || 'f32'], B = encodeF(w, fm), bias = 2 ** (fm.E - 1) - 1, M = mulSteps(w, a), P = [...base, `p:0:${i}`];
+    const steps = [
+      { path: base, hl: `w:0:${i}`, text: `This is ${k.wL(i)}: w = ${fmt(w, 5)}, one of this neuron's ${k.n} learned weights. Follow it down into the circuits that store it and use it, then back up to the loss that trains it.` },
+      { path: [...base, `w:0:${i}`], hl: 'exponent', text: `In memory, w is ${B.n} bits (${fm.name}): sign ${B.s}, exponent ${B.e} (lit), which stands for 2^${B.e ? B.e - bias : 1 - bias}, and the mantissa${B.e ? `, 1.${bin(B.m, fm.M).replace(/0+$/, '') || '0'} in binary` : ''}. Each bit is a DRAM cell: a tiny capacitor that holds charge for a 1.` },
+      { path: P, hl: M.special ? null : 'mant', text: `To use it, the neuron multiplies it by its input, ${k.inL(i)} = ${fmt(a, 4)}: ${fmt(M.a, 4)} × ${fmt(M.b, 4)} = ${fmt(M.c, 5)}. ${M.special ? 'One of them is 0 (a special bit pattern), so the multiplier simply outputs 0.' : 'A float multiply is three jobs: XOR the sign bits, add the exponents, and multiply the 24-bit significands (lit), which is most of the work.'}` },
+    ];
+    if (!M.special) {
+      const bit = (x, j) => Math.floor(x / 2 ** j) % 2, R = ripple(bit(M.mb, 0) ? M.ma : 0, bit(M.mb, 1) ? M.ma * 2 : 0, 26);
+      // a column that makes a carry, if any: the interesting kind
+      let col = R.a.findIndex((x, j) => x & R.b[j]);
+      if (col < 0) col = R.a.findIndex((x, j) => x ^ R.b[j]);
+      if (col < 0) col = 0;
+      const cell = `fa:0:${25 - col}`, A = [...P, 'mant', 'rows', cell];
+      steps.push(
+        { path: [...P, 'mant'], hl: 'rows', text: 'The two 24-bit significands are multiplied like long multiplication in binary: each 1 bit of one picks a shifted copy of the other. That makes 24 rows from 576 AND gates, and the rows are added up by adders like the one lit here.' },
+        { path: [...P, 'mant', 'rows'], hl: cell, text: `Adding two of those rows: 26 full adders in a chain, working column by column from the right, each passing its carry to the next. Follow the lit column, bit ${col}.` },
+        { path: A, hl: mine ? null : 'x1', text: `One column: a full adder adds ${R.a[col]} + ${R.b[col]} + carry ${R.c[col]} = ${R.c[col + 1]}${R.s[col]} in binary, so sum ${R.s[col]} and carry ${R.c[col + 1]}${mine ? '. This is your own full adder at work.' : ', with five logic gates. The lit one is an XOR.'}` });
+      if (!mine) steps.push(
+        { path: [...A, 'x1'], hl: 'n1', text: `That XOR is built from four NAND gates. Its inputs are ${R.a[col]} and ${R.b[col]}, so it outputs ${R.a[col] ^ R.b[col]}.` },
+        { path: [...A, 'x1', 'n1'], text: 'And a NAND gate is four transistors: two PMOS that connect the output to the supply (a 1) and two NMOS that connect it to ground (a 0). Every multiplication and addition in the network comes down to switches like these, flipping billions of times a second.' });
+    }
+    steps.push({ path: base, hl: `p:0:${i}`, text: `Back up in the neuron: the product, ${fmt(k.prods[i], 4)}, joins the ${k.n === 2 ? 'other product' : `other ${k.n - 1} products`} in the sum, ${k.zn} = ${fmt(k.z, 4)}${k.act ? `, and ${k.act.label}(${k.zn}) = ${fmt(k.out, 4)} goes on to the next layer.` : '.'}` });
+    const ex = s.followEx ? s.followEx(i) : null;
+    if (ex && Number.isFinite(ex.loss)) steps.push({ path: base, hl: `w:0:${i}`, text: `From there the network gives its answer for this example, with a loss of ${fmt(ex.loss, 4)}. Backpropagation sends a gradient all the way back to this weight: ∂loss/∂w = ${fmt(ex.grad, 3)}. A plain gradient-descent step on this example, at learning rate ${fmt(ex.lr, 3)}, would move w by ${fmt(-ex.lr * ex.grad, 3)} to ${fmt(w - ex.lr * ex.grad, 5)}, the way that lowers the loss. Training does this for every weight, averaged over many examples.` });
+    return steps;
+  }
   D.neuron = function (X, s) {
     const n = s.terms.length, prods = s.terms.map((t) => t.a * t.w), dot = prods.reduce((p, v) => p + v, 0);
     const scaled = s.scale ? dot * s.scale.v : dot, b = s.bias, z = scaled + (b == null ? 0 : b);
@@ -337,16 +497,36 @@
     const box = W2(X, { code: [0, 0.77, 0.235, 0.22], mul: [0.255, 0.77, 0.235, 0.22], acc: [0.51, 0.77, 0.235, 0.22], act: [0.765, 0.77, 0.235, 0.22] },
       { code: [0, 0.66, 0.48, 0.15], mul: [0.52, 0.66, 0.48, 0.15], acc: [0, 0.84, 0.48, 0.15], act: [0.52, 0.84, 0.48, 0.15] });
     const bars = (vals) => Float32Array.from(vals);
+    // with the visitor's own full adder in use: the sum as these circuits would work it out, term by term
+    const mine = !!(NA.circuit && NA.circuit.on), learned = s.kind !== 'dot';
+    let zMine = null, zRight = null;
+    if (mine) {
+      // the same steps in plain float32, for the right answer
+      let acc = 0, ref = 0;
+      for (const t of s.terms) { acc = addFA(acc, mulFA(t.w, t.a)); ref = f32(ref + f32(f32(t.w) * f32(t.a))); }
+      if (s.scale) { acc = mulFA(acc, s.scale.v); ref = f32(ref * f32(s.scale.v)); }
+      zMine = b != null ? addFA(acc, b) : acc; zRight = b != null ? f32(ref + f32(b)) : ref;
+    }
+    const K = { n, prods, z, out, act, zn, inL, wL };
+    const walk = (i, base) => followWeight(s, i, base, K);
+    // a weight's stored number knows how to start the walk with it (and, in the main lab, how to change it)
+    const wEd = (j) => (learned ? Object.assign({}, s.wEdit ? s.wEdit(j) : null, { follow: (view) => walk(j, view.path.slice(0, -1)) }) : null);
     return node({
       title: s.title, sub: s.sub || `${n} inputs`, tone: s.tone || 's1',
       summary: (ctx, r, S) => S.bars(ctx, bars(prods), r),
       inner: (ctx, r, S) => {
-        const u = S.u(r, 8, 14);
-        S.lines(ctx, [
+        const u = S.u(r, 8, 14), right = Object.is(zMine, zRight);
+        const sum = [
           `${zn} = Σᵢ wᵢ·aᵢ${s.scale ? ' × ' + s.scale.label : ''}${b != null ? ' + b' : ''}      (${n} products, ${n} additions)`,
           `  = ${fmt(dot, 4)}${s.scale ? ` × ${fmt(s.scale.v, 4)}` : ''}${b != null ? ` + ${fmt(b, 4)}` : ''} = ${fmt(z, 4)}`,
+        ], res = [
           s.actLine || (act ? `${on} = ${act.label}(${zn}) = ${fmt(out, 4)}` : `${on} = ${zn} (no activation)`),
-        ], S.place(r, rows.t), { mono: true, size: u, strong: (i) => i === 2 });
+          ...(mine ? [`your full adder: ${zn} = ${fmt(zMine, 5)}${right ? ' ✓' : ` ✗ (should be ${fmt(zRight, 5)})`}`] : []),
+        ];
+        const tb = S.place(r, rows.t), resOpts = { mono: true, size: u, strong: (i) => i === 0, colorOf: (i) => (i === 1 ? theme.c(right ? 'pos' : 'neg') : undefined) };
+        // the sum on the left and its result on the right when the box is wide, so a short box still shows them all
+        if (tb.w > 520) { S.lines(ctx, sum, { x: tb.x, y: tb.y, w: tb.w * 0.56, h: tb.h }, { mono: true, size: u }); S.lines(ctx, res, { x: tb.x + tb.w * 0.6, y: tb.y, w: tb.w * 0.4, h: tb.h }, resOpts); }
+        else S.lines(ctx, [...sum, ...res], tb, { ...resOpts, strong: (i) => i === 2, colorOf: (i) => (i === 3 ? theme.c(right ? 'pos' : 'neg') : undefined) });
         const ra = S.place(r, rows.a), rw = S.place(r, rows.w), rp = S.place(r, rows.p);
         const names = s.rowNames || [`inputs aᵢ${s.inWhat ? ': ' + s.inWhat : ''}`, 'weights wᵢ (learned)', 'products wᵢ·aᵢ'];
         S.caption(ctx, names[0], ra, { size: u * 0.8, minW: 200 }); S.bars(ctx, bars(s.terms.map((t) => t.a)), ra);
@@ -355,11 +535,22 @@
       },
       grids: [
         { id: 'in', rect: rows.a, rows: 1, cols: n, make: (i, j) => (s.inputNode ? s.inputNode(j) : D.stored(X, s.terms[j].a, inL(j))) },
-        { id: 'w', rect: rows.w, rows: 1, cols: n, make: (i, j) => D.stored(X, s.terms[j].w, wL(j)) },
+        { id: 'w', rect: rows.w, rows: 1, cols: n, make: (i, j) => D.stored(X, s.terms[j].w, wL(j), undefined, wEd(j)) },
         { id: 'p', rect: rows.p, rows: 1, cols: n, make: (i, j) => Object.assign(D.fmul(X, s.terms[j].w, s.terms[j].a), { title: `w·a for ${inL(j)}` }) },
       ],
+      count: `Inside: ${n} multiplication${n === 1 ? '' : 's'} and ${n} addition${n === 1 ? '' : 's'}${act ? `, then ${act.label}` : ''}. A float multiplier built like the one below takes about 32,000 transistors; a chip sends operation after operation through units like it.`,
+      terms: [
+        { key: 'in', words: ['inputs aᵢ', 'inputs'], cells: (id) => id.startsWith('in:') },
+        { key: 'w', words: ['learned weight wᵢ', 'weights'], cells: (id) => id.startsWith('w:') },
+        { key: 'p', words: ['the products', 'products'], cells: (id) => id.startsWith('p:') },
+        { key: 'mul', words: ['one multiplication'], ids: ['mul'] },
+        { key: 'acc', words: ['one step of the sum'], ids: ['acc'] },
+        { key: 'act', words: ['the activation'], ids: ['act'] },
+      ],
+      tools: learned ? (view) => [view.tool('Follow a weight ▶', () => view.follow(walk(kMax, view.path.slice())), { title: `Follow ${wL(kMax)} down to the transistors that multiply it, and back up to the loss` })] : null,
       about: [
         ...(s.about || []),
+        ...(mine ? [`Your own full adder is in use: every adder in these views is built from it, so this sum, worked out by the circuits shown here, comes to ${fmt(zMine, 6)}${Object.is(zMine, zRight) ? ', exactly the right float32 answer. Your adder works' : ` instead of ${fmt(zRight, 6)}. A full adder that is wrong for even one of its 8 input patterns spoils most sums, since every bit of every number passes through one`}. (The network itself still trains with the computer's own arithmetic.)`] : []),
         s.kind === 'dot'
           ? `A dot product: ${n} pairs of numbers multiplied together and the products added up${s.scale ? `, then scaled by ${s.scale.label}` : ''}: ${zn} = ${fmt(z, 4)}. It has the same shape as a neuron's weighted sum, but neither row is a learned weight: both were computed from this prompt a moment ago.`
           : `A neuron does two things. First a weighted sum: each of its ${n} inputs aᵢ is multiplied by its own learned weight wᵢ, the products are added up${b != null ? ', and the bias b is added' : ''}: ${zn} = ${fmt(z, 4)}. ${act ? `Then a function bends the result: ${on} = ${act.label}(${zn}) = ${fmt(out, 4)}.` : 'Here the sum is the output; there is no activation.'}`,
@@ -609,13 +800,15 @@
 
   // ------------------------------------------------------------------ one float32 operation, bit by bit
   function bitRows(ctx, S, r, rows, u) {
-    const lh = r.h / rows.length;
+    const lh = r.h / rows.length, lit = fieldLit(S);
     rows.forEach(([lab, B], i) => {
       const y = r.y + i * lh;
       S.text(ctx, lab, r.x, y + lh * 0.2, { size: u * 0.85, mono: true, w: i === rows.length - 1 ? 700 : 500, maxW: r.w });
-      drawBits(ctx, S, { x: r.x, y: y + lh * 0.36, w: r.w, h: lh * 0.52 }, B.u);
+      drawBits(ctx, S, { x: r.x, y: y + lh * 0.36, w: r.w, h: lh * 0.52 }, B.u, 32, FIELD, lit);
     });
   }
+  // with the visitor's own full adder in use: what these circuits give, against the right answer
+  const mineLine = (v, right) => `with your full adder: ${fmt(v, 6)}${Object.is(v, right) ? '   ✓ the same' : `   ✗ should be ${fmt(right, 6)}`}`;
   const fieldNote = (B) => `sign ${B.s} · exponent ${B.e} (2^${B.e - 127}) · mantissa 1.${bin(B.m, 23).replace(/0+$/, '') || '0'}`;
   D.fmul = function (X, a, b) {
     const M = mulSteps(a, b);
@@ -624,8 +817,11 @@
     const steps = M.special
       ? [`${fmt(M.a, 4)} × ${fmt(M.b, 4)} = ${fmt(M.c, 4)}`, 'a zero (or denormal) operand is a special bit pattern:', 'the multiplier just outputs zero, no arithmetic']
       : [`sign:      ${M.A.s} XOR ${M.B.s} = ${M.s}`, `exponent:  ${M.A.e} + ${M.B.e} − 127${M.top ? ' + 1' : ''} = ${M.e}`, `significand: 1.${bin(M.A.m, 23).slice(0, 6)}… × 1.${bin(M.B.m, 23).slice(0, 6)}… = ${fmt(M.prod / 2 ** 46, 6)}`, `round the 48-bit product to 24 bits${M.rounded ? ' (rounded up)' : ''}`, `= ${fmt(M.c, 6)}${M.ok ? '   ✓ exactly a × b in float32' : ''}`];
+    if (NA.circuit && NA.circuit.on && !M.special) steps.push(mineLine(mulFA(a, b), M.c));
     return node({
       title: 'float32 multiply', sub: `${fmt(M.a, 4)} × ${fmt(M.b, 4)}`, tone: 's1',
+      count: 'Inside: an XOR for the sign (16 transistors), the exponent adder and the adder that takes off the bias (8 full adders each, 800 transistors) and the 24 × 24 significand multiplier (about 31,000): about 32,000 transistors, plus the logic that rounds.',
+      terms: [...FIELD_TERMS, { key: 'sign', words: ['XOR the sign bits'], ids: ['sign'] }, { key: 'exp', words: ['add the exponents'], ids: ['exp'] }, { key: 'mant', words: ['multiply the two 24-bit significands'], ids: ['mant'] }],
       summary: (ctx, r, S) => { const h = r.h / 3; [M.A, M.B, M.C].forEach((B, i) => drawBits(ctx, S, { x: r.x, y: r.y + i * h, w: r.w, h: h * 0.8 }, B.u)); },
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13);
@@ -653,8 +849,11 @@
       ? [`${fmt(A.a, 4)} + ${fmt(A.b, 4)} = ${fmt(A.c, 4)}`, 'one operand is zero (a special bit pattern):', 'the adder passes the other one through']
       : A.zero ? [`${fmt(A.a, 4)} + ${fmt(A.b, 4)}: the significands cancel exactly`, '= 0']
         : [`exponents ${A.big.e} and ${A.small.e}: shift the smaller by d = ${A.d}`, `align:  1.${bin(A.small.m, 23).slice(0, 5)}… × 2^${A.small.e - 127} → 0.${'0'.repeat(Math.max(0, Math.min(A.d - 1, 6)))}1… × 2^${A.big.e - 127}`, `${sub ? 'subtract' : 'add'} the 27-bit significands (guard bits kept)`, `normalise: exponent ${A.big.e} → ${A.e}, round to 24 bits`, `= ${fmt(A.c, 6)}${A.ok ? '   ✓ exactly a + b in float32' : ''}`];
+    if (NA.circuit && NA.circuit.on && !A.special && !A.zero) steps.push(mineLine(addFA(a, b), A.c));
     return node({
       title: 'float32 add', sub: `${fmt(A.a, 4)} + ${fmt(A.b, 4)}`, tone: 's1',
+      count: 'Inside, as drawn here: an 8-bit exponent subtractor and a 28-bit significand adder, 36 full adders: 180 gates, 1,800 transistors. The shifters that line the numbers up and the rounding logic add a few thousand more.',
+      terms: [{ key: 'exp', words: ['the difference of the exponents'], ids: ['exp'] }, { key: 'mant', words: ['the significands are added'], ids: ['mant'] }, { key: 'adders', words: ['two integer adders'], ids: ['exp', 'mant'] }],
       summary: (ctx, r, S) => { const h = r.h / 3; [A.A, A.B, A.C].forEach((B, i) => drawBits(ctx, S, { x: r.x, y: r.y + i * h, w: r.w, h: h * 0.8 }, B.u)); },
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13);
@@ -678,6 +877,8 @@
     const n = 24, bit = (x, i) => Math.floor(x / 2 ** i) % 2, grid = W2(X, [0, 0.12, 0.62, 0.86], [0.1, 0.1, 0.8, 0.56]), rowsBox = W2(X, [0.68, 0.3, 0.32, 0.4], [0, 0.74, 1, 0.24]);
     return node({
       title: 'Significand multiplier', sub: '24 × 24 bits', tone: 's1',
+      count: 'Inside: 576 AND gates to make the rows (3,456 transistors) and, in a simple array multiplier, 23 rows of adders to add them up, about 550 full adders (27,600 transistors): about 31,000 transistors.',
+      terms: [{ key: 'and', words: ['576 AND gates', 'the AND of one bit of a and one bit of b'], cells: (id) => id.startsWith('and:') }, { key: 'rows', words: ['rows of adders like the one in the box'], ids: ['rows'] }],
       summary: (ctx, r) => { const s = Math.min(r.w, r.h), c = s / n; for (let i = 0; i < n; i += 2) for (let j = 0; j < n; j += 2) { ctx.fillStyle = bit(mb, i) & bit(ma, n - 1 - j) ? theme.c('pos', 0.8) : theme.c('line', 0.6); ctx.fillRect(r.x + (r.w - s) / 2 + j * c, r.y + i * c, c * 2 - 0.5, c * 2 - 0.5); } },
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), g = S.place(r, grid), c = Math.min(g.w, g.h) / n, ox = g.x;
@@ -696,35 +897,72 @@
   // ------------------------------------------------------------------ adders and gates
   D.adder = function (X, x, y, n, o = {}) {
     const R = ripple(x, y, n, o.cin || 0), val = (arr) => arr.reduce((p, v, i) => p + v * 2 ** i, 0), cells = W2(X, [0, 0.34, 1, 0.3], [0, 0.36, 1, 0.26]);
+    // the same add with every gate taking one tick (for the clock you can step); built only when it is looked at
+    let SIM = null;
+    const sim = () => SIM || (SIM = rippleSim(R));
     return node({
       title: o.title || `${n}-bit adder`, sub: o.what || `${x} + ${y}`, tone: 's4', animate: true,
       summary: (ctx, r, S) => drawBits(ctx, S, r, val(R.s) + (R.cout ? 0 : 0), n, () => 's4'),
       inner: (ctx, r, S) => {
-        const u = S.u(r, 8, 13), g = S.place(r, cells), cw = g.w / n;
+        const u = S.u(r, 8, 13), g = S.place(r, cells), cw = g.w / n, ck = S.clock;
         S.lines(ctx, [`  ${bin(x, n)}   (${o.xLabel || x})`, `+ ${bin(y, n)}   (${o.yLabel || y})${o.cin ? ' + carry-in 1' : ''}`, `= ${R.cout ? '1' : ' '}${bin(val(R.s), n)}   carry out ${R.cout}`], S.place(r, [0, 0.0, 1, 0.26]), { mono: true, size: u, strong: (i) => i === 2 });
-        // the carry ripples from bit 0 (right) to the top bit (left): each sum is final only once it has arrived
-        const reach = NA.prefersReducedMotion() ? n : ((S.now / 2800) % 1) * (n + 3) - 1;
+        // stepped by hand: each box shows what its gates output at that tick; amber while that is not the final value
+        const Q = ck ? sim() : null, fr = Q ? Q.frames[Math.min(ck.t, Q.frames.length - 1)] : null;
+        // otherwise the carry ripples from bit 0 (right) to the top bit (left): each sum is final only once it has arrived
+        const reach = fr || NA.prefersReducedMotion() ? n : ((S.now / 2800) % 1) * (n + 3) - 1;
+        const litCarry = S.hl === 'carry';
         for (let j = 0; j < n; j++) {
-          const i = n - 1 - j, x0 = g.x + j * cw, done = i < reach, here = i === Math.floor(reach);
-          ctx.fillStyle = theme.c('s4', here ? 0.32 : done ? 0.14 : 0.06); ctx.beginPath(); NA.rr(ctx, x0 + 1, g.y, cw - 2, g.h, Math.min(5, cw * 0.2)); ctx.fill();
+          const i = n - 1 - j, x0 = g.x + j * cw;
+          const wrong = !!fr && (fr.s[i] !== Q.final.s[i] || fr.c[i + 1] !== Q.final.c[i + 1]), flash = !!fr && fr.changed.includes(i);
+          const done = fr ? !wrong : i < reach, here = fr ? flash : i === Math.floor(reach), sBit = fr ? fr.s[i] : R.s[i], carry = fr ? fr.c[i + 1] : R.c[i + 1] && i + 1 <= reach;
+          ctx.fillStyle = wrong ? theme.c('s2', 0.2) : theme.c('s4', here ? 0.32 : done ? 0.14 : 0.06); ctx.beginPath(); NA.rr(ctx, x0 + 1, g.y, cw - 2, g.h, Math.min(5, cw * 0.2)); ctx.fill();
           ctx.strokeStyle = theme.c(here ? 'focus' : 's4', here ? 1 : 0.6); ctx.lineWidth = here ? 2 : 1; ctx.beginPath(); NA.rr(ctx, x0 + 1.5, g.y + 0.5, cw - 3, g.h - 1, Math.min(5, cw * 0.2)); ctx.stroke();
           const t = Math.min(cw * 0.55, u);
           S.text(ctx, `${R.a[i]}${R.b[i]}`, x0 + cw / 2, g.y + g.h * 0.22, { size: t, mono: true, align: 'center', color: theme.c('ink-2') });
-          S.text(ctx, done || here ? String(R.s[i]) : '·', x0 + cw / 2, g.y + g.h * 0.68, { size: t * 1.2, mono: true, w: 700, align: 'center', color: done && R.s[i] ? theme.c('pos') : theme.c('muted') });
-          if (R.c[i + 1] && i + 1 <= reach) { ctx.fillStyle = theme.c('s2'); ctx.beginPath(); ctx.arc(x0 + 1, g.y + g.h * 0.45, Math.max(2, Math.min(4, cw * 0.15)), 0, Math.PI * 2); ctx.fill(); }
+          S.text(ctx, fr || done || here ? String(sBit) : '·', x0 + cw / 2, g.y + g.h * 0.68, { size: t * 1.2, mono: true, w: 700, align: 'center', color: wrong ? theme.c('s2') : done && sBit ? theme.c('pos') : theme.c('muted') });
+          if (carry) {
+            const cr = Math.max(2, Math.min(4, cw * 0.15)) * (litCarry ? 1.6 : 1);
+            if (litCarry) { ctx.fillStyle = theme.c('focus', 0.3); ctx.beginPath(); ctx.arc(x0 + 1, g.y + g.h * 0.45, cr * 2, 0, Math.PI * 2); ctx.fill(); }
+            ctx.fillStyle = theme.c('s2'); ctx.beginPath(); ctx.arc(x0 + 1, g.y + g.h * 0.45, cr, 0, Math.PI * 2); ctx.fill();
+          }
         }
-        S.text(ctx, 'each box is one full adder (bit 0 on the right); top: the two input bits, bottom: the sum bit, final once the carry has rippled in; an orange dot is a carry passed to the left', r.x, g.y + g.h + u * 1.2, { size: u * 0.8, color: theme.c('muted'), maxW: r.w });
+        if (fr) {
+          const t = Math.min(ck.t, Q.frames.length - 1);
+          S.lines(ctx, [
+            `tick ${t} (one gate delay each): ${fr.sw} gate output${fr.sw === 1 ? '' : 's'} switched on this tick, ${fr.total} since the inputs arrived`,
+            t >= Q.settle ? `settled: every sum and carry is final after ${Q.settle} gate delays (at worst ${2 * n} for ${n} bits)` : 'still settling: a sum in amber is not its final value yet, and is still wrong',
+          ], { x: r.x, y: g.y + g.h + u * 0.5, w: r.w, h: u * 3.4 }, { size: u * 0.85, colorOf: (k) => theme.c(k === 1 && t < Q.settle ? 's2' : 'ink-2') });
+        } else S.text(ctx, 'each box is one full adder (bit 0 on the right); top: the two input bits, bottom: the sum bit, final once the carry has rippled in; an orange dot is a carry passed to the left', r.x, g.y + g.h + u * 1.2, { size: u * 0.8, color: theme.c('muted'), maxW: r.w });
       },
-      grids: [{ id: 'fa', rect: cells, rows: 1, cols: n, make: (i, j) => { const b = n - 1 - j; return Object.assign(D.fullAdder(X, R.a[b], R.b[b], R.c[b]), { title: `Full adder, bit ${b}` }); } }],
-      about: [...(o.about || []), `A ripple-carry adder adds binary numbers the way you add on paper: column by column from the right, each column's carry feeding the next. Each box is a full adder that adds two bits and the incoming carry. Here ${n} of them chained give ${bin(val(R.s), n).replace(/^0+(?=.)/, '')} in binary. Zoom into a box to open its gates.`, 'The carry has to ripple through every box, so wide adders in fast chips use carry-lookahead or parallel-prefix designs (such as Kogge–Stone) that work out all the carries in a few gate delays, at the cost of more gates.'],
+      grids: [{ id: 'fa', rect: cells, rows: 1, cols: n, make: (i, j) => { const b = n - 1 - j; return Object.assign(D.fullAdder(X, R.a[b], R.b[b], R.c[b]), { title: `${NA.circuit && NA.circuit.on ? 'Your full adder' : 'Full adder'}, bit ${b}` }); } }],
+      count: `Inside: ${n} full adders, ${int(5 * n)} logic gates, ${int(TR.FA * n)} transistors.`,
+      terms: [{ key: 'fa', words: ['a full adder', 'full adders'], cells: (id) => id.startsWith('fa:') }, { key: 'carry', words: ["each column's carry feeding the next", 'The carry has to ripple through every box'], own: true }],
+      // the clock: step the add one gate delay at a time
+      tools: (view) => {
+        const key = view.path.join('/'), ck = view.clock && view.clock.key === key ? view.clock : null, last = sim().frames.length - 1;
+        const go = (t) => { view.clock = { key, t: clamp(t, 0, last) }; view.refreshTools(); };
+        if (!ck) return [view.tool('⏱ Step the clock', () => go(0), { title: 'Every gate takes a moment to answer: step through this add one gate delay at a time, and count the gates that switch' })];
+        return [
+          view.tool('↺', () => go(0), { title: 'Back to the moment the inputs arrive' }),
+          view.tool('◀', () => go(ck.t - 1), { disabled: ck.t <= 0, title: 'One gate delay back' }),
+          view.tool('Step ▶', () => go(ck.t + 1), { primary: true, disabled: ck.t >= last, title: 'One gate delay on' }),
+          view.tool('✕', () => { view.clock = null; view.refreshTools(); }, { title: 'Stop stepping' }),
+        ];
+      },
+      about: [...(o.about || []), `A ripple-carry adder adds binary numbers the way you add on paper: column by column from the right, each column's carry feeding the next. Each box is a full adder that adds two bits and the incoming carry. Here ${n} of them chained give ${bin(val(R.s), n).replace(/^0+(?=.)/, '')} in binary. Zoom into a box to open its gates.`, 'The carry has to ripple through every box, so wide adders in fast chips use carry-lookahead or parallel-prefix designs (such as Kogge–Stone) that work out all the carries in a few gate delays, at the cost of more gates.', 'Step the clock to watch it happen: every gate takes one tick (a gate delay, a few picoseconds) to answer its inputs. A sum can show the wrong bit for a few ticks until the carry it was waiting for arrives, and every output that changes is a gate switching, which is where a chip spends its energy.'],
       code: `def ripple_add(x, y, n=${n}, carry=${o.cin || 0}):\n    s = 0\n    for i in range(n):                     # one full adder per bit\n        a, b = (x >> i) & 1, (y >> i) & 1\n        s |= (a ^ b ^ carry) << i           # sum bit\n        carry = (a & b) | ((a ^ b) & carry)  # carry to the next column\n    return s, carry\n\nprint(ripple_add(${x}, ${y}))`,
     });
   };
   D.fullAdder = function (X, a, b, cin) {
+    // the visitor's own full adder, once they built one and chose to use it
+    if (NA.circuit && NA.circuit.on) return NA.circuit.adderNode(X, a, b, cin);
     const p = a ^ b, s = p ^ cin, g1 = a & b, g2 = p & cin, cout = g1 | g2;
     const R = { x1: [0.2, 0.1, 0.15, 0.22], x2: [0.52, 0.18, 0.15, 0.22], a2: [0.52, 0.52, 0.15, 0.2], a1: [0.2, 0.7, 0.15, 0.2], o1: [0.78, 0.6, 0.15, 0.22] };
     return node({
       title: 'Full adder', sub: `${a} + ${b} + ${cin} = ${cout}${s} (carry, sum)`, tone: 's4', animate: true,
+      count: 'Inside: 5 logic gates (2 XOR, 2 AND, 1 OR), 50 transistors.',
+      terms: [{ key: 'sum', words: ['The sum is S = A XOR B XOR Cin', 'a sum bit'], ids: ['x1', 'x2'] }, { key: 'carry', words: ['the carry is Cout = A·B + (A XOR B)·Cin', 'a carry-out'], ids: ['a1', 'a2', 'o1'] }, { key: 'five', words: ['Five gates'], ids: ['x1', 'x2', 'a1', 'a2', 'o1'] }],
+      tools: (view) => [view.tool('Build your own', () => NA.circuit && NA.circuit.open(view), { title: 'Wire up your own full adder from gates; then it can run inside every adder here' })],
       summary: (ctx, r, S) => S.text(ctx, `${a}+${b}+${cin} → ${s}, c${cout}`, r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.w / 8, 6, 12), mono: true, align: 'center', maxW: r.w }),
       inner: (ctx, r, S) => {
         const P = (k) => S.place(r, R[k]), pin = (q, side, f) => [side ? q.x + q.w : q.x, q.y + q.h * f];
@@ -746,7 +984,7 @@
         S.text(ctx, `P=${p}`, pOut[0] + 4, pOut[1] - u * 0.8, { size: u * 0.8, mono: true, color: theme.c('muted') });
         S.text(ctx, 'lit wires carry a 1', r.x, r.y + r.h * 0.97, { size: u * 0.8, color: theme.c('muted') });
       },
-      about: [`A full adder adds three bits, A + B + carry-in, and gives a sum bit and a carry-out: here ${a} + ${b} + ${cin} = ${cout * 2 + s} = binary ${cout}${s}. The sum is S = A XOR B XOR Cin (1 when an odd number of inputs are 1); the carry is Cout = A·B + (A XOR B)·Cin (1 when at least two are 1). Five gates do it; zoom into one.`, 'Lit wires carry a 1, dim ones a 0. Every adder in the chip, and so every addition in the model, is a chain of these.'],
+      about: [`A full adder adds three bits, A + B + carry-in, and gives a sum bit and a carry-out: here ${a} + ${b} + ${cin} = ${cout * 2 + s} = binary ${cout}${s}. The sum is S = A XOR B XOR Cin (1 when an odd number of inputs are 1); the carry is Cout = A·B + (A XOR B)·Cin (1 when at least two are 1). Five gates do it; zoom into one.`, 'Lit wires carry a 1, dim ones a 0. Every adder in the chip, and so every addition in the model, is a chain of these.', 'Build your own: wire one up from gates yourself and check it against all 8 input patterns. You can then put it to work inside every adder in these views, and see what a mistake in it does to the multiplications and the neuron above.'],
       code: `def full_adder(a, b, cin):\n    p = a ^ b                       # XOR\n    s = p ^ cin                     # XOR\n    cout = (a & b) | (p & cin)      # two ANDs and an OR\n    return s, cout\n\nprint(full_adder(${a}, ${b}, ${cin}))   # (${s}, ${cout})`,
     }, () => [
       Object.assign(D.gate(X, 'XOR', [a, b]), { id: 'x1', rect: R.x1, title: 'XOR', sub: `A, B → ${p}` }),
@@ -772,6 +1010,10 @@
         : [['n1', 'NOR', [a, b], [0.25, 0.3, 0.2, 0.4]], ['n2', 'NOT', [GATE.NOR(a, b)], [0.62, 0.33, 0.16, 0.34]]];
     return node({
       title: `${type} gate`, sub: `${ins.join(', ')} → ${out}`, tone: 's7', animate: true,
+      count: type === 'XOR' ? 'Inside: 4 NAND gates, 16 transistors.' : `Inside: a ${type === 'AND' ? 'NAND' : 'NOR'} and a NOT, 6 transistors.`,
+      terms: type === 'XOR'
+        ? [{ key: 'n1', words: ['N1 = NAND(A, B)'], ids: ['n1'] }, { key: 'n23', words: ['NAND(A, N1) and NAND(B, N1)'], ids: ['n2', 'n3'] }, { key: 'n4', words: ['the NAND of those two'], ids: ['n4'] }]
+        : [{ key: 'n1', words: [type === 'AND' ? 'a NAND' : 'a NOR'], ids: ['n1'] }, { key: 'n2', words: ['an inverter (NOT)'], ids: ['n2'] }],
       summary: (ctx, r) => gateGlyph(ctx, type, r, out),
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 14), P = (f) => S.place(r, f), pin = (q, side, f) => [side ? q.x + q.w : q.x, q.y + q.h * f];
@@ -816,6 +1058,7 @@
     const inPath = (id, k, i) => (charge ? k === 'p' : k === 'n') && onNow(k, i);
     return node({
       title: `${type} in CMOS`, sub: `${ins.join(', ')} → ${out}`, tone: 's7', animate: true,
+      count: type === 'NOT' ? 'Inside: 2 transistors, one PMOS and one NMOS.' : 'Inside: 4 transistors, two PMOS and two NMOS.',
       summary: (ctx, r) => gateGlyph(ctx, type, r, out),
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), st = stage(), p = phase(), cur = st === 0 ? prev : ins, P = (f) => S.place(r, f);
@@ -1046,21 +1289,67 @@
     random: 'This number was drawn at random for this example (noise), so it is different every time. It is stored like any other number.' + CELL,
   };
   D.storedKind = kindOf;
-  D.stored = function (X, v, label, kind) {
-    const B = bitsOf(v), g = W2(X, [0, 0.3, 1, 0.16], [0, 0.32, 1, 0.12]);
+  const FORMAT_TEXT = {
+    bf16: 'bfloat16 keeps float32’s 8 exponent bits, so it covers the same enormous range, but only 7 mantissa bits: about 2 to 3 significant decimal digits. Models are widely trained and run in it: a weight rarely needs more precision than that, and half the bits means half the memory and twice as many numbers in every trip from memory.',
+    fp16: 'FP16 (IEEE half precision) has 10 mantissa bits, about 3 significant digits, but only 5 exponent bits: numbers above 65,504 become infinity and numbers below about 6 × 10⁻⁸ become 0. That is why training in FP16 multiplies the loss by a large factor first, so small gradients do not vanish to 0.',
+    fp8: 'FP8 E4M3 has 4 exponent bits and only 3 mantissa bits: between one power of two and the next there are just 8 values, the largest number is 448, and there is no infinity (bigger values stop at 448 here). Recent GPUs multiply in FP8 for speed, with a scale factor for each tensor so that its numbers fit that small range.',
+  };
+  const TORCH_FMT = { bf16: ['torch.bfloat16', 'torch.int16', 16], fp16: ['torch.float16', 'torch.int16', 16], fp8: ['torch.float8_e4m3fn', 'torch.uint8', 8] };
+  /* A stored number: its bits in memory. ed (optional, a weight): { format (how the network's weights are
+     stored), set(v) (it can be changed: with Flip bits on, a click flips a bit), canUndo(), undo(), setFormat(id),
+     notes(format) → [paragraphs], follow(view) → the steps of a walk with it } */
+  D.stored = function (X, v, label, kind, ed) {
+    const fm = FORMATS[(ed && ed.format) || 'f32'], B = encodeF(v, fm), n = B.n, E = fm.E, Mb = fm.M, bias = 2 ** (E - 1) - 1;
+    const g = W2(X, [0, 0.3, 1, 0.16], [0, 0.32, 1, 0.12]), flips = !!(ed && ed.set);
+    const fieldOf = (j) => (j === 0 ? 'sign' : j <= E ? 'exponent' : 'mantissa'), tone = (j) => (j === 0 ? 's7' : j <= E ? 's4' : 's1');
+    const bitAt = (j) => Math.floor(B.u / 2 ** (n - 1 - j)) % 2, jOf = (id) => +String(id).split(':')[2];
+    const special = B.e === 2 ** E - 1 && (!fm.fn || B.m === 2 ** Mb - 1);
+    const value = special ? [Number.isNaN(B.v) ? 'NaN: not a number (the exponent bits all 1)' : `${B.s ? '−' : '+'}infinity (the exponent bits all 1, the mantissa 0)`]
+      : B.e === 0 ? [`(−1)^${B.s} × 0.${bin(B.m, Mb)} (binary) × 2^(1 − ${bias})`, B.m ? `= ${B.s ? '−' : ''}${fmt(B.m / 2 ** Mb, 7)} × 2^${1 - bias}   (subnormal: too small for the hidden 1)` : '= 0   (zero)']
+        : [`(−1)^${B.s} × 1.${bin(B.m, Mb).replace(/0+$/, '') || '0'} (binary) × 2^(${B.e} − ${bias})`, `= ${B.s ? '−' : ''}${fmt(1 + B.m / 2 ** Mb, 7)} × 2^${B.e - bias}`];
+    const [dt, it, nb] = TORCH_FMT[fm.id] || [];
     return node({
-      title: label || 'A stored number', sub: `${fmt(B.v, 5)} as float32`, tone: 's3',
-      summary: (ctx, r, S) => drawBits(ctx, S, r, B.u),
+      title: label || 'A stored number', sub: `${fmt(B.v, 5)} as ${fm.name}`, tone: 's3',
+      summary: (ctx, r, S) => drawBits(ctx, S, r, B.u, n, tone),
       inner: (ctx, r, S) => {
-        const u = S.u(r, 8, 14), gr = S.place(r, g);
-        S.lines(ctx, [`${label || 'value'} = ${fmt(v, 6)}`, `stored as float32: ${fmt(B.v, 8)}`], S.place(r, [0, 0, 1, 0.2]), { mono: true, size: u, strong: (i) => i === 0 });
-        S.text(ctx, 'sign · exponent (8 bits) · mantissa (23 bits): zoom into a bit', gr.x, gr.y - u * 0.9, { size: u * 0.8, color: theme.c('muted') });
-        drawBits(ctx, S, gr, B.u);
-        S.lines(ctx, [`(−1)^${B.s} × 1.${bin(B.m, 23).replace(/0+$/, '') || '0'} (binary) × 2^(${B.e} − 127)`, `= ${B.s ? '−' : ''}${fmt(1 + B.m / 2 ** 23, 7)} × 2^${B.e - 127}${B.e === 0 ? '   (zero / denormal)' : ''}`], S.place(r, [0, 0.56, 1, 0.2]), { mono: true, size: u * 0.95 });
+        const u = S.u(r, 8, 14), gr = S.place(r, g), flipping = flips && S.flipMode;
+        S.lines(ctx, [`${label || 'value'} = ${fmt(v, 6)}`, `stored as ${fm.name}: ${fmt(B.v, 8)}`], S.place(r, [0, 0, 1, 0.2]), { mono: true, size: u, strong: (i) => i === 0 });
+        S.text(ctx, `sign · exponent (${E} bits) · mantissa (${Mb} bits): ${flipping ? 'click a bit to flip it' : 'zoom into a bit'}`, gr.x, gr.y - u * 0.9, { size: u * 0.8, w: flipping ? 650 : 500, color: theme.c(flipping ? 'focus' : 'muted') });
+        drawBits(ctx, S, gr, B.u, n, tone, S.hl === 'sign' || S.hl === 'exponent' || S.hl === 'mantissa' ? (j) => fieldOf(j) === S.hl : null);
+        S.lines(ctx, value, S.place(r, [0, 0.56, 1, 0.2]), { mono: true, size: u * 0.95 });
       },
-      grids: [{ id: 'bit', rect: g, rows: 1, cols: 32, make: (i, j) => Object.assign(D.memCell(X, Math.floor(B.u / 2 ** (31 - j)) % 2, j), { title: `Bit ${31 - j} (${j === 0 ? 'sign' : j <= 8 ? 'exponent' : 'mantissa'})` }) }],
-      about: [`In memory, ${label ? label + ' is' : 'this number is'} just these 32 bits: 1 sign bit, 8 exponent bits and 23 mantissa bits, meaning (−1)^sign × 1.mantissa × 2^(exponent − 127). Float32 keeps about 7 significant decimal digits, which is why the stored value can differ slightly from the exact one.`, KIND_TEXT[kind || kindOf(label)] || KIND_TEXT.activation],
-      code: `import struct\nv = ${num(v, 7)}\nu = struct.unpack('>I', struct.pack('>f', v))[0]\nbits = format(u, '032b')\nprint(bits[0], bits[1:9], bits[9:])        # sign, exponent, mantissa\nprint(struct.unpack('>f', struct.pack('>I', u))[0])   # the float32 value`,
+      grids: [{ id: 'bit', rect: g, rows: 1, cols: n, make: (i, j) => Object.assign(D.memCell(X, bitAt(j), j), { title: `Bit ${n - 1 - j} (${fieldOf(j)})` }) }],
+      count: `Inside: ${n} bits, each a DRAM cell (1 transistor and 1 capacitor).`,
+      terms: [
+        { key: 'sign', words: ['1 sign bit'], own: true, cells: (id) => id === 'bit:0:0' },
+        { key: 'exponent', words: [`${E} exponent bits`], own: true, cells: (id) => id.startsWith('bit:') && jOf(id) >= 1 && jOf(id) <= E },
+        { key: 'mantissa', words: [`${Mb} mantissa bits`], own: true, cells: (id) => id.startsWith('bit:') && jOf(id) > E },
+      ],
+      // Flip bits on: a click on a bit flips it (and changes the weight) instead of opening it
+      onPick: flips ? (part, view) => {
+        if (!view.flipMode || !/^bit:0:\d+$/.test(part.id)) return false;
+        const j = jOf(part.id), bv = 2 ** (n - 1 - j);
+        ed.set(decodeF(bitAt(j) ? B.u - bv : B.u + bv, fm));
+        return true;
+      } : null,
+      pickHint: flips ? (part, view) => (view.flipMode && /^bit:/.test(part.id) ? `Click to flip this ${fieldOf(jOf(part.id))} bit to ${1 - bitAt(jOf(part.id))}` : null) : null,
+      tools: ed ? (view) => [
+        flips ? view.tool('Flip bits', () => { view.flipMode = !view.flipMode; view.refreshTools(); }, { pressed: view.flipMode, title: 'Turn on, then click any bit to flip it and watch what the network does' }) : null,
+        flips && ed.canUndo && ed.canUndo() ? view.tool('↶ Undo', () => ed.undo(), { title: 'Put back the last bit you flipped' }) : null,
+        ed.setFormat ? view.toolSelect(Object.values(FORMATS).map((f) => [f.id, view.narrow() ? f.name : `Weights in ${f.name}`]), fm.id, (id) => ed.setFormat(id), 'Store every weight and bias of the network as') : null,
+        ed.follow ? view.tool(view.narrow() ? 'Follow ▶' : 'Follow it ▶', () => view.follow(ed.follow(view)), { title: 'Follow this weight down to the transistors that multiply it, and back up to the loss' }) : null,
+      ] : null,
+      toolsKey: ed ? `${fm.id}|${ed.canUndo ? ed.canUndo() : ''}` : '',
+      about: [
+        fm.id === 'f32'
+          ? `In memory, ${label ? label + ' is' : 'this number is'} just these 32 bits: 1 sign bit, 8 exponent bits and 23 mantissa bits, meaning (−1)^sign × 1.mantissa × 2^(exponent − 127). Float32 keeps about 7 significant decimal digits, which is why the stored value can differ slightly from the exact one.`
+          : `In memory, ${label ? label + ' is' : 'this number is'} now ${n} bits of ${fm.name}: 1 sign bit, ${E} exponent bits and ${Mb} mantissa bits, meaning (−1)^sign × 1.mantissa × 2^(exponent − ${bias}). ${FORMAT_TEXT[fm.id]}`,
+        ...(ed && ed.notes ? ed.notes(fm) : []),
+        KIND_TEXT[kind || kindOf(label)] || KIND_TEXT.activation,
+        ...(flips ? ['Flip bits: turn it on with the button at the top, then click any bit. The weight changes at once, and so do this neuron, the network’s answers and its loss. A low mantissa bit barely matters; a high exponent bit multiplies the weight by a huge power of two and can wreck the network. That is why servers use error-correcting (ECC) memory, which catches a single flipped bit.'] : []),
+      ],
+      code: fm.id === 'f32' ? `import struct\nv = ${num(v, 7)}\nu = struct.unpack('>I', struct.pack('>f', v))[0]\nbits = format(u, '032b')\nprint(bits[0], bits[1:9], bits[9:])        # sign, exponent, mantissa\nprint(struct.unpack('>f', struct.pack('>I', u))[0])   # the float32 value`
+        : `import torch\n\nv = torch.tensor(${num(v, 7)})\nq = v.to(${dt})                 # ${fm.name}, rounded to the nearest value it has\nbits = q.view(${it}).item() & 0x${nb === 16 ? 'FFFF' : 'FF'}\nb = format(bits, '0${nb}b')\nprint(b[0], b[1:${1 + E}], b[${1 + E}:], q.item())   # sign, exponent, mantissa, the value kept`,
     });
   };
   D.signBit = function (X, z) {
@@ -1074,6 +1363,8 @@
     const fet = [0.18, 0.3, 0.22, 0.3], cap = [0.5, 0.36, 0.2, 0.3];
     return node({
       title: 'DRAM cell', sub: `holding a ${bit}`, tone: 's3', animate: true,
+      count: 'Inside: 1 transistor and 1 capacitor.',
+      terms: [{ key: 'cap', words: ['as charge on a capacitor'], ids: ['cap'] }, { key: 'fet', words: ['one transistor'], ids: ['fet'] }, { key: 'wl', words: ['the word line'], own: true }, { key: 'bl', words: ['the bit line'], own: true }],
       summary: (ctx, r, S) => S.text(ctx, String(bit), r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.h * 0.6, 8, 20), mono: true, w: 700, align: 'center', color: bit ? theme.c('pos') : theme.c('muted') }),
       inner: (ctx, r, S) => {
         const u = S.u(r, 8, 13), st = stage(), P = (f) => S.place(r, f), f = P(fet), c = P(cap), wl = r.y + r.h * 0.16, bl = r.x + r.w * 0.08, read = st === 2;
@@ -1081,6 +1372,8 @@
         S.text(ctx, `word line ${read ? '(reading: on)' : '(off)'}`, r.x + r.w * 0.9, wl - u * 0.8, { size: u * 0.85, align: 'right', color: read ? theme.c('pos') : theme.c('muted') });
         ctx.strokeStyle = theme.c('ink-2'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(bl, wl + 10); ctx.lineTo(bl, r.y + r.h * 0.95); ctx.stroke();
         S.text(ctx, 'bit line', bl + 6, r.y + r.h * 0.92, { size: u * 0.85, color: theme.c('muted') });
+        if (S.hl === 'wl') S.lit(ctx, { x: r.x, y: wl - 3, w: r.w * 0.9, h: 6 }, 3);
+        if (S.hl === 'bl') S.lit(ctx, { x: bl - 3, y: wl + 10, w: 6, h: r.y + r.h * 0.95 - wl - 10 }, 3);
         ctx.beginPath(); ctx.moveTo(f.x + f.w * 0.44, wl); ctx.lineTo(f.x + f.w * 0.44, f.y); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(bl, f.y + f.h / 2); ctx.lineTo(f.x, f.y + f.h / 2); ctx.moveTo(f.x + f.w, f.y + f.h / 2); ctx.lineTo(c.x, f.y + f.h / 2); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(c.x + c.w / 2, c.y + c.h); ctx.lineTo(c.x + c.w / 2, r.y + r.h * 0.9); ctx.stroke();
@@ -1097,6 +1390,8 @@
   };
 
   D.lazy = node;
+  // drawing helpers for other modules' levels (the visitor's own full adder)
+  D.draw = { wire, gateGlyph, drawBits };
   // the kind of view each level is, for Merge in the zoom views (zooming out keeps showing this kind of view)
   for (const [name, form] of [['neuron', 'weighted sum'], ['code', 'code'], ['lib', 'library routine'], ['fmul', 'float multiplier'], ['fadd', 'float adder'], ['products', 'partial-product grid'], ['adder', 'adder'], ['fullAdder', 'full adder'], ['gate', 'logic gate'], ['cmos', 'logic gate'], ['mos', 'transistor'], ['electrons', 'piece of silicon'], ['stored', 'stored number'], ['memCell', 'memory cell']]) {
     const make = D[name];

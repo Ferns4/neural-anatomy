@@ -19,6 +19,10 @@
       act: soft || act.id === 'linear' ? null : act, outName: out ? (net.out === 'identity' ? 'y_hat' : 'p') : 'a',
       inLabel: (i) => App.neuronName(l - 1, i, true), wLabel: (i) => `weight from ${App.neuronName(l - 1, i, true)}`, inWhat: l === 1 ? 'the input features' : 'the previous layer',
       inputNode: (i) => neuron(X, l - 1, i),
+      // its weights can be changed from the zoom view: flip their bits, or store the whole network in fewer bits
+      wEdit: (i) => ND.weightEdit(l, j, i),
+      // for the end of a walk with weight i: this example's loss, and the gradient backpropagation gives that weight
+      followEx: (i) => { const t = App.probeTrace(); return { loss: t.loss, grad: t.delta ? t.delta[l][j] * t.a[l - 1][i] : NaN, lr: App.hyper.lr }; },
       vars: { w: `layer${l}.weight[${j}]`, a: l === 1 ? 'x' : `a${l - 1}`, b: `layer${l}.bias[${j}]` },
       codeHead: [`# ${name}, for the probe input`], codeWhat: `as one row of nn.Linear(${nIn}, ${net.sizes[l]})`,
       about: [`${name} of this network, for the probe input${App.ds.kind === 'plane' ? ` (${App.ds.featureLabels.map((f, i) => `${f} = ${fmt(tr.a[0][i], 2)}`).join(', ')})` : ''}. Zoom into an input bar to open the neuron that produced it, all the way back to the inputs.`,
@@ -55,6 +59,73 @@
     App.on('model', () => { if (ND.open) ND.close(true); });
     App.register(ND);
   }
+
+  /* Changing weights from the zoom view: flipping a bit of one, or storing every weight and bias in a smaller
+     format (rounded from the float32 originals, which come back when float32 is chosen again). Any other change
+     to the weights (training, an edit elsewhere, a new network) ends the experiment: the weights are then simply
+     the network's own again, in float32. */
+  ND.format = 'f32'; ND.saved = null; ND.flips = []; ND.base = null;
+  const metricsNow = () => App.net.evaluate(App.ds.X, App.ds.y, App.evalTrain, App.ds.task);
+  function own(fn) { ND.busy = true; try { fn(); } finally { ND.busy = false; } ND.ver = App.version; }
+  function endExperiment() {
+    const was = ND.format !== 'f32' || ND.flips.length;
+    ND.format = 'f32'; ND.saved = null; ND.flips = []; ND.base = null;
+    if (was) NA.ui.toast.show('The weights changed, so they are the network’s own float32 numbers again.');
+  }
+  App.on('weights', () => { if (!ND.busy && App.version !== ND.ver && (ND.base || ND.saved)) endExperiment(); });
+  App.on('model', () => { if (ND.base || ND.saved) { ND.format = 'f32'; ND.saved = null; ND.flips = []; ND.base = null; } });
+  ND.weightEdit = (l, j, i) => ({
+    format: ND.format,
+    set: (v) => ND.flip(l, j, i, v),
+    canUndo: () => ND.flips.length > 0,
+    undo: () => ND.undoFlip(),
+    setFormat: (id) => ND.setFormat(id),
+    notes: () => ND.notes(l, j, i),
+  });
+  ND.flip = function (l, j, i, v) {
+    if (!ND.base) ND.base = metricsNow();
+    const net = App.net;
+    ND.flips.push({ l, j, i, before: net.W[l - 1][j * net.sizes[l - 1] + i] });
+    own(() => App.setWeight(l, j, i, v));
+  };
+  ND.undoFlip = function () {
+    const f = ND.flips.pop();
+    if (!f) return;
+    own(() => App.setWeight(f.l, f.j, f.i, f.before));
+    if (!ND.flips.length && !ND.saved) ND.base = null;
+  };
+  ND.setFormat = function (id) {
+    const net = App.net, fm = NA.deep.FORMATS[id];
+    if (!fm || id === ND.format) return;
+    if (!ND.base) ND.base = metricsNow();
+    // the float32 weights, kept exactly, to round from and to come back to
+    if (!ND.saved) ND.saved = { W: net.W.map((w) => Float64Array.from(w)), b: net.b.map((b) => Float64Array.from(b)) };
+    own(() => {
+      const enc = (v) => (id === 'f32' ? v : NA.deep.math.encodeF(v, fm).v);
+      for (let l = 0; l < net.L; l++) {
+        const W = net.W[l], b = net.b[l], W0 = ND.saved.W[l], b0 = ND.saved.b[l];
+        for (let k = 0; k < W.length; k++) W[k] = enc(W0[k]);
+        for (let k = 0; k < b.length; k++) b[k] = enc(b0[k]);
+      }
+      App.weightsEdited();
+    });
+    ND.format = id; ND.flips = [];
+    if (id === 'f32') { ND.saved = null; ND.base = null; }
+  };
+  // what the experiment did, for the weight's explanation: its value before and now, and the training-set loss
+  ND.notes = function (l, j, i) {
+    if (!ND.base) return [];
+    const now = metricsNow(), b0 = ND.base, reg = App.isRegression(), net = App.net, k = j * net.sizes[l - 1] + i;
+    // a number that broke (a flipped exponent bit can make one infinite, or not a number at all) says so
+    const num = (v, d) => (Number.isFinite(v) ? fmt(v, d) : Number.isNaN(v) ? 'not a number (NaN)' : 'infinite');
+    const sc = (m) => (reg ? num(m.acc, 3) : Number.isFinite(m.acc) ? `${Math.round(m.acc * 1000) / 10}%` : 'not a number');
+    const change = (what, a, b) => (a === b ? `the ${what} stayed at ${a}` : `the ${what} went from ${a} to ${b}`);
+    const effect = `On the training set ${change('loss', num(b0.loss, 4), num(now.loss, 4))}, and ${change(reg ? 'R²' : 'accuracy', sc(b0), sc(now))}.`;
+    const out = [];
+    if (ND.format !== 'f32' && ND.saved) out.push(`You stored every weight and bias of this network as ${NA.deep.FORMATS[ND.format].name}. This weight was ${fmt(ND.saved.W[l - 1][k], 7)} and is now ${fmt(net.W[l - 1][k], 7)}. ${effect} Choose float32 again to get the original weights back.`);
+    if (ND.flips.length) out.push(`You flipped ${ND.flips.length} bit${ND.flips.length === 1 ? '' : 's'}. ${ND.format === 'f32' || !ND.saved ? effect : ''} Undo puts ${ND.flips.length === 1 ? 'it' : 'them'} back one at a time; training changes the weights again in its own way.`);
+    return out;
+  };
 
   /* The neuron a zoom is aimed at: the one under the cursor (hovered) if any, else the one nearest the zoom's
      centre within reach; with anyVisible (the zoom is at its limit), simply the nearest one still on screen. */
@@ -113,7 +184,8 @@
   ND.show = function (l, j, sx, sy) {
     if (!ND.stage) build();
     ND.l = l; ND.j = j; ND.open = true; ND.anchor = [sx, sy];
-    ND.arch.path = []; ND.arch.selected = null; ND.arch.focusKey = null; ND.arch.crumbKey = null; ND.arch.dirty = true;
+    if (ND.arch.tour) ND.arch.endFollow();
+    ND.arch.path = []; ND.arch.selected = null; ND.arch.focusKey = null; ND.arch.crumbKey = null; ND.arch.dirty = true; ND.arch.clock = null;
     ND.arch.zoomSet(1, 0, 0); ND.arch.wheelHold = true; ND.arch.lastWheel = performance.now();
     const s = ND.stage, a = NA.netView.stage.getBoundingClientRect(), p = ND.panel.getBoundingClientRect();
     s.style.transformOrigin = `${sx + a.left - p.left}px ${sy + a.top - p.top}px`; // grow out of the neuron
@@ -125,7 +197,9 @@
   };
   ND.close = function (now) {
     if (!ND.open) return;
-    ND.open = false;
+    ND.open = false; ND.closedAt = performance.now(); // (zooming out of a neuron should not go on past the network)
+    if (ND.arch.tour) ND.arch.endFollow();
+    if (NA.circuit && NA.circuit.ed) NA.circuit.close();
     const V = NA.netView, z = V.zoom, [sx, sy] = ND.anchor || [V.W / 2, V.H / 2];
     // land back on the diagram zoomed out a little, so the neuron does not reopen at once
     z.zoomAt(sx, sy, 0.6);

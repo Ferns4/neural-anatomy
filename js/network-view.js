@@ -8,6 +8,7 @@
   const BUCKETS = 12;
 
   function rr(ctx, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r || 0, Math.abs(w) / 2, Math.abs(h) / 2)); // a box squeezed to nothing must not throw
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
     else { ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
@@ -30,7 +31,7 @@
     // zooming far into a neuron opens it (net-deep.js). A touch screen gets more room to zoom before that
     // happens: a pinch to read the labels should not fall into a neuron.
     V.touch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', max: V.touch ? 5 : 4, onDouble: (px, py) => !!(NA.netDeep && NA.netDeep.openAt(px, py)), onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
+    V.zoom = new NA.ui.Zoom(V.canvas, { host: V.stage, panOne: true, wheel: 'fixed', max: V.touch ? 5 : 4, onUnderflow: () => NA.scaleView && NA.scaleView.underflow(), onDouble: (px, py) => !!(NA.netDeep && NA.netDeep.openAt(px, py)), onChange: () => { V.dirty = true; positionHeaders(); NA.tooltip.hide(); if (NA.netDeep) NA.netDeep.maybeOpen(); } });
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
