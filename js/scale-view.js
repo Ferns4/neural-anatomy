@@ -1,7 +1,7 @@
 /* scale-view.js — zooming out past the network. Below the network diagram's smallest zoom the view keeps going:
    your network shrinks to a dot beside the models of this site's labs, all of them fit in a corner of the
    smallest GPT-2, and GPT-2 in a corner of one GPU's memory. Each square has the area of its number of weights.
-   Zoom back in (or click your network) to return to it. Built on the same zoomable view as the neuron's levels. */
+   Zoom back in (or double-click your network) to return to it. Built on the same zoomable view as the neuron's levels. */
 (function (NA) {
   'use strict';
   const { el, theme, clamp, fmtInt } = NA;
@@ -81,7 +81,7 @@
     const net = {
       id: 'net', title: 'Your network', sub: `${fmtInt(m)} weights and biases`, tone: 's1', shape: 'ghost',
       inner: (ctx, c, S) => drawNet(ctx, c, S), portal: () => SV.close(),
-      about: ['Your network. Zoom in on it, or click it, to go back to it.'],
+      about: ['Your network. Zoom in on it, or double-click it, to go back to it.'],
     };
     // the labs level: its parts are drawn by the level itself; the parts listed here only take the pointer
     const lay = labsLayout(size.w, size.h);
@@ -115,7 +115,7 @@
         Object.assign(net, { rect: (() => { const it = lay.items[lay.items.length - 1]; return [it.sx / size.w, (lay.base - Math.max(40, it.slot)) / size.h, it.slot / size.w, (Math.max(40, it.slot) + lay.labelH) / size.h]; })() }),
       ],
       tools: back,
-      about: [`Each square has the area of a model’s number of weights. Your network has ${fmtInt(m)} weights and biases, ${bytes(m)} as float32: beside the YOLO26 detector’s ${fmtInt(LABS[0].n)} it is a dot. The labs’ models are small on purpose, so that they run (and some of them train) right here in your browser.`, 'Zoom out again for a model people actually used, or zoom in on your network (or click it) to go back to it.'],
+      about: [`Each square has the area of a model’s number of weights. Your network has ${fmtInt(m)} weights and biases, ${bytes(m)} as float32: beside the YOLO26 detector’s ${fmtInt(LABS[0].n)} it is a dot. The labs’ models are small on purpose, so that they run (and some of them train) right here in your browser.`, 'Zoom out again for a model people actually used, or zoom in on your network (or double-click it) to go back to it.'],
     };
     const G = squareLevel(size, all, GPT2, { tone: 's2', innerTone: 's4', grid: 12, label: ['all of this site’s models', `${fmtInt(all)} weights, ${pct(all, GPT2)}%`], words: ['124 million weights', `${bytes(GPT2)} as float32`, 'GPT-2 from 2019, its smallest size: 12 transformer blocks. All the models in this site fill the little square in its corner.'] });
     const gpt2 = {

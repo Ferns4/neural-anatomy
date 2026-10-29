@@ -251,7 +251,7 @@
     this.slider.addEventListener('input', () => this.onSlider());
     this.sliderLab = el('span', { class: 'mono df-t' });
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'Diffusion model architecture: click a part or zoom in to open it', build: (size) => NA.archDiffusion.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    this.arch = new NA.ArchView(this.archStage, { label: 'Diffusion model architecture: click a part for details; double-click it or zoom in to open it', build: (size) => NA.archDiffusion.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab));
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot = el('div', { class: 'lab-foot' })); // the key for the view on show (renderFoot)

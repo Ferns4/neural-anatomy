@@ -152,7 +152,7 @@
     constructor(stage, opts) {
       this.stage = stage; this.opts = opts; this.dirty = true;
       this.path = []; this.anim = null; this.selected = null;
-      this.canvas = el('canvas', { class: 'arch-canvas', tabindex: '0', 'aria-label': opts.label || 'Architecture diagram: click a part to open it' });
+      this.canvas = el('canvas', { class: 'arch-canvas', tabindex: '0', 'aria-label': opts.label || 'Architecture diagram: click a part for details; double-click it to open it' });
       this.back = el('button', { class: 'icon-btn arch-back', type: 'button', 'aria-label': 'Back out one level', title: 'Back out one level (Esc)', onclick: () => this.exit() }, '←');
       this.crumbs = el('nav', { class: 'arch-crumbs', 'aria-label': 'Where you are in the model' });
       this.merge = false; this.mergeDepth = 0; this.mergeForm = null; this.mergeHits = null;
@@ -174,7 +174,10 @@
       const release = () => { if (this.zoom.ptrs.size === 0) this.gestureLock = false; };
       this.canvas.addEventListener('pointerup', release); this.canvas.addEventListener('pointercancel', release);
       this.canvas.addEventListener('pointerleave', () => { this.hoverId = null; this.dirty = true; NA.tooltip.hide(); this.syncLinks(); });
-      this.canvas.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); this.exit(); } });
+      this.canvas.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); this.exit(); }
+        else if (e.key === 'Enter' && this.selected) { e.preventDefault(); this.openSelected(); }
+      });
       this.ro = new ResizeObserver(() => { this.dirty = true; });
       this.ro.observe(stage);
     }
@@ -412,11 +415,105 @@
       if (!groups.length) return null;
       const rest = groups[groups.length - 1].rest ? groups[groups.length - 1] : null;
       if (rest && groups.length > 1) {
-        const sh = clamp(c.h * 0.2, 46, 96);
-        this.layGroups(ctx, groups.slice(0, -1), { x: c.x, y: c.y, w: c.w, h: c.h - sh - 8 }, alpha, hits, 0, null);
+        const sh = clamp(c.h * 0.2, 46, 96), main = { x: c.x, y: c.y, w: c.w, h: c.h - sh - 8 };
+        if (!this.drawMemory(ctx, groups.slice(0, -1), main, alpha, hits)) this.layGroups(ctx, groups.slice(0, -1), main, alpha, hits, 0, null);
         this.layGroups(ctx, [rest], { x: c.x, y: c.y + c.h - sh, w: c.w, h: sh }, alpha, hits, 0, null);
-      } else this.layGroups(ctx, groups, c, alpha, hits, 0, null);
+      } else if (!this.drawMemory(ctx, groups, c, alpha, hits)) this.layGroups(ctx, groups, c, alpha, hits, 0, null);
       return groups;
+    }
+    /* Merged memory, wired up the way a memory array is: each number on its own word line (a row, opened all at
+       once), each bit position on its own bit line (a column) running down to a sense amplifier, and every cell
+       showing the bit it holds. Pointing at a row (or a cell) opens that row: its word line lights, and so do the
+       bit lines its 1s pull up. False: not memory. */
+    drawMemory(ctx, groups, c, alpha, hits) {
+      const F = this.mergeForm;
+      if (F !== 'memory cell' && F !== 'stored number') return false;
+      const rows = [];
+      for (const g of groups) {
+        if (g.rest) continue;
+        if (F === 'stored number') { for (const it of g.items) rows.push({ title: it.node.title, group: g.title, rel: it.rel, node: it.node, cells: null }); continue; }
+        const by = new Map();
+        for (const it of g.items) {
+          const key = it.rel.slice(0, -1).join('/');
+          let row = by.get(key);
+          if (!row) by.set(key, (row = { title: (it.up && it.up.title) || g.title || 'a number', group: g.title, rel: it.rel.slice(0, -1), node: it.up, cells: [] }));
+          row.cells.push(it);
+        }
+        rows.push(...by.values());
+      }
+      if (!rows.length) return false;
+      const bitsOf = (row) => (row.node && row.node.grids && row.node.grids[0] ? row.node.grids[0].cols : row.cells.length);
+      const ncol = Math.max(...rows.map(bitsOf)), u = clamp(Math.min(c.w / 62, c.h / 20), 8, 12);
+      const labelW = clamp(c.w * 0.17, 60, 160), decW = 10, top = u * 2.4, senseH = clamp(c.h * 0.09, 18, 30), foot = u * 1.5;
+      const ax = c.x + labelW + decW + 10, aw = c.x + c.w - ax - 2, cw = aw / ncol;
+      const room = c.h - top - senseH - foot, shown = rows.slice(0, Math.max(1, Math.floor(room / 12)));
+      const rh = Math.min(room / shown.length, Math.max(cw * 2.4, 24), 46), ay = c.y + top, ah = rh * shown.length, sy = ay + ah + 3;
+      const colX = (p) => ax + (ncol - 1 - p + 0.5) * cw, wireX = (p) => colX(p) - cw * 0.3;
+      const jOf = (id) => +String(id).split(':')[2];
+      // each row's cells, in bit order: the merged ones, or (for stored numbers) the cells of the number's bits
+      for (const row of shown) {
+        if (!row.cells) row.cells = row.node && row.node.grids && row.node.grids[0] ? [...this.eachCell(row.node.grids[0])].map((cell) => ({ node: cell, rel: row.rel.concat(cell.id) })) : [];
+        row.n = bitsOf(row);
+      }
+      // the row being read: the one under the pointer, or the selected one
+      const rowOf = (key) => (key && key[0] === '~' ? shown.findIndex((row) => key === '~' + row.rel.join('/') || key.startsWith('~' + row.rel.join('/') + '/')) : -1);
+      const lit = rowOf(this.hoverId) >= 0 ? rowOf(this.hoverId) : rowOf(this.selected);
+      const ones = new Set(lit >= 0 ? shown[lit].cells.filter((it) => it.node.bit).map((it) => shown[lit].n - 1 - jOf(it.node.id)) : []);
+      ctx.save(); ctx.globalAlpha = alpha;
+      // bit lines, one per bit position, down every row to its sense amplifier
+      for (let p = 0; p < ncol; p++) {
+        const on = ones.has(p);
+        ctx.strokeStyle = on ? theme.c('pos') : theme.c('line-2'); ctx.lineWidth = on ? 1.8 : 1;
+        ctx.beginPath(); ctx.moveTo(wireX(p), ay - 2); ctx.lineTo(wireX(p), sy + 2); ctx.stroke();
+      }
+      // bit numbers over the columns, and what the rows and columns are
+      for (let p = ncol - 1; p >= 0; p--) if (p === ncol - 1 || p % 8 === 0 || (cw > 16 && p % 4 === 0)) S.text(ctx, String(p), colX(p), ay - u * 0.75, { size: u * 0.85, mono: true, align: 'center', color: theme.c('muted') });
+      S.text(ctx, 'bit lines ↓', ax + aw, ay - u * 1.85, { size: u * 0.82, align: 'right', color: theme.c('muted') });
+      S.text(ctx, 'word lines →', c.x, ay - u * 0.75, { size: u * 0.82, color: theme.c('muted'), maxW: labelW });
+      // the row decoder: it picks the row to open
+      const dx = c.x + labelW + 4;
+      ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(dx, ay, decW, ah); ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 1; ctx.strokeRect(dx + 0.5, ay + 0.5, decW - 1, ah - 1);
+      shown.forEach((row, ri) => {
+        const y = ay + ri * rh, wy = y + rh * 0.26, open = ri === lit, rkey = '~' + row.rel.join('/');
+        const ls = clamp(Math.min(u, rh * 0.55), 7.5, 12);
+        S.text(ctx, row.title, c.x + labelW - 2, wy + 1, { size: ls, w: open ? 700 : 600, align: 'right', maxW: labelW - 4, color: theme.c(open ? 'ink' : 'ink-2') });
+        if (row.group && row.group !== row.title && rh > ls * 2.3) S.text(ctx, `in ${row.group}`, c.x + labelW - 2, wy + ls * 1.15, { size: ls * 0.82, align: 'right', maxW: labelW - 4, color: theme.c('muted') });
+        // the word line: all of this row's cells open at once
+        ctx.strokeStyle = open ? theme.c('focus') : theme.c('ink-2', 0.55); ctx.lineWidth = open ? 2.2 : 1.1;
+        ctx.beginPath(); ctx.moveTo(dx + decW, wy); ctx.lineTo(ax + aw, wy); ctx.stroke();
+        for (const it of row.cells) {
+          const j = jOf(it.node.id), p = row.n - 1 - j, x = colX(p), bit = it.node.bit ? 1 : 0;
+          const field = /\((sign|exponent|mantissa)\)/.exec(it.node.title || ''), tone = !field ? 's3' : field[1] === 'sign' ? 's7' : field[1] === 'exponent' ? 's4' : 's1';
+          const s = Math.max(3, Math.min(cw * 0.56, rh * 0.56)), bx = x - s * 0.15, by = y + rh * 0.42;
+          // the access transistor: from the bit line to the capacitor, its gate on the word line
+          if (cw >= 7) {
+            ctx.strokeStyle = theme.c('ink-2', 0.7); ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(wireX(p), by + s / 2); ctx.lineTo(bx, by + s / 2); ctx.moveTo((wireX(p) + bx) / 2, by + s / 2 - 2); ctx.lineTo((wireX(p) + bx) / 2, wy); ctx.stroke();
+          }
+          // the capacitor: charged for a 1
+          ctx.fillStyle = bit ? theme.c(tone, 0.85) : theme.c(tone, 0.1);
+          ctx.beginPath(); NA.rr(ctx, bx, by, s, s, Math.min(3, s * 0.2)); ctx.fill();
+          ctx.strokeStyle = theme.c(tone, 0.7); ctx.lineWidth = 1; ctx.stroke();
+          if (s >= 9) S.text(ctx, String(bit), bx + s / 2, by + s / 2 + 0.5, { size: s * 0.66, mono: true, w: 700, align: 'center', color: bit ? theme.c('panel') : theme.c('muted') });
+          const r = { x: x - cw / 2, y, w: cw, h: rh }, key = '~' + it.rel.join('/');
+          if (this.hoverId === key || this.selected === key) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = this.selected === key ? 2.5 : 1.8; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); }
+          if (hits) hits.push({ r, rel: it.rel, node: it.node, group: row.title });
+        }
+        const lr = { x: c.x, y, w: labelW + decW + 4, h: rh };
+        if (this.selected === rkey) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2; ctx.strokeRect(lr.x + 0.5, lr.y + 0.5, lr.w - 1, lr.h - 1); }
+        if (hits && row.node) hits.push({ r: lr, rel: row.rel, node: row.node, group: row.group });
+      });
+      // a sense amplifier at the foot of every bit line
+      const tw = Math.min(cw * 0.6, 10), th = senseH * 0.42;
+      for (let p = 0; p < ncol; p++) {
+        const x = wireX(p), on = ones.has(p);
+        ctx.fillStyle = on ? theme.c('pos', 0.85) : theme.c('panel'); ctx.strokeStyle = on ? theme.c('pos') : theme.c('ink-2', 0.6); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x - tw / 2, sy); ctx.lineTo(x + tw / 2, sy); ctx.lineTo(x, sy + th); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      S.text(ctx, lit >= 0 ? `reading ${shown[lit].title}: its row is open, and its 1s show on the sense amplifiers` : 'sense amplifiers, one per bit line: point at a row to read it', ax, sy + th + u * 0.9, { size: u * 0.85, color: theme.c(lit >= 0 ? 'ink-2' : 'muted'), maxW: aw });
+      if (rows.length > shown.length) S.text(ctx, `… and ${rows.length - shown.length} more`, c.x, sy + th + u * 0.9, { size: u * 0.85, color: theme.c('muted'), maxW: labelW });
+      ctx.restore();
+      return true;
     }
     // a group's parts split by the part they sit in, at the first level down where they differ (one multiplication
     // of several, one gate of four…): framed again inside the group, numbered where several have the same name
@@ -469,23 +566,69 @@
         }
         const subs = depth ? null : this.splitGroup(g);
         if (subs && this.layGroups(ctx, subs, body, alpha, hits, 1, g.title)) return;
-        const m = g.items.length, ic = Math.max(1, Math.min(m, Math.round(Math.sqrt((m * body.w) / (body.h * 1.4))))), ir = Math.ceil(m / ic), tg = Math.min(4, body.w * 0.01);
-        const tw = (body.w - tg * (ic - 1)) / ic, th = (body.h - tg * (ir - 1)) / ir;
+        // parts wired together in one circuit: drawn in that circuit's own picture, with its wires
+        if (this.drawAttached(ctx, g, body, alpha, hits, name)) return;
+        // the full adders of one adder: in bit order, each passing its carry to the next (a ripple)
+        const chain = this.mergeForm === 'full adder' && g.items.length > 1 && g.items.every((it) => it.up === g.items[0].up && it.node.io && /^fa:/.test(it.node.id));
+        const m = g.items.length, ic = Math.max(1, Math.min(m, Math.round(Math.sqrt((m * body.w) / (body.h * 1.4))))), ir = Math.ceil(m / ic), tg = chain ? clamp(body.w * 0.03, 10, 18) : Math.min(4, body.w * 0.01);
+        const tw = (body.w - tg * (ic - 1)) / ic, th = (body.h - tg * (ir - 1)) / ir, placed = [];
         g.items.forEach((it, q) => {
           const r = { x: body.x + (q % ic) * (tw + tg), y: body.y + Math.floor(q / ic) * (th + tg), w: tw, h: th };
-          this.drawItem(ctx, it.node, r, alpha, it.closed);
+          this.drawItem(ctx, it.node, r, alpha, it.closed, '~' + it.rel.join('/'));
+          placed.push(r);
           if (hits) hits.push({ r, rel: it.rel, node: it.node, group: name });
         });
+        if (chain) this.drawCarries(ctx, g.items, placed, tg, alpha);
       });
       return true;
     }
+    // the carry of each full adder in a chain, into the next one up (left, or at the end of the row above): lit for a 1
+    drawCarries(ctx, items, rs, tg, alpha) {
+      ctx.save(); ctx.globalAlpha = alpha;
+      for (let q = items.length - 1; q > 0; q--) {
+        const from = rs[q], to = rs[q - 1], on = !!items[q].node.io.cout, y0 = from.y + from.h * 0.5, y1 = to.y + to.h * 0.5;
+        ctx.strokeStyle = on ? theme.c('pos') : theme.c('ink-2', 0.5); ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = on ? 2 : 1.2;
+        const pts = Math.abs(from.y - to.y) < 1 ? [[from.x, y0], [to.x + to.w, y1]]
+          : [[from.x, y0], [from.x - tg / 2, y0], [from.x - tg / 2, from.y - tg / 2], [to.x + to.w + tg / 2, from.y - tg / 2], [to.x + to.w + tg / 2, y1], [to.x + to.w, y1]];
+        ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
+        const [ex, ey] = pts[pts.length - 1], h = Math.min(6, tg * 0.45);
+        ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex + h, ey - h * 0.6); ctx.lineTo(ex + h, ey + h * 0.6); ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    }
+    /* Parts of a merged level that sit in one circuit (the gates of a full adder or of a gate, the transistors of a
+       gate) are drawn in that circuit's own picture, its wires joining them, each opened in place. False: they do
+       not (or there is no room), so they are drawn as tiles. */
+    drawAttached(ctx, g, body, alpha, hits, name) {
+      const up = g.items[0] && g.items[0].up, F = this.mergeForm;
+      if (!up || !up.inner || (F !== 'logic gate' && F !== 'transistor') || g.items.length < 2 || g.items.some((it) => it.up !== up || it.closed)) return false;
+      const kids = up.children || [], ids = new Map(g.items.map((it) => [it.node.id, it]));
+      if (!g.items.every((it) => kids.some((ch) => ch.id === it.node.id))) return false;
+      const L = this.levelRect(), vw = L.w * 0.96, vh = L.h * 0.86, sc = Math.min(body.w / vw, body.h / vh);
+      if (sc < 0.22) return false;
+      const ox = body.x + (body.w - vw * sc) / 2, oy = body.y + (body.h - vh * sc) / 2, cv = { x: 0, y: 0, w: vw, h: vh }, placed = [];
+      if (up.animate) this.mergeAnim = true;
+      ctx.save(); ctx.globalAlpha = alpha; ctx.translate(ox, oy); ctx.scale(sc, sc);
+      const W0 = this.W, H0 = this.H; this.W = Infinity; this.H = Infinity; // drawn in its own space: nothing is off screen there
+      ctx.save(); up.inner(ctx, cv, S); ctx.restore();
+      for (const ch of kids) {
+        const r = S.place(cv, ch.rect), it = ids.get(ch.id);
+        if (it) { this.drawItem(ctx, it.node, r, alpha, false, '~' + it.rel.join('/'), sc); placed.push([it, r]); }
+        else this.drawClosed(ctx, ch, r, alpha);
+      }
+      this.W = W0; this.H = H0;
+      ctx.restore();
+      if (hits) for (const [it, r] of placed) hits.push({ r: { x: ox + r.x * sc, y: oy + r.y * sc, w: r.w * sc, h: r.h * sc }, rel: it.rel, node: it.node, group: name });
+      return true;
+    }
     // one part in a merged level: drawn the way its own level looks, framed and named; too small, or one of the
-    // other parts, as its usual box
-    drawItem(ctx, n, r, alpha, closed) {
+    // other parts, as its usual box. key: its path ('~' + rel), for the pointer and the selection; scale: how much
+    // the space it is drawn in is shrunk on screen (a part drawn inside its circuit's picture)
+    drawItem(ctx, n, r, alpha, closed, key, scale = 1) {
       if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2 || r.h < 2) return;
-      const hov = this.hoverId === '~' + n.id;
-      if (closed || r.w < 62 || r.h < 44 || !(n.inner || n.children)) {
-        if (n.summary && r.w >= 10 && r.h >= 10 && (r.w < 62 || r.h < 34)) {
+      const hov = !!key && (this.hoverId === key || this.selected === key), sw = r.w * scale, sh = r.h * scale;
+      if (closed || sw < 62 || sh < 44 || !(n.inner || n.children)) {
+        if (n.summary && sw >= 10 && sh >= 10 && (sw < 62 || sh < 34)) {
           ctx.globalAlpha = alpha;
           ctx.fillStyle = theme.c('panel'); ctx.fillRect(r.x, r.y, r.w, r.h);
           if (n.tone) { ctx.fillStyle = theme.c(n.tone, theme.dark ? 0.12 : 0.08); ctx.fillRect(r.x, r.y, r.w, r.h); }
@@ -493,7 +636,7 @@
           ctx.strokeStyle = hov ? theme.c('focus') : theme.c('line-2'); ctx.lineWidth = hov ? 2 : 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
           return;
         }
-        if (r.w < 16 || r.h < 12) {
+        if (sw < 16 || sh < 12) {
           ctx.globalAlpha = alpha; ctx.fillStyle = n.tone ? theme.c(n.tone, 0.55) : theme.c('line-2'); ctx.fillRect(r.x, r.y, r.w, r.h);
           if (hov) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2; ctx.strokeRect(r.x - 0.5, r.y - 0.5, r.w + 1, r.h + 1); }
           return;
@@ -507,7 +650,7 @@
         this.drawClosed(ctx, n, r, alpha, hov); return;
       }
       if (n.animate) this.mergeAnim = true;
-      const lab = clamp(r.h * 0.11, 9, 13), box = { x: r.x + 3, y: r.y + lab + 4, w: r.w - 6, h: r.h - lab - 7 };
+      const lab = clamp(sh * 0.11, 9, 13) / scale, box = { x: r.x + 3, y: r.y + lab + 4, w: r.w - 6, h: r.h - lab - 7 }; // (its label stays readable when shrunk)
       const L = this.levelRect(), vw = Math.max(box.w, L.w * 0.5), vh = Math.max(box.h, L.h * 0.5), sc = Math.min(box.w / vw, box.h / vh);
       const c = { x: 0, y: 0, w: vw, h: vh };
       ctx.save();
@@ -526,12 +669,15 @@
       S.text(ctx, n.title, r.x + 5, r.y + lab / 2 + 3, { size: Math.max(7.5, lab * 0.78), w: 600, color: theme.c('muted'), maxW: r.w - 10 });
     }
     // the grid cell under the cursor gets an outline, so it is clear which number zooming in will open
+    // (and the selected one a thicker one)
     drawHoverCell(ctx, node, R) {
-      const m = this.hoverId && node.grids && /^(.+):(\d+):(\d+)$/.exec(this.hoverId), g = m && node.grids.find((q) => q.id === m[1]);
-      if (!g) return;
-      const c = this.content(node, this.camRect(R, this.camNow())), gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
-      ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2;
-      ctx.strokeRect(gr.x + +m[3] * cw - 1, gr.y + +m[2] * ch - 1, cw + 2, ch + 2);
+      for (const [id, lw] of [[this.hoverId, 2], [this.selected, 3]]) {
+        const m = id && node.grids && /^(.+):(\d+):(\d+)$/.exec(id), g = m && node.grids.find((q) => q.id === m[1]);
+        if (!g) continue;
+        const c = this.content(node, this.camRect(R, this.camNow())), gr = S.place(c, g.rect), { cw, ch } = this.cellSize(g, gr);
+        ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = lw;
+        ctx.strokeRect(gr.x + +m[3] * cw - 1, gr.y + +m[2] * ch - 1, cw + 2, ch + 2);
+      }
     }
     drawClosed(ctx, node, r, alpha, lit) {
       if (r.x > this.W || r.y > this.H || r.x + r.w < 0 || r.y + r.h < 0 || r.w < 2) return;
@@ -604,25 +750,49 @@
       // a level drawn as one picture (the network view) has its nodes inside its parts: they come first there
       return node.gridsFirst ? cells() || kids() : kids() || cells();
     }
+    /* A click selects a part: it is outlined and the panel says what it is (with an Open tool); a second click on
+       it straight after (a double-click or double-tap) opens it, as zooming in on it does. A part of a merged
+       level is keyed by its path from here ('~' + rel), since many of them share an id. */
     click(e) {
       if (this.zoom.suppressClick || this.anim) return;
-      const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top);
-      if (!f) { if (this.selected) { this.selected = null; this.dirty = true; this.notify(); } return; }
-      if (f.rel) { this.jump(f.rel); return; }
+      const b = this.canvas.getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top, f = this.pick(x, y);
+      if (!f) { this.lastTap = null; this.select(null); return; }
       // the level can take the click itself (flipping a bit, say)
       const lvl = this.node();
-      if (lvl.onPick && lvl.onPick(f.node, this)) { this.dirty = true; NA.tooltip.hide(); return; }
-      if (this.canEnter(f.node)) this.enter(f.node);
-      else { this.selected = f.node.id; this.dirty = true; this.notify(); }
+      if (!f.rel && lvl.onPick && lvl.onPick(f.node, this)) { this.dirty = true; NA.tooltip.hide(); this.lastTap = null; return; }
+      const key = f.rel ? '~' + f.rel.join('/') : f.node.id, now = performance.now(), t = this.lastTap;
+      if (t && t.key === key && now - t.t < 450 && Math.hypot(x - t.x, y - t.y) < 26) {
+        this.lastTap = null;
+        if (f.rel) this.jump(f.rel); else if (this.canEnter(f.node)) this.enter(f.node);
+        return;
+      }
+      this.lastTap = { key, t: now, x, y };
+      this.select(key);
+    }
+    select(key) { if (this.selected === key) return; this.selected = key; this.dirty = true; this.notify(); this.refreshTools(); }
+    // the selected part's node: a part of this level (a child or a grid cell), or a merged part by its path
+    selectedNode() {
+      const key = this.selected;
+      if (!key || !this.root) return null;
+      let n = this.node();
+      for (const id of key[0] === '~' ? key.slice(1).split('/') : [key]) { n = this.childOf(n, id); if (!n) return null; }
+      return n;
+    }
+    openSelected() {
+      const key = this.selected;
+      if (!key) return;
+      if (key[0] === '~') { this.jump(key.slice(1).split('/')); return; }
+      const n = this.childOf(this.node(), key);
+      if (n && this.canEnter(n)) this.enter(n);
     }
     hover(e) {
       if (this.zoom.busy || this.anim) return;
       const b = this.canvas.getBoundingClientRect(), f = this.pick(e.clientX - b.left, e.clientY - b.top), id = f ? f.node.id : null;
-      const hid = f && f.rel ? '~' + f.node.id : id;
+      const hid = f && f.rel ? '~' + f.rel.join('/') : id;
       if (hid !== this.hoverId) { this.hoverId = hid; this.dirty = true; this.syncLinks(); }
-      const lvl = this.node(), hint = f && !f.rel && lvl.pickHint ? lvl.pickHint(f.node, this) : null;
-      this.canvas.style.cursor = f ? (!hint && this.canEnter(f.node) ? 'zoom-in' : 'pointer') : 'default';
-      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: hint || (f.rel ? 'Click to open it' : this.canEnter(f.node) ? 'Click or zoom in to open it' : 'Click for the explanation and code') })], e.clientX, e.clientY);
+      const lvl = this.node(), hint = f && !f.rel && lvl.pickHint ? lvl.pickHint(f.node, this) : null, opens = !!f && (!!f.rel || this.canEnter(f.node));
+      this.canvas.style.cursor = f ? 'pointer' : 'default';
+      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: hint || (opens ? `${NA.tapWord()} for details, double-${NA.tapWord(true)} to open it` : `${NA.tapWord()} for the explanation and code`) })], e.clientX, e.clientY);
       else NA.tooltip.hide();
     }
     // zoomed far enough into the level: open the part nearest the middle of the view
@@ -767,11 +937,14 @@
     // tell the lab what is being looked at: the level, or a part clicked inside it
     notify() {
       if (!this.root) return;
-      const level = this.node(), sel = this.selected ? (level.children || []).find((c) => c.id === this.selected) : null;
-      const key = this.path.join('/') + '|' + (sel ? sel.id : '');
+      const level = this.node(), sel = this.selectedNode();
+      const key = this.path.join('/') + '|' + (sel ? this.selected : '');
       if (key === this.focusKey) return;
       this.focusKey = key;
-      if (this.opts.onFocus) this.opts.onFocus(sel || level, this.path, !sel);
+      // a part selected deep inside a merged level: the path to the part it sits in, for the panel's trail
+      const path = sel && this.selected[0] === '~' ? this.path.concat(this.selected.slice(1).split('/').slice(0, -1)) : this.path;
+      this.focusSel = sel;
+      if (this.opts.onFocus) this.opts.onFocus(sel || level, path, !sel);
     }
     refreshFocus() { this.focusKey = null; if (this.dirty) this.focusLater = true; else this.notify(); }
     // what the info panel shows for a part: where it sits, its explanation and its code
@@ -779,11 +952,15 @@
       const names = [];
       let n = this.root;
       for (const id of path.slice(1)) { n = this.childOf(n, id) || n; names.push(n.title); }
-      const trail = node.id === path[path.length - 1] ? names.slice(0, -1) : names;
-      const k = node.id === path[path.length - 1] ? this.mergeK(path.length) : 0;
-      const F = this.mergeForm, merged = k > 0 && !!this.mergeHits, about = merged ? [`Merged: every ${F || 'part'} within ${k === 1 ? 'one level' : `${k} levels`} of this one, side by side and drawn the way its own level looks, framed by the part of this level it belongs to (and inside that, by the part it sits in). ${F ? `Parts with no ${F} that close` : 'Parts with nothing that far down'} keep their usual boxes, under Other parts${this.mergeCut ? ' (so do any there was no room for)' : ''}. You see what surrounds the part you were in, in the same detail; click any of them to open it. Turn Merge off to see this level as it usually is.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`, ...(node.about || [])] : node.about;
+      // the open level itself, or a part selected in it (which may share the level's id)
+      const level = node !== this.focusSel && node.id === path[path.length - 1] && path.join('/') === this.path.join('/');
+      const trail = level ? names.slice(0, -1) : names;
+      const k = level ? this.mergeK(path.length) : 0;
+      const F = this.mergeForm, merged = k > 0 && !!this.mergeHits, mem = F === 'memory cell' || F === 'stored number';
+      const about = merged ? [mem
+        ? `Merged and wired up as a memory array: each ${F === 'memory cell' ? 'number' : 'stored number'} within ${k === 1 ? 'one level' : `${k} levels`} of this one sits on its own word line (a row), and each bit position on its own bit line (a column) running down to a sense amplifier. Opening a row connects every cell on it to its bit line at once (point at a row to see it), which is why reading neighbouring numbers is fast. A real chip has thousands of cells on each line, and on a PC memory stick the bytes of one number are usually spread over several chips, one byte in each. ${NA.tapWord()} a cell or a row for details; double-${NA.tapWord(true)} to open it.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`
+        : `Merged: every ${F || 'part'} within ${k === 1 ? 'one level' : `${k} levels`} of this one, side by side and drawn the way its own level looks, framed by the part of this level it belongs to (and inside that, by the part it sits in). Parts that are wired together are drawn wired: the gates of one circuit inside its own diagram, the full adders of one adder passing their carries along. ${F ? `Parts with no ${F} that close` : 'Parts with nothing that far down'} keep their usual boxes, under Other parts${this.mergeCut ? ' (so do any there was no room for)' : ''}. ${NA.tapWord()} a part to see what it is; double-${NA.tapWord(true)} it to open it. Turn Merge off to see this level as it usually is.${this.mergeCut ? ` There are more than fit here, so only the first ${this.mergeCut} are drawn.` : ''}`, ...(node.about || [])] : node.about;
       // the open level's words that name its parts are linked to them; what it is made of comes first
-      const level = node.id === path[path.length - 1] && path.join('/') === this.path.join('/');
       this.links = [];
       let out = level && !merged && about ? this.linkify(node, about) : about;
       if (node.count) out = [el('p', { class: 'ip-count', text: node.count }), ...(out || [])];
@@ -848,11 +1025,14 @@
     // ------------------------------------------------------------------ the open level's tools
     syncTools() {
       const node = this.root && !this.anim ? this.node() : null;
-      const key = node ? `${this.path.join('/')}|${node.toolsKey || ''}|${this.toolsRev || 0}|${this.tour ? 1 : 0}` : '';
+      const key = node ? `${this.path.join('/')}|${node.toolsKey || ''}|${this.toolsRev || 0}|${this.tour ? 1 : 0}|${this.selected || ''}` : '';
       if (key === this.toolsKey) return;
       this.toolsKey = key;
       clear(this.toolsEl);
       const items = node && node.tools && !this.tour ? node.tools(this).filter(Boolean) : []; // a walk drives the view itself
+      // a selected part that opens: Open, for a touch screen, or anyone who would rather not double-click
+      const sel = node && !this.tour ? this.selectedNode() : null;
+      if (sel && (this.selected[0] === '~' || this.canEnter(sel))) items.push(this.tool('Open ▸', () => this.openSelected(), { primary: true, title: `Open ${sel.title} (or double-click it)` }));
       this.toolsEl.append(...items);
       this.toolsEl.hidden = !items.length;
       // on a narrow stage the tools get their own row(s) under the title, and the level starts below them

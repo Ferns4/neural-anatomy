@@ -1165,7 +1165,7 @@ print(p[a, :4], boxes[a], logits[a].sigmoid())`,
       children: [inputNode, bbNode, neckNode, headNode('o2m', LAY.o2m), headNode('o2o', LAY.o2o), nmsNode(LAY.nms), topkNode(LAY.topk), outNode(LAY.out)],
       about: [
         `The whole detector: ${fmtInt(L.net.params)} parameters in the layer layout of Ultralytics' yolo26.yaml (YOLO26n has 2.4 million). The image goes through a backbone of convolutions, a neck that mixes three scales, and two heads that each predict, for every cell of three grids (16 × 16, 8 × 8 and 4 × 4, 336 cells in all), a box and a score for each class.`,
-        `The one-to-many head needs NMS to clean up its duplicate boxes; the one-to-one head is used as it is. Everything here ran in your browser on the scene shown, in the order drawn; ${NA.tapWord ? NA.tapWord(true) : 'click'} or zoom into any part to open it.`,
+        `The one-to-many head needs NMS to clean up its duplicate boxes; the one-to-one head is used as it is. Everything here ran in your browser on the scene shown, in the order drawn; double-${NA.tapWord ? NA.tapWord(true) : 'click'} or zoom into any part to open it (one ${NA.tapWord ? NA.tapWord(true) : 'click'} shows what it is).`,
         'Training (in PyTorch, on a GPU) used this repository’s versions of YOLO26’s recipe: ProgLoss, STAL and the MuSGD optimiser. The Python tab has the whole thing: model, synthetic data, loss, optimiser, training loop and inference.',
       ],
       code: py.model(), codeLabel: 'Python · PyTorch · the whole detector: model, data, loss, MuSGD, training and inference',

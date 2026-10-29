@@ -353,7 +353,7 @@
     this.canvas = el('canvas', { 'aria-label': 'Transformer anatomy: one row per token, one column per stage. Attention arcs show where the selected token looks.' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'Transformer architecture: click a part or zoom in to open it', build: (size) => NA.archTransformer.build(this, size), onFocus: (node, path) => this.showArchInfo(node, path) });
+    this.arch = new NA.ArchView(this.archStage, { label: 'Transformer architecture: click a part for details; double-click it or zoom in to open it', build: (size) => NA.archTransformer.build(this, size), onFocus: (node, path) => this.showArchInfo(node, path) });
     this.foot = el('div', { class: 'lab-foot' },
       el('span', { class: 'lg-item' }, el('span', { class: 'ramp ramp-div' }), 'cell = the token’s residual stream vector (32 numbers)'),
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'arc = attention from the selected token to an earlier one; width = weight'),

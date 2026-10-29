@@ -641,7 +641,7 @@ print(sum(p.numel() for p in model.parameters()))   # ${fmtInt(c.paramCount || 0
       about: [
         `A GPT-style language model: it reads a sequence of token numbers and, at every position, predicts the next token. Each token becomes a vector of ${d} numbers; every block then reads from that "residual stream" and adds its result back, so the stream accumulates everything the model has worked out about each token.`,
         `This one is tiny: ${V} words, ${d} numbers per token, ${c.L} block${c.L > 1 ? 's' : ''} of ${c.H}-head attention and ${c.F}-neuron MLPs, ${fmtInt(m.paramCount)} parameters. GPT-2 small uses the same recipe with 50,257 tokens, 768 numbers per token and 12 blocks of 12 heads (124 million parameters); the arithmetic per token is the same.`,
-        `${NA.tapWord()} a part or zoom in to open it, and keep going: a block opens into LayerNorm, attention and the MLP; attention opens into its heads; a head shows its queries, keys, scores and weights for your prompt. Zoom out or use the path at the top to come back. The Python tab shows the part you are looking at in PyTorch, and here, the whole model.`,
+        `Double-${NA.tapWord(true)} a part (or zoom in) to open it, and keep going (one ${NA.tapWord(true)} shows what it is): a block opens into LayerNorm, attention and the MLP; attention opens into its heads; a head shows its queries, keys, scores and weights for your prompt. Zoom out or use the path at the top to come back. The Python tab shows the part you are looking at in PyTorch, and here, the whole model.`,
       ],
       code: py.model(c),
       codeLabel: 'Python · PyTorch · the whole model',

@@ -417,7 +417,7 @@ for name, v in zip(CLASSES, p):
       about: [
         `A one-dimensional convolutional network with ${fmtInt(net.params)} parameters. Five convolution layers slide short filters along the 256 I/Q samples, each seeing a longer stretch of signal than the one before (7 samples in the first layer, 50 in the last); max-pooling halves the length three times. Then every channel is averaged over time, and a linear layer turns the 64 averages into six scores, one per waveform, which softmax makes into probabilities.`,
         `On screen: ${cls ? `${aClass(cls)} at ${dB(snr)}` : 'receiver noise only'}. The network's answer: ${CL[pred]}, ${fmtPct(F.probs[pred], 1)}${pred === cls ? ', right' : ', wrong'}.`,
-        `${NA.tapWord ? NA.tapWord() : 'Click'} or zoom into a layer, then into any number of its feature map: that opens the neuron that computed it, whose inputs open the neurons below it, all the way down to the raw samples. Below every number are the arithmetic and the circuits that compute it. The Python tab has each part, and at this top level the whole model with its training.`,
+        `Double-${NA.tapWord ? NA.tapWord(true) : 'click'} or zoom into a layer, then into any number of its feature map: that opens the neuron that computed it, whose inputs open the neurons below it, all the way down to the raw samples. Below every number are the arithmetic and the circuits that compute it. The Python tab has each part, and at this top level the whole model with its training.`,
       ],
       code: py.script(cls, pyS),
       codeLabel: 'Python · PyTorch · the generator, the model and its training',

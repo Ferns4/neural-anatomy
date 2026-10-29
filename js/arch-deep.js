@@ -959,7 +959,7 @@
     const p = a ^ b, s = p ^ cin, g1 = a & b, g2 = p & cin, cout = g1 | g2;
     const R = { x1: [0.2, 0.1, 0.15, 0.22], x2: [0.52, 0.18, 0.15, 0.22], a2: [0.52, 0.52, 0.15, 0.2], a1: [0.2, 0.7, 0.15, 0.2], o1: [0.78, 0.6, 0.15, 0.22] };
     return node({
-      title: 'Full adder', sub: `${a} + ${b} + ${cin} = ${cout}${s} (carry, sum)`, tone: 's4', animate: true,
+      title: 'Full adder', sub: `${a} + ${b} + ${cin} = ${cout}${s} (carry, sum)`, tone: 's4', animate: true, io: { a, b, cin, s, cout },
       count: 'Inside: 5 logic gates (2 XOR, 2 AND, 1 OR), 50 transistors.',
       terms: [{ key: 'sum', words: ['The sum is S = A XOR B XOR Cin', 'a sum bit'], ids: ['x1', 'x2'] }, { key: 'carry', words: ['the carry is Cout = A·B + (A XOR B)·Cin', 'a carry-out'], ids: ['a1', 'a2', 'o1'] }, { key: 'five', words: ['Five gates'], ids: ['x1', 'x2', 'a1', 'a2', 'o1'] }],
       tools: (view) => [view.tool('Build your own', () => NA.circuit && NA.circuit.open(view), { title: 'Wire up your own full adder from gates; then it can run inside every adder here' })],
@@ -1362,7 +1362,7 @@
   D.memCell = function (X, bit, idx) {
     const fet = [0.18, 0.3, 0.22, 0.3], cap = [0.5, 0.36, 0.2, 0.3];
     return node({
-      title: 'DRAM cell', sub: `holding a ${bit}`, tone: 's3', animate: true,
+      title: 'DRAM cell', sub: `holding a ${bit}`, tone: 's3', animate: true, bit,
       count: 'Inside: 1 transistor and 1 capacitor.',
       terms: [{ key: 'cap', words: ['as charge on a capacitor'], ids: ['cap'] }, { key: 'fet', words: ['one transistor'], ids: ['fet'] }, { key: 'wl', words: ['the word line'], own: true }, { key: 'bl', words: ['the bit line'], own: true }],
       summary: (ctx, r, S) => S.text(ctx, String(bit), r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.h * 0.6, 8, 20), mono: true, w: 700, align: 'center', color: bit ? theme.c('pos') : theme.c('muted') }),

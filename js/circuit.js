@@ -292,7 +292,7 @@
     const want = D.math.faStd(a, b, cin), ok = s === want[0] && co === want[1], tr = C.gates.reduce((p, g) => p + TR[g.type], 0);
     const P = (x, y, r) => [r.x + (x / BW) * r.w, r.y + (y / BH) * r.h];
     return D.lazy({
-      title: 'Your full adder', sub: `${a} + ${b} + ${cin} → carry ${co}, sum ${s}${ok ? '' : ' (wrong)'}`, tone: 's4', animate: true,
+      title: 'Your full adder', sub: `${a} + ${b} + ${cin} → carry ${co}, sum ${s}${ok ? '' : ' (wrong)'}`, tone: 's4', animate: true, io: { a, b, cin, s, cout: co },
       count: `Inside: ${C.gates.length} logic gate${C.gates.length === 1 ? '' : 's'}, ${tr} transistors (the standard design: 5 gates, 50 transistors).`,
       summary: (ctx, r, S) => S.text(ctx, `${a}+${b}+${cin} → ${s}, c${co}${ok ? '' : ' ✗'}`, r.x + r.w / 2, r.y + r.h * 0.4, { size: clamp(r.w / 8, 6, 12), mono: true, align: 'center', maxW: r.w, color: ok ? T.c('ink') : T.c('neg') }),
       inner: (ctx, r, S) => {

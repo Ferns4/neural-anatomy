@@ -46,7 +46,7 @@
     ND.stage.append(ND.host);
     ND.panel.append(ND.stage);
     ND.arch = new NA.ArchView(ND.host, {
-      label: `Inside a neuron: ${NA.tapWord(true)} a part or zoom in to open it`,
+      label: `Inside a neuron: ${NA.tapWord(true)} a part for details; double-${NA.tapWord(true)} it or zoom in to open it`,
       kicker: 'Neuron',
       build: (size) => Object.assign(neuron({ wide: size.w / size.h >= 1.05 }, ND.l, ND.j), { id: 'n' }),
       onFocus: (node, path) => ND.info.set(ND.arch.infoFor(node, path)),

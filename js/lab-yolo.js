@@ -326,7 +326,7 @@
     this.canvas = el('canvas', { 'aria-label': 'The scene with the detector’s boxes. Drag shapes to move them.', tabindex: '0' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'YOLO26 architecture: click a part or zoom in to open it', build: (size) => NA.archYolo.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    this.arch = new NA.ArchView(this.archStage, { label: 'YOLO26 architecture: click a part for details; double-click it or zoom in to open it', build: (size) => NA.archYolo.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     // stands in for the picture and the diagram when the weights could not be loaded
     this.errBox = el('div', { class: 'lab-stage yl-error-stage', hidden: true });
     this.confSl = UI.slider({ label: 'Confidence ≥', min: 0.05, max: 0.95, step: 0.01, value: this.conf, format: (v) => fmt(v, 2), onInput: (v) => this.setConf(v, true) });
