@@ -635,6 +635,143 @@
     update() { NA.walk.update(); },
   };
 
-  const TABS = { insights: Insights, neuron: Neuron, layer: Layer, training: Training, backprop: Backprop };
+  // ==================================================================== Growth: how it learned
+  /* The film of its training, from the history the app keeps (a snapshot of the weights every few steps): what it
+     does at moments spread on a log scale of steps, each redrawn from that moment's weights (the output over the
+     plane, the curve through the data, or for pictures what its first hidden neurons look for); the loss curve
+     and the stages of learning; how big each layer's weights are and how far they have moved; and the math of a
+     step, with that moment's loss, gradient and learning rate. */
+  const Growth = {
+    key: () => `${App.net.sizes.join('-')}:${App.ds.id}:${(App.ds.featureIds || []).join(',')}:${App.net.out}`,
+    build(root) {
+      const host = el('div', { class: 'gw-host' });
+      root.append(host);
+      this.H = null;
+      const img = App.ds.kind === 'image';
+      this.view = new NA.growth.View(host, {
+        unit: 'step',
+        version: () => { const S = App.history.snaps; return `${S.length}:${S.length ? S[S.length - 1].step : 0}:${App.history.points.length}`; },
+        frames: () => this.frames(),
+        curve: () => { const P = App.history.points; return { label: 'Training loss', higher: false, fmt: (v) => fmt(v, 4), points: P.map((p) => [p.step, p.trainLoss]), second: { label: 'validation loss', points: P.map((p) => [p.step, p.valLoss]) } }; },
+        math: (f, before) => this.math(f, before),
+        fromScratch: () => { App.reset(); App.play(); },
+        scratchLabel: 'Train again from scratch',
+      }, { title: 'How it learned', what: img ? 'What its first hidden neurons look for' : App.ds.kind === 'line' ? 'The curve it draws through the data' : 'Its answer over the whole plane', emptyText: 'Train it, and the moments of its learning collect here: the weights it had after 1, 2, 5, 10, 20… steps, and what it did with them.' });
+    },
+    update() { this.view.frame(performance.now()); },
+    // up to 32 snapshots, spread on a log scale of steps; a frame is made once per snapshot
+    frames() {
+      const H = App.history, S = H.snaps;
+      if (H !== this.H) { this.H = H; this.cache = new Map(); this.net = App.net.clone(); this.start = null; }
+      if (!S.length) return [];
+      if (!this.start) this.start = this.layersOf(S[0].params);
+      return NA.growth.pick(S, 32).map((i) => {
+        const s = S[i];
+        let f = this.cache.get(s.step);
+        if (!f) { f = this.frameOf(s); this.cache.set(s.step, f); }
+        return f;
+      });
+    },
+    // the weights of each layer, as arrays cut from a snapshot
+    layersOf(p) {
+      const S = App.net.sizes, out = [];
+      let o = 0;
+      for (let l = 0; l < S.length - 1; l++) {
+        const nW = S[l] * S[l + 1], nb = S[l + 1];
+        out.push({ name: l < S.length - 2 ? `Hidden ${l + 1}` : 'Output', arrays: [p.subarray(o, o + nW), p.subarray(o + nW, o + nW + nb)] });
+        o += nW + nb;
+      }
+      return out;
+    },
+    frameOf(s) {
+      const ds = App.ds, net = this.net, pts = App.history.points;
+      net.setParams(s.params);
+      let pt = pts[0];
+      for (const q of pts) { if (q.step > s.step) break; pt = q; }
+      const inside = NA.growth.sizes(this.layersOf(s.params), this.start.map((L) => L.arrays));
+      const cls = ds.task !== 'regression', m = pt ? { [cls ? 'Validation accuracy' : 'Validation R²']: cls ? fmtPct(pt.valAcc, 1) : fmt(pt.valAcc, 3) } : {};
+      return { step: s.step, draw: growthPicture(ds, net), m, inside, x: pt ? { loss: pt.trainLoss, val: pt.valLoss, grad: pt.grad, ratio: pt.ratio } : {} };
+    },
+    math(f, before) {
+      const net = App.net, Ls = NA.engine.LOSSES[net.lossId], x = f.x || {}, h = App.hyper, G = NA.growth.math;
+      const names = this.layersOf(App.history.snaps[0].params).map((L) => L.name);
+      const grad = x.grad && x.grad.length ? Math.sqrt(x.grad.reduce((s, g) => s + g * g, 0) / x.grad.length) : null;
+      const moved = (q) => (q && q.inside && q.inside.length ? q.inside.reduce((s, L) => s + L.moved, 0) / q.inside.length : undefined);
+      return [
+        G.loss(net.lossId, x.loss, { formula: Ls.formula[net.out] || Ls.formula.identity, note: `${Ls.label}. ${Ls.hint || ''}`.trim(), of: 'on the training examples' }),
+        G.descent({ opt: h.optimizer, lr: h.lr, grad, gradWhat: 'root mean square over all layers', layers: (x.grad || []).map((g, l) => ({ name: names[l] || `Layer ${l + 1}`, grad: g, ratio: x.ratio ? x.ratio[l] : null })) }),
+        before ? G.change('step', { step: before.step, v: before.x && before.x.loss, moved: moved(before) }, { step: f.step, v: x.loss, moved: moved(f) }, 'L') : null,
+      ];
+    },
+  };
+  // A frame of the network's learning, from weights set on its copy now: the plane's answers on a 48 × 48 grid,
+  // the curve, or the first hidden layer's weights; coloured when drawn, so a frame follows the theme
+  function growthPicture(ds, net) {
+    const D = NA.data, L = net.L, K = ds.kind === 'image' || ds.kind === 'line' ? 0 : Math.max(2, ds.classes || 2);
+    if (ds.kind === 'image') {
+      const nIn = net.sizes[0], n = Math.min(net.sizes[1], 16), Wt = Float32Array.from(net.W[0].subarray(0, n * nIn)), G2 = ds.imgSize;
+      return (ctx, w, h) => {
+        const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols), cs = Math.min((w - 4) / cols, (h - 4) / rows), x0 = (w - cs * cols) / 2, y0 = (h - cs * rows) / 2;
+        for (let j = 0; j < n; j++) {
+          const row = Wt.subarray(j * nIn, (j + 1) * nIn); let m = 1e-9;
+          for (const v of row) m = Math.max(m, Math.abs(v));
+          const px = (cs - 3) / G2, bx = x0 + (j % cols) * cs + 1.5, by = y0 + Math.floor(j / cols) * cs + 1.5;
+          for (let i = 0; i < nIn; i++) { ctx.fillStyle = theme.divColor(row[i] / m); ctx.fillRect(bx + (i % G2) * px, by + Math.floor(i / G2) * px, Math.ceil(px), Math.ceil(px)); }
+        }
+      };
+    }
+    // the input range: the data's, with a margin
+    const raw = ds.raw, dim = ds.kind === 'line' ? 1 : 2, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (let i = 0; i < ds.n; i++) for (let k = 0; k < dim; k++) { const v = raw[i * dim + k]; lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v); }
+    for (let k = 0; k < dim; k++) { const pad = (hi[k] - lo[k]) * 0.08 || 0.5; lo[k] -= pad; hi[k] += pad; }
+    if (ds.kind === 'line') {
+      const n = 120, xs = new Float32Array(n), ys = new Float32Array(n);
+      for (let i = 0; i < n; i++) { xs[i] = lo[0] + ((hi[0] - lo[0]) * i) / (n - 1); ys[i] = net.forward(D.featurizePoints(ds, xs.subarray(i, i + 1), 1), 0)[0]; }
+      let ylo = Math.min(...ys), yhi = Math.max(...ys);
+      for (const k of ds.trainIdx) { ylo = Math.min(ylo, ds.y[k]); yhi = Math.max(yhi, ds.y[k]); }
+      const pad = (yhi - ylo) * 0.08 || 0.5; ylo -= pad; yhi += pad;
+      return (ctx, w, h) => {
+        const X = (v) => 6 + ((v - lo[0]) / (hi[0] - lo[0])) * (w - 12), Y = (v) => h - 6 - ((v - ylo) / (yhi - ylo)) * (h - 12);
+        ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = theme.c('ink-2', 0.55);
+        for (const k of ds.trainIdx) { ctx.beginPath(); ctx.arc(X(raw[k]), Y(ds.y[k]), Math.max(1.5, w / 160), 0, Math.PI * 2); ctx.fill(); }
+        ctx.strokeStyle = theme.c('s1'); ctx.lineWidth = Math.max(1.5, w / 130); ctx.beginPath();
+        for (let i = 0; i < n; i++) i ? ctx.lineTo(X(xs[i]), Y(ys[i])) : ctx.moveTo(X(xs[i]), Y(ys[i]));
+        ctx.stroke();
+      };
+    }
+    // the plane: each class's probability on a grid
+    const G = 48, P = new Float32Array(G * G * K), pt = new Float32Array(2);
+    for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) {
+      pt[0] = lo[0] + ((c + 0.5) / G) * (hi[0] - lo[0]); pt[1] = hi[1] - ((r + 0.5) / G) * (hi[1] - lo[1]);
+      const a = net.forward(D.featurizePoints(ds, pt, 1), 0), o = (r * G + c) * K;
+      if (K === 2 && a.length === 1) { P[o] = 1 - a[0]; P[o + 1] = a[0]; } else for (let k = 0; k < K; k++) P[o + k] = a[k];
+    }
+    let img = null, imgKey = null;
+    return (ctx, w, h) => {
+      const key = theme.dark ? 'd' : 'l';
+      if (imgKey !== key) {
+        img = document.createElement('canvas'); img.width = img.height = G;
+        const g = img.getContext('2d'), id = g.createImageData(G, G), bg = theme.tokens.panel, cols = NA.range(K).map((k) => theme.classes[k] || theme.tokens.muted);
+        for (let p = 0; p < G * G; p++) {
+          let sure = 0; const v = [0, 0, 0];
+          for (let k = 0; k < K; k++) { const q = P[p * K + k]; sure = Math.max(sure, q); for (let ch = 0; ch < 3; ch++) v[ch] += q * cols[k][ch]; }
+          const a = 0.22 + 0.55 * Math.max(0, Math.min(1, (sure - 1 / K) / (1 - 1 / K)));
+          for (let ch = 0; ch < 3; ch++) id.data[p * 4 + ch] = bg[ch] + (v[ch] - bg[ch]) * a;
+          id.data[p * 4 + 3] = 255;
+        }
+        g.putImageData(id, 0, 0); imgKey = key;
+      }
+      const s = Math.min(w, h), x0 = (w - s) / 2, y0 = (h - s) / 2;
+      ctx.imageSmoothingEnabled = true; ctx.drawImage(img, x0, y0, s, s);
+      const r = Math.max(1.4, s / 150);
+      for (const k of ds.trainIdx) {
+        const x = x0 + ((raw[k * 2] - lo[0]) / (hi[0] - lo[0])) * s, y = y0 + ((hi[1] - raw[k * 2 + 1]) / (hi[1] - lo[1])) * s;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = theme.classColor(ds.y[k]); ctx.fill();
+      }
+    };
+  }
+
+  const TABS = { insights: Insights, neuron: Neuron, layer: Layer, training: Training, growth: Growth, backprop: Backprop };
   NA.inspector = IN;
 })(window.NA);

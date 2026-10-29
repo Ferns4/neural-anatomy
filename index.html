@@ -324,6 +324,7 @@ input[type="range"] { width: 100%; accent-color: var(--ink); margin: 0; }
 /* ---------------------------------------------------------------- inspector */
 .insp-tabs { display: flex; gap: 2px; padding: 4px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tab { border: 0; background: transparent; padding: 9px 9px 8px; font: 600 12.5px var(--font-ui); color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.insp-tabs:has(> .tab:nth-child(6)) .tab { padding-inline: 6px; font-size: 12px; } /* six tabs share the panel's width */
 .tab:hover { color: var(--ink-2); }
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
 .insp-body { overflow: auto; flex: 1; min-height: 0; padding: 4px 14px 18px; }
@@ -563,6 +564,49 @@ kbd { font: 600 11px var(--font-mono); padding: 2px 6px; border: 1px solid var(-
 .fx-strong { color: var(--ink); font-weight: 600; }
 .fx-muted { color: var(--muted); }
 .fx-note { font: 400 11.5px/1.45 var(--font-ui); color: var(--muted); }
+/* ---------------------------------------------------------------- how it learned (growth.js): a film of training */
+.gw { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.lab-stage.gw-pane { overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px 18px; }
+/* a lab's stage pins its canvases to fill it: the film's are in the flow of the page, and a finger on them scrolls */
+[data-layout] .lab-stage.gw-pane canvas { position: static; inset: auto; touch-action: pan-y; }
+.gw-host { padding-top: 2px; }
+.gw-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.gw-titles { flex: 1 1 240px; min-width: 0; }
+.gw-title { margin: 0; font: 600 15px var(--font-ui); color: var(--ink); }
+.gw-sub { margin: 3px 0 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.gw-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.gw-empty { margin: 6px 0; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+.gw-body { display: flex; flex-direction: column; gap: 16px; }
+.gw-main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(200px, 1fr); gap: 14px; align-items: start; }
+.gw-big { display: block; width: 100%; border-radius: 10px; background: var(--panel-2); }
+.gw-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.gw-cap p { margin: 0 0 5px; font-size: 12.5px; line-height: 1.45; color: var(--ink-2); }
+.gw-cap .gw-when { font-size: 14px; color: var(--ink); }
+.gw-cap .gw-small { font-size: 12px; color: var(--muted); }
+.gw-stage-now { display: flex; align-items: center; font-weight: 600; color: var(--ink); }
+.gw-scrub { width: 100%; }
+.gw-strip { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+.gw-thumb { display: flex; flex-direction: column; align-items: stretch; gap: 2px; min-width: 0; padding: 3px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); cursor: pointer; }
+.gw-thumb canvas { display: block; width: 100%; border-radius: 5px; background: var(--panel-2); }
+.gw-thumb.is-on { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.gw-tstep { font: 500 10.5px var(--font-mono); color: var(--muted); text-align: center; }
+.gw-sec { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gw-k { margin: 0; font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.gw-curve, .gw-inside { display: block; width: 100%; }
+.gw-stages { display: flex; flex-direction: column; gap: 4px; }
+.gw-stage, .gw-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+.gw-swatch { display: inline-block; flex: none; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; vertical-align: -1px; }
+.gw-lg { margin-right: 10px; white-space: nowrap; }
+.gw-lg.is-text { white-space: normal; }
+.gw-ckey { display: flex; flex-wrap: wrap; row-gap: 2px; }
+.gw-line { width: 16px; height: 0; border-radius: 0; border-top: 2px solid; vertical-align: 3px; }
+.gw-line.is-dashed { border-top-style: dashed; }
+.gw-dot { width: 8px; height: 8px; border-radius: 50%; vertical-align: 0; }
+.gw-mathbody { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px; }
+.gw-mblock { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gw-mtitle { margin: 0; font: 600 12px var(--font-ui); color: var(--ink); }
+.gw.is-narrow .gw-main { grid-template-columns: minmax(0, 1fr); }
+.gw.is-narrow .gw-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .test-card { display: flex; flex-direction: column; gap: 10px; }
 .test-card .tiles { padding-top: 0; }
 .test-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
@@ -1039,6 +1083,13 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 .bd-formula { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .bd-formula > span { font: 600 13px var(--font-mono); color: var(--ink-2); text-transform: none; letter-spacing: 0; }
 .bd-formula .lm-input { height: 32px; }
+/* a reward world's reward table, and the names a reward formula can use */
+.bd-rewards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px; align-items: end; }
+.bd-rewards .field > span { white-space: normal; line-height: 1.25; }
+.bd-rewards.is-off { opacity: 0.45; }
+.bd-vars { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--ink-2); }
+.bd-vars dt { font-weight: 600; color: var(--ink); }
+.bd-vars dd { margin: 0; }
 .bd-text { width: 100%; min-height: 120px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); color: var(--ink); font: 500 12.5px/1.5 var(--font-mono); resize: vertical; }
 .bd-text:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
 .bd-seed { display: inline-flex; align-items: center; gap: 10px; }
@@ -1294,6 +1345,8 @@ body[data-mode="lab"] .sub-mlp { display: none; }
 /* phones: tabs share the bar evenly, and a long name wraps instead of being cut */
 [data-layout="mobile"] .insp-tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 [data-layout="mobile"] .tab { white-space: normal; line-height: 1.2; overflow: visible; text-overflow: clip; padding: 10px 3px 9px; min-height: 46px; }
+[data-layout="mobile"] .insp-tabs:has(> .tab:nth-child(6)) .tab { padding-inline: 1px; } /* six tabs on a phone: all the width for the words */
+@media (max-width: 370px) { [data-layout="mobile"] .insp-tabs:has(> .tab:nth-child(6)) .tab { padding-inline: 0; font-size: 11.5px; } } /* "Backprop" in a 53 px tab */
 /* phones: the explanation's title gets its own line, the switch and the toggle the next */
 [data-layout="mobile"] .ip-head { flex-wrap: wrap; row-gap: 6px; }
 [data-layout="mobile"] .ip-titles { flex: 1 1 calc(100% - 52px); order: 0; }
@@ -1665,6 +1718,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
       <button class="tab" type="button" role="tab" data-tab="neuron" aria-selected="false" tabindex="-1">Neuron</button>
       <button class="tab" type="button" role="tab" data-tab="layer" aria-selected="false" tabindex="-1">Layer</button>
       <button class="tab" type="button" role="tab" data-tab="training" aria-selected="false" tabindex="-1">Training</button>
+      <button class="tab" type="button" role="tab" data-tab="growth" aria-selected="false" tabindex="-1" title="How it learned: a film of its training, with the math of each step">Growth</button>
       <button class="tab" type="button" role="tab" data-tab="backprop" aria-selected="false" tabindex="-1">Backprop</button>
     </div>
     <div class="insp-body" id="inspBody" role="tabpanel"></div>
@@ -1771,69 +1825,70 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=7835614168"></script>
-<script src="js/engine.js?v=7835614168"></script>
-<script src="js/data.js?v=7835614168"></script>
-<script src="js/presets.js?v=7835614168"></script>
-<script src="js/app.js?v=7835614168"></script>
-<script src="js/ui.js?v=7835614168"></script>
-<script src="js/network-view.js?v=7835614168"></script>
-<script src="js/data-view.js?v=7835614168"></script>
-<script src="js/hidden-space.js?v=7835614168"></script>
-<script src="js/landscape.js?v=7835614168"></script>
-<script src="js/charts.js?v=7835614168"></script>
-<script src="js/insights.js?v=7835614168"></script>
-<script src="js/inspector.js?v=7835614168"></script>
-<script src="js/walkthrough.js?v=7835614168"></script>
-<script src="js/lab.js?v=7835614168"></script>
-<script src="js/archview.js?v=7835614168"></script>
-<script src="js/arch-deep.js?v=7835614168"></script>
-<script src="js/net-deep.js?v=7835614168"></script>
-<script src="js/circuit.js?v=7835614168"></script>
-<script src="js/scale-view.js?v=7835614168"></script>
-<script src="js/lm-data.js?v=7835614168"></script>
-<script src="js/transformer.js?v=7835614168"></script>
-<script src="js/lm-weights.js?v=7835614168"></script>
-<script src="js/arch-transformer.js?v=7835614168"></script>
-<script src="js/lab-transformer.js?v=7835614168"></script>
-<script src="js/pinn.js?v=7835614168"></script>
-<script src="js/pinn-weights.js?v=7835614168"></script>
-<script src="js/arch-pinn.js?v=7835614168"></script>
-<script src="js/lab-pinn.js?v=7835614168"></script>
-<script src="js/diffusion.js?v=7835614168"></script>
-<script src="js/diffusion-weights.js?v=7835614168"></script>
-<script src="js/arch-diffusion.js?v=7835614168"></script>
-<script src="js/lab-diffusion.js?v=7835614168"></script>
-<script src="js/yolo.js?v=7835614168"></script>
-<script src="js/arch-yolo.js?v=7835614168"></script>
-<script src="js/lab-yolo.js?v=7835614168"></script>
-<script src="js/radar.js?v=7835614168"></script>
-<script src="js/radar-weights.js?v=7835614168"></script>
-<script src="js/arch-radar.js?v=7835614168"></script>
-<script src="js/lab-radar.js?v=7835614168"></script>
-<script src="js/rl.js?v=7835614168"></script>
-<script src="js/rl-weights.js?v=7835614168"></script>
-<script src="js/rl-envs.js?v=7835614168"></script>
-<script src="js/rl-evolve.js?v=7835614168"></script>
-<script src="js/arch-rl.js?v=7835614168"></script>
-<script src="js/lab-rl.js?v=7835614168"></script>
-<script src="js/builder-engine.js?v=7835614168"></script>
-<script src="js/builder-rl.js?v=7835614168"></script>
-<script src="js/classic-ml.js?v=7835614168"></script>
-<script src="js/builder-tasks.js?v=7835614168"></script>
-<script src="js/builder-challenges.js?v=7835614168"></script>
-<script src="js/part-guide.js?v=7835614168"></script>
-<script src="js/builder-insights.js?v=7835614168"></script>
-<script src="js/builder-viz.js?v=7835614168"></script>
-<script src="js/builder-py.js?v=7835614168"></script>
-<script src="js/arch-builder.js?v=7835614168"></script>
-<script src="js/lab-builder.js?v=7835614168"></script>
-<script src="js/mobile.js?v=7835614168"></script>
-<script src="js/share.js?v=7835614168"></script>
-<script src="js/glossary.js?v=7835614168"></script>
-<script src="js/guide.js?v=7835614168"></script>
-<script src="js/tour.js?v=7835614168"></script>
-<script src="js/chrome.js?v=7835614168"></script>
-<script src="pwa.js?v=7835614168"></script>
+<script src="js/core.js?v=a2c3d381ec"></script>
+<script src="js/engine.js?v=a2c3d381ec"></script>
+<script src="js/data.js?v=a2c3d381ec"></script>
+<script src="js/presets.js?v=a2c3d381ec"></script>
+<script src="js/app.js?v=a2c3d381ec"></script>
+<script src="js/ui.js?v=a2c3d381ec"></script>
+<script src="js/network-view.js?v=a2c3d381ec"></script>
+<script src="js/data-view.js?v=a2c3d381ec"></script>
+<script src="js/hidden-space.js?v=a2c3d381ec"></script>
+<script src="js/landscape.js?v=a2c3d381ec"></script>
+<script src="js/charts.js?v=a2c3d381ec"></script>
+<script src="js/growth.js?v=a2c3d381ec"></script>
+<script src="js/insights.js?v=a2c3d381ec"></script>
+<script src="js/inspector.js?v=a2c3d381ec"></script>
+<script src="js/walkthrough.js?v=a2c3d381ec"></script>
+<script src="js/lab.js?v=a2c3d381ec"></script>
+<script src="js/archview.js?v=a2c3d381ec"></script>
+<script src="js/arch-deep.js?v=a2c3d381ec"></script>
+<script src="js/net-deep.js?v=a2c3d381ec"></script>
+<script src="js/circuit.js?v=a2c3d381ec"></script>
+<script src="js/scale-view.js?v=a2c3d381ec"></script>
+<script src="js/lm-data.js?v=a2c3d381ec"></script>
+<script src="js/transformer.js?v=a2c3d381ec"></script>
+<script src="js/lm-weights.js?v=a2c3d381ec"></script>
+<script src="js/arch-transformer.js?v=a2c3d381ec"></script>
+<script src="js/lab-transformer.js?v=a2c3d381ec"></script>
+<script src="js/pinn.js?v=a2c3d381ec"></script>
+<script src="js/pinn-weights.js?v=a2c3d381ec"></script>
+<script src="js/arch-pinn.js?v=a2c3d381ec"></script>
+<script src="js/lab-pinn.js?v=a2c3d381ec"></script>
+<script src="js/diffusion.js?v=a2c3d381ec"></script>
+<script src="js/diffusion-weights.js?v=a2c3d381ec"></script>
+<script src="js/arch-diffusion.js?v=a2c3d381ec"></script>
+<script src="js/lab-diffusion.js?v=a2c3d381ec"></script>
+<script src="js/yolo.js?v=a2c3d381ec"></script>
+<script src="js/arch-yolo.js?v=a2c3d381ec"></script>
+<script src="js/lab-yolo.js?v=a2c3d381ec"></script>
+<script src="js/radar.js?v=a2c3d381ec"></script>
+<script src="js/radar-weights.js?v=a2c3d381ec"></script>
+<script src="js/arch-radar.js?v=a2c3d381ec"></script>
+<script src="js/lab-radar.js?v=a2c3d381ec"></script>
+<script src="js/rl.js?v=a2c3d381ec"></script>
+<script src="js/rl-weights.js?v=a2c3d381ec"></script>
+<script src="js/rl-envs.js?v=a2c3d381ec"></script>
+<script src="js/rl-evolve.js?v=a2c3d381ec"></script>
+<script src="js/arch-rl.js?v=a2c3d381ec"></script>
+<script src="js/lab-rl.js?v=a2c3d381ec"></script>
+<script src="js/builder-engine.js?v=a2c3d381ec"></script>
+<script src="js/builder-rl.js?v=a2c3d381ec"></script>
+<script src="js/classic-ml.js?v=a2c3d381ec"></script>
+<script src="js/builder-tasks.js?v=a2c3d381ec"></script>
+<script src="js/builder-challenges.js?v=a2c3d381ec"></script>
+<script src="js/part-guide.js?v=a2c3d381ec"></script>
+<script src="js/builder-insights.js?v=a2c3d381ec"></script>
+<script src="js/builder-viz.js?v=a2c3d381ec"></script>
+<script src="js/builder-py.js?v=a2c3d381ec"></script>
+<script src="js/arch-builder.js?v=a2c3d381ec"></script>
+<script src="js/lab-builder.js?v=a2c3d381ec"></script>
+<script src="js/mobile.js?v=a2c3d381ec"></script>
+<script src="js/share.js?v=a2c3d381ec"></script>
+<script src="js/glossary.js?v=a2c3d381ec"></script>
+<script src="js/guide.js?v=a2c3d381ec"></script>
+<script src="js/tour.js?v=a2c3d381ec"></script>
+<script src="js/chrome.js?v=a2c3d381ec"></script>
+<script src="pwa.js?v=a2c3d381ec"></script>
 </body>
 </html>

@@ -280,9 +280,10 @@
   const dataSettings = (ch) => Object.assign(NA.builderTasks.defaults(NA.builderTasks.byId[ch.problem]), ch.ps);
   // whether a setup (or a run's) uses the challenge's data: the same settings, except the ones it leaves free
   function sameData(ch, cfg) {
-    const want = dataSettings(ch), got = ((cfg && cfg.ps) || {})[ch.problem] || {}, free = ch.free || [];
+    const want = dataSettings(ch), got = ((cfg && cfg.ps) || {})[ch.problem] || {}, free = ch.free || [], def = NA.builderTasks.defaults(NA.builderTasks.byId[ch.problem]);
     if (ch.table && !(cfg.custom && cfg.custom.table && cfg.custom.table.name === tableName(ch.table))) return false;
-    return Object.keys(want).every((k) => free.includes(k) || JSON.stringify(got[k]) === JSON.stringify(want[k]));
+    // a setting saved before it existed is its default
+    return Object.keys(want).every((k) => free.includes(k) || JSON.stringify(got[k] === undefined ? def[k] : got[k]) === JSON.stringify(want[k]));
   }
 
   /* How a run measures up: one entry per goal { goal, ok, now } (now: the run's value, for the progress line), and

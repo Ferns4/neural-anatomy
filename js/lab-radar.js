@@ -113,6 +113,7 @@
   RL.archText = function () { return '1-D CNN · 2 × 256 I/Q samples → 6 waveforms'; };
 
   RL.frame = function (now) {
+    if (this.view === 'growth') this.growth.frame(now);
     if (this.training && now - (this.lastStream || 0) >= this.every) { this.lastStream = now; this.stream(); }
     if (this.test && !this.test.done) this.runTestChunk(now);
     if (now - (this.lastRo || 0) > 120) {
@@ -224,6 +225,7 @@
     { value: 'cnn', label: 'What the CNN sees', title: 'The first and last layers’ feature maps and where the evidence came from' },
     { value: 'acc', label: 'Accuracy', title: 'How often the network is right at each SNR, and where its mistakes go' },
     { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' },
+    { value: 'growth', label: 'Growth', title: 'How it learned: its training log, epoch by epoch, with its loss and optimiser' },
   ];
   RL.buildCenter = function (root) {
     this.viewSeg = UI.seg(VIEWS, this.view, (v) => this.setView(v), 'View');
@@ -252,6 +254,15 @@
       build: (size) => NA.archRadar.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     // the explanation starts open only when the panel is tall enough to leave the pictures room
+    // how it learned: it trained offline in PyTorch, so its film is its training log, a moment for every epoch
+    this.growth = NA.growth.mount(this.archStage, {
+      unit: 'epoch',
+      version: () => 1,
+      frames: () => this.filmFrames(),
+      sub: (F) => `${F.length} epochs, as logged while it trained offline in PyTorch: a moment at the end of each.`,
+      curve: () => ({ label: 'Right at 0 dB (fresh signals)', higher: true, fmt: (v) => fmtPct(v, 0), points: NA.radarWeights.curve.map((r) => [r[0], r[4]]) }),
+      math: (f) => this.filmMath(f),
+    }, { title: 'How it learned', what: 'How often it named the waveform at the end of the epoch, by noise level', emptyText: 'Its training log comes with the classifier.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 });
     this.foot = el('div', { class: 'lab-foot' });
     root.append(this.foot);
@@ -264,8 +275,9 @@
   RL.setView = function (v) {
     this.view = v;
     this.viewSeg.set(v);
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', grow = v === 'growth';
+    this.stage.hidden = arch || grow; this.archStage.hidden = !arch;
+    this.growth.show(grow);
     for (const [k, node] of Object.entries(this.chipSets)) node.hidden = k !== v || !node.childElementCount;
     this.renderFoot();
     this.dirty = true; this.archStale = true; this.hoverT = null;
@@ -274,7 +286,7 @@
   RL.renderFoot = function () {
     const item = (col, text, line) => el('span', { class: 'lg-item' }, el('i', { class: line ? 'key-line' : 'dot', style: { background: col } }), text);
     const v = this.view, f = clear(this.foot);
-    this.foot.hidden = v === 'arch';
+    this.foot.hidden = v === 'arch' || v === 'growth';
     if (v === 'signal') f.append(item('var(--s1)', 'I', true), item('var(--s2)', 'Q', true), item('var(--ink)', 'envelope |x|', true), item('var(--s7)', 'frequency', true), el('span', { class: 'lg-item', text: 'shaded: where the pulse is' }));
     else if (v === 'spec') f.append(el('span', { class: 'lg-item', text: 'brighter: more power, over the top 30 dB' }), el('span', { class: 'lg-item', text: 'dashed: the frequency law as sent' }), el('span', { class: 'lg-item', text: 'bar under the time axis: the pulse' }));
     else if (v === 'cnn') f.append(el('span', { class: 'lg-item', text: 'darker: zero after ReLU' }), item(ccol(this.sig.pred), 'evidence for the answer', false), item('var(--muted)', 'against it', false));
@@ -750,7 +762,31 @@
   };
 
   // ------------------------------------------------------------------ explanations under the picture
+  // ------------------------------------------------------------------ its film, from the training log (growth.js)
+  // log rows: [epoch, training loss, right on its training batches, right at −10, 0 and +10 dB]
+  RL.filmFrames = function () {
+    const W = NA.radarWeights;
+    if (this.film && this.film.W === W) return this.film.list;
+    const list = W.curve.map((r) => ({ step: r[0], x: r,
+      m: { 'At +10 dB': fmtPct(r[5], 0), 'At −10 dB': fmtPct(r[3], 0), 'Training loss': fmt(r[1], 3) },
+      draw: (ctx, w, h) => NA.growth.bars(ctx, w, h, `Epoch ${r[0]}: how often it names the waveform`, [
+        { label: 'clean, +10 dB', value: r[5] }, { label: 'noisy, 0 dB', value: r[4] }, { label: 'very noisy, −10 dB', value: r[3] }, { label: 'its training batches', value: r[2], tok: 'muted' }]) }));
+    this.film = { W, list };
+    return list;
+  };
+  RL.filmMath = function (f) {
+    const r = f.x || [], W = NA.radarWeights, T = W.train, total = T.epochs * T.iters, up = 0.1 * total, s = f.step * T.iters;
+    // its learning rate at the end of the epoch: one cycle, up to 0.003 over the first tenth of training, then down along a cosine
+    const cos = (a, b, p) => b + ((a - b) / 2) * (1 + Math.cos(Math.PI * Math.min(1, p))), lr = s <= up ? cos(0.003 / 25, 0.003, s / up) : cos(0.003, 0.003 / 25 / 1e4, (s - up) / (total - up));
+    return [
+      { title: 'What training made smaller: the loss', lines: [{ t: 'L = −(1/N) Σᵢ log pᵢ[yᵢ]', strong: true }, `${W.classes.length} classes: ${W.classes.join(', ')}`, `L = ${fmt(r[1], 4)} (the epoch’s average)   right on its training batches: ${fmtPct(r[2], 1)}`],
+        note: `Cross-entropy: −log of the probability it gave the right waveform. Every batch is ${fmtInt(T.batch)} new signals at random noise levels, so it never saw the same signal twice: clean signals are learned first, noisy ones last.` },
+      { title: 'One step of training: AdamW', lines: [{ t: 'm ← β₁·m + (1 − β₁)·g,   s ← β₂·s + (1 − β₂)·g²', strong: true }, { t: 'w ← w − η·m̂ / (√ŝ + ε) − η·λ·w      (g = ∂L/∂w)', strong: true }, `η ≈ ${lr.toPrecision(2)} at the end of epoch ${f.step}   β₁ = 0.9   β₂ = 0.999   λ = 0.0001`],
+        note: `It trained offline in PyTorch, ${T.epochs} epochs of ${T.iters} batches. The learning rate follows one cycle: up to 0.003 over the first tenth of training, then down along a cosine, so the last steps only polish.` },
+    ];
+  };
   RL.showInfo = function () {
+    if (this.view === 'growth') { this.info.set(NA.growth.info('epoch', 'logged')); return; }
     if (this.view === 'arch') { this.arch.refreshFocus(); return; }
     this.info.set(({ signal: SIGNAL_INFO, spec: SPEC_INFO, cnn: CNN_INFO, acc: ACC_INFO })[this.view](this));
   };

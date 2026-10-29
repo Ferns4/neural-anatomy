@@ -179,6 +179,7 @@
   YL.reset = function () { if (this.training) this.pause(); this.newScene(); NA.ui.toast.show('A new random scene, drawn like the training data.'); };
 
   YL.frame = function (now) {
+    if (this.view === 'growth') this.growth.frame(now);
     if (this.training && this.scene) {
       // the shapes move in real time, but only between detections, so the boxes keep up with them
       this.owed = Math.min(0.12, (this.owed || 0) + (this.lastMove ? (now - this.lastMove) / 1000 : 0));
@@ -313,7 +314,7 @@
 
   // ------------------------------------------------------------------ centre: the picture
   YL.buildCenter = function (root) {
-    this.viewSeg = UI.seg([{ value: 'detect', label: 'Detect', title: 'The picture and the boxes of one head' }, { value: 'compare', label: 'Compare heads', title: 'Before NMS, after NMS, and the one-to-one head' }, { value: 'scales', label: 'Grids', title: 'The three grids each head reads: what each cell scores' }, { value: 'arch', label: 'Architecture', title: 'The network’s parts: click or zoom in to open them' }], this.view, (v) => this.setView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'detect', label: 'Detect', title: 'The picture and the boxes of one head' }, { value: 'compare', label: 'Compare heads', title: 'Before NMS, after NMS, and the one-to-one head' }, { value: 'scales', label: 'Grids', title: 'The three grids each head reads: what each cell scores' }, { value: 'arch', label: 'Architecture', title: 'The network’s parts: click or zoom in to open them' }, { value: 'growth', label: 'Growth', title: 'How it learned: its training log, epoch by epoch, with its loss and optimiser' }], this.view, (v) => this.setView(v), 'View');
     this.headSeg = UI.seg([{ value: 'o2o', label: 'One-to-one', title: 'YOLO26’s end-to-end head: used as it is, no NMS' }, { value: 'o2m', label: 'One-to-many + NMS', title: 'The classic head: several boxes per object, cleaned up by NMS' }], this.head, (v) => this.setHead(v), 'Head');
     this.chipOf = {
       truth: UI.chip('Truth', this.show.truth, (on) => this.setShow('truth', on), 'The true box of every shape (white, dashed)'),
@@ -336,6 +337,16 @@
     root.append(this.stage, this.archStage, this.errBox, this.controls);
     // The explanation starts closed unless the panel is tall enough to keep the picture large under it (the
     // picture is what this lab is about: at 1440 × 900 an open explanation would shrink it from about 500 px to 290)
+    // how it learned: it trained offline in PyTorch, so its film is its training log, a moment for every epoch
+    this.growth = NA.growth.mount(this.archStage, {
+      unit: 'epoch',
+      version: () => (NA.yoloWeights ? 1 : 0),
+      frames: () => this.filmFrames(),
+      sub: (F) => `${F.length} epochs, as logged while it trained offline in PyTorch: a moment at the end of each.`,
+      curve: () => { const W = NA.yoloWeights; return W ? { label: 'mAP@0.5, one-to-one head', higher: true, fmt: (v) => fmtPct(v, 0), points: W.curve.map((r) => [r.epoch, r.o2o.map50]),
+        second: { label: 'mAP@0.5 with NMS, one-to-many head', points: W.curve.map((r) => [r.epoch, r.o2m.map50]), judge: false } } : null; },
+      math: (f) => this.filmMath(f),
+    }, { title: 'How it learned', what: 'How well it found the shapes at the end of the epoch', emptyText: 'Its training log arrives with the detector’s weights.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 980 });
     root.append(this.foot = el('div', { class: 'lab-foot' },
       ...NAMES.map((n, k) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: CLS(k) } }), n)),
@@ -357,18 +368,46 @@
   YL.setView = function (v) {
     this.view = v;
     this.viewSeg.set(v);
-    const arch = v === 'arch', err = !!this.loadError;
-    this.stage.hidden = arch || err; this.chips.hidden = arch || err || v === 'compare'; this.headSeg.hidden = arch || err || v === 'compare'; this.foot.hidden = arch || err; this.controls.hidden = arch || err; this.archStage.hidden = !arch || err;
+    const arch = v === 'arch', grow = v === 'growth', err = !!this.loadError, other = arch || grow || err;
+    this.stage.hidden = other; this.chips.hidden = other || v === 'compare'; this.headSeg.hidden = other || v === 'compare'; this.foot.hidden = other; this.controls.hidden = other; this.archStage.hidden = !arch || err;
+    this.growth.show(grow && !err);
     this.errBox.hidden = !err;
     if (err && !this.errBox.firstChild) this.errBox.append(this.pending(true));
     if (!err) clear(this.errBox);
     this.dirty = true; this.archStale = true;
     this.showInfo();
   };
+  // ------------------------------------------------------------------ its film, from the training log (growth.js)
+  YL.filmFrames = function () {
+    const W = NA.yoloWeights;
+    if (!W) return [];
+    if (this.film && this.film.W === W) return this.film.list;
+    const list = W.curve.map((r) => ({ step: r.epoch, x: r,
+      m: { 'mAP@0.5 with NMS, one-to-many head': fmtPct(r.o2m.map50, 1), 'Share of the loss on the one-to-many head': fmt(r.w_o2m, 2) },
+      draw: (ctx, w, h) => NA.growth.bars(ctx, w, h, `Epoch ${r.epoch}: how well it finds the shapes`, [
+        { label: 'one-to-one, mAP@0.5', value: r.o2o.map50 }, { label: 'with NMS, mAP@0.5', value: r.o2m.map50, tok: 's2' },
+        { label: 'one-to-one, mAP@.5:.95', value: r.o2o.map }, { label: 'small shapes found', value: r.o2o.small_recall }]) }));
+    this.film = { W, list };
+    return list;
+  };
+  YL.filmMath = function (f) {
+    const r = f.x || {}, T = NA.yoloWeights.train, v = (q, d = 3) => (Number.isFinite(q) ? fmt(q, d) : '—');
+    return [
+      { title: 'What training made smaller: its loss', lines: [{ t: 'L = w·L_one-to-many + (1 − w)·L_one-to-one', strong: true }, { t: 'L_head = 7.5·L_box + 0.5·L_cls', strong: true },
+        'L_box = mean (1 − CIoU(box, its target))      L_cls = binary cross-entropy',
+        `w = ${v(r.w_o2m, 2)} in epoch ${f.step}`,
+        `one-to-many: L_box = ${v(r.o2m_box)}, L_cls = ${v(r.o2m_cls)}      one-to-one: L_box = ${v(r.o2o_box)}, L_cls = ${v(r.o2o_cls)}`],
+        note: 'Both heads learn at once. The one-to-many head may give several boxes for a shape, which is easier to learn (NMS then keeps the best); the one-to-one head must give exactly one. ProgLoss moves the weight w from the first to the second as training goes on, from 0.8 down to 0.1.' },
+      { title: 'One step of training: MuSGD', lines: [{ t: 'g = ∂L/∂w + λ·w,   v ← μ·v + g,   u = g + μ·v', strong: true }, { t: 'w ← w − η·( ½·u + ½·s·NS(u) )', strong: true },
+        `η = ${Number.isFinite(r.lr) ? r.lr.toPrecision(3) : '—'}   μ = 0.937   λ = 0.0005   s = 0.2·√(the matrix’s longer side)`],
+        note: `Half of each weight matrix’s step is SGD with Nesterov momentum. The other half, Muon’s, is the same update orthogonalised by five Newton–Schulz rounds (NS), every singular value pushed toward 1, so the matrix moves in all its directions at once rather than mostly along the strongest. Biases take the SGD step alone. It trained offline in PyTorch, ${T.epochs} epochs of ${T.iters} batches of ${T.batch} pictures; the page keeps its log, not its steps.` },
+    ];
+  };
   YL.showInfo = function () {
+    if (this.view === 'growth' && !this.loadError) { this.info.set(NA.growth.info('epoch', 'logged')); return; }
     if (!this.result) {
       // nothing to explain until the detector has run
-      const what = { detect: 'Detect view', compare: 'Compare heads', scales: 'Grids view', arch: 'Architecture' }[this.view];
+      const what = { detect: 'Detect view', compare: 'Compare heads', scales: 'Grids view', arch: 'Architecture', growth: 'Growth view' }[this.view];
       this.info.set(this.loadError
         ? { kicker: what, title: 'The detector could not be loaded', about: ['Its trained weights (js/yolo-weights.js, 1 MB) did not arrive, so there is nothing to show yet. Check the connection and press Retry.'] }
         : { kicker: what, title: 'Loading the detector', about: ['The trained weights (1 MB) are loading. The picture, the boxes and the explanation follow as soon as the network has run once.'] });

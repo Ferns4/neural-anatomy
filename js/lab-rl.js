@@ -105,9 +105,10 @@
   // ------------------------------------------------------------------ training
   LAB.trainChunk = function (budget, maxSteps) {
     if (this.watch) return 0; // watching: one move at a time, in frame()
-    if (this.S.id === 'evolve') return EVO.trainChunk(this, budget, maxSteps);
+    if (this.S.id === 'evolve') { const k = EVO.trainChunk(this, budget, maxSteps); this.filmTick(); return k; }
     const S = this.S, t0 = performance.now();
     let k = 0;
+    if (!S.film) this.filmTick(); // its film starts before the first episode or game
     do {
       if (S.id === 'maze') {
         const m = this.trainMaze(), e = S.model === 'net' ? this.netEpisode(m, true) : RL.mazeEpisode(m, S.Q, S.o, S.rng, true);
@@ -116,9 +117,66 @@
       }
       else this.gameDone(RL.selfPlay(S.game, S.brain, S.o, S.rng));
       k++;
+      if (S.film && S.n >= S.film.next) S.film.tick(); // a moment of its film, between two episodes
     } while (performance.now() - t0 < budget && k < maxSteps);
-    this.step = S.n; this.bump();
+    this.step = S.n; this.bump(); this.filmTick();
     return k;
+  };
+  // ------------------------------------------------------------------ its film (growth.js)
+  // each agent keeps its own: the board at moments spread on a log scale of its episodes, games or generations
+  const UNIT = { maze: 'episode', three: 'game', four: 'game', evolve: 'generation' };
+  LAB.filmTick = function (force) {
+    const S = this.S;
+    if (!S.film) {
+      const layers = () => (S.net ? [{ name: 'Hidden', arrays: [S.net.W1, S.net.b1] }, { name: 'Q-values', arrays: [S.net.W2, S.net.b2] }] : S.brain && S.brain.W1 ? [{ name: 'Hidden', arrays: [S.brain.W1, S.brain.b1] }, { name: 'Value', arrays: [S.brain.W2] }] : null);
+      const start = layers() && NA.growth.copyLayers(layers());
+      S.film = new NA.growth.Recorder({
+        step: () => (S.id === 'evolve' ? S.evo.gen : S.n),
+        draw: (ctx, w, h) => this.filmFrame(ctx, w, h, S), thumbs: S.id === 'evolve',
+        metrics: () => this.filmMetrics(S),
+        inside: () => (start ? NA.growth.sizes(layers(), start) : null),
+        numbers: () => { const h = S.id === 'evolve' ? S.evo.history : S.history, q = h && h[h.length - 1]; return { q, eps: S.model === 'net' && S.id === 'maze' ? RL.netSchedule(S.n, S.o.eps).eps : S.o && S.o.eps }; },
+      });
+    }
+    if (S === this.S && (force || this.training || !S.film.list.length)) S.film.tick(force);
+  };
+  LAB.filmFrame = function (ctx, w, h, S) {
+    if (S.id === 'evolve') {
+      const last = S.evo.last;
+      // (a thumbnail, narrower than 180 px, shows the population alone: text that small cannot be read)
+      if (w < 180) { EVO.drawPopulation(ctx, { x: 4, y: 4, w: w - 8, h: h - 8 }, S); return; }
+      ctx.font = `600 13px ${NA.getFont('ui')}`; ctx.fillStyle = theme.c('ink-2'); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      ctx.fillText(last ? `Generation ${fmtInt(S.evo.gen)}: the best kept the pole up ${fmtInt(S.evo.history[S.evo.history.length - 1].best)} steps` : 'A population of random networks', 8, 14, w - 16);
+      EVO.drawPopulation(ctx, { x: 8, y: 30, w: w - 16, h: h - 38 }, S);
+      return;
+    }
+    const cols = S.maze ? S.maze.W : S.game.size, rows = S.maze ? S.maze.H : S.game.size, cs = Math.max(6, Math.floor(Math.min((w - 12) / cols, (h - 12) / rows)));
+    const G = { x: Math.round((w - cs * cols) / 2), y: Math.round((h - cs * rows) / 2), cs, cols, rows, W: w, H: h, inside: null };
+    this.fieldC = null; // the network's values as they are now, not as they were when the board was last drawn
+    if (S.maze) this.drawMaze(ctx, G); else this.drawBoard(ctx, G);
+  };
+  LAB.filmMetrics = function (S) {
+    if (S.id === 'evolve') { const q = S.evo.history[S.evo.history.length - 1]; return q ? { 'Best of the generation': `${fmtInt(q.best)} steps`, 'Average': `${fmtInt(q.mean)} steps` } : {}; }
+    const q = S.history[S.history.length - 1];
+    if (!q) return {};
+    if (S.id === 'maze') return S.model === 'net' ? { 'New mazes it gets through': fmtPct(q.fresh ?? 0, 0), 'Named mazes': q.named !== undefined ? fmtPct(q.named, 0) : '—' } : { 'Episodes that reach the exit': fmtPct(q.goal ?? 0, 0), 'Steps an episode': fmt(q.steps ?? 0, 1) };
+    return { 'Wins against a random player': fmtPct(q.rnd.win, 0), 'Against the rule-follower': fmtPct(q.rules.win, 0) };
+  };
+  LAB.filmCurve = function () {
+    const S = this.S;
+    if (S.id === 'evolve') return { label: 'Best of each generation (steps up)', higher: true, fmt: (v) => fmtInt(v), points: S.evo.history.map((q) => [q.n, q.best]), second: { label: 'average', points: S.evo.history.map((q) => [q.n, q.mean]) } };
+    if (S.id === 'maze') return S.model === 'net' ? { label: 'New mazes it gets through', higher: true, fmt: (v) => fmtPct(v, 0), points: S.history.filter((q) => q.fresh != null).map((q) => [q.n, q.fresh]) }
+      : { label: 'Episodes that reach the exit', higher: true, fmt: (v) => fmtPct(v, 0), points: S.history.map((q) => [q.n, q.goal]) };
+    return { label: 'Wins against a random player', higher: true, fmt: (v) => fmtPct(v, 0), points: S.history.map((q) => [q.n, q.rnd.win]) };
+  };
+  LAB.filmMath = function (f) {
+    const S = this.S, G = NA.growth.math, o = S.o || {}, x = f.x || {}, q = x.q || {};
+    if (S.id === 'evolve') return [G.ga({ pop: o.pop, sigma: o.sigma, best: q.best, mean: q.mean })];
+    if (S.id === 'maze' && S.model === 'table') return [G.qlearn({ alpha: o.alpha, gamma: o.gamma, eps: x.eps, extra: q.ret !== undefined ? `average return of the last episodes: ${fmt(q.ret, 3)}` : null })];
+    if (S.id === 'maze') return [{ title: 'The rule it learns by: a Q-network', lines: [{ t: 'y = r + γ·maxₐ′ Q̄(s′, a′)      (Q̄: a copy of the network, refreshed now and then)', strong: true }, { t: 'w ← w − η·∇w ½·(Q(s, a) − y)²      (moves replayed from memory)', strong: true }, `γ = ${fmt(o.gamma, 2)}   η = ${fmt(o.lr, 3)}   ε = ${fmt(x.eps, 2)} (moves made at random now)`],
+      note: 'The network’s value of a move is pulled toward its reward plus the best value of where it led; a gradient step on the squared difference does the pulling.' }];
+    return [G.td({ formula: S.model === 'table' ? 'V(s) ← V(s) + α·[ V(s′) − V(s) ]      (the last: the result, 1, 0 or ½)' : 'w ← w − η·∇w ½·(V(s) − V(s′))²      (the last: V(s′) = the result)',
+      nums: `${S.model === 'table' ? `α = ${fmt(o.alpha, 2)}` : `η = ${fmt(o.lr, 3)}`}   ε = ${fmt(x.eps, 2)} (moves made at random)` })];
   };
   /* The maze of its next episode: the maze shown, or a new random maze (for the network, easy ones first: its
      curriculum). None of the named mazes is ever a random one. */
@@ -384,7 +442,7 @@
   };
   LAB.frame = function (now) {
     const S = this.S, T = this.test;
-    if (this.training && this.watch) { if (now >= (this.pauseUntil || 0) && now - (this.lastTick || 0) >= WATCH_MS[S.id]) { this.lastTick = now; this.watchTick(); } }
+    if (this.training && this.watch) { if (now >= (this.pauseUntil || 0) && now - (this.lastTick || 0) >= WATCH_MS[S.id]) { this.lastTick = now; this.watchTick(); this.filmTick(); } }
     else this.runFrame();
     // training on random mazes: the board shows the mazes it learns on, the latest one twice a second
     if (this.training && !this.watch && S.id === 'maze' && S.o.on === 'random' && S.lastTrain) { if (now - (this.trainShowAt || 0) > 450) { this.trainShowAt = now; this.trainShow = S.lastTrain; this.dirty = true; this.archStale = true; } }
@@ -402,6 +460,7 @@
       if (this.archStale && (!this.training || now - (this.lastArch || 0) > 500)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; }
       this.arch.frame(now);
     }
+    if (this.centerView === 'growth' && (!this.training || now - (this.lastGrow || 0) > 500)) { this.lastGrow = now; this.growth.frame(now); }
     if (this.infoStale && (!this.training || now - (this.lastInfo || 0) > 1500) && !(this.arch && this.arch.anim)) { this.lastInfo = now; this.infoStale = false; if (this.centerView === 'arch') this.arch.refreshFocus(); else this.info.set(BOARD_INFO(this)); }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 400)) { this.lastLeft = now; this.leftDirty = false; }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 450)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
@@ -482,7 +541,7 @@
   LAB.buildCenter = function (root) {
     const maze = this.ex === 'maze', evo = this.ex === 'evolve';
     this.exSeg = UI.seg([{ value: 'maze', label: 'Maze' }, { value: 'three', label: 'Three-line' }, { value: 'four', label: 'Four-line' }, { value: 'evolve', label: 'Evolution', title: 'A network bred by a genetic algorithm to balance a pole' }], this.ex, (v) => { if (v !== this.ex) App.loadPreset(v === 'maze' ? 'rl-mazes' : `rl-${v}`); }, 'Example');
-    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : evo ? 'Pole' : 'Board' }, { value: 'arch', label: 'Architecture', title: `The agent and its model, part by part: ${NA.openHint('a part', { zoom: true })}` }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : evo ? 'Pole' : 'Board' }, { value: 'arch', label: 'Architecture', title: `The agent and its model, part by part: ${NA.openHint('a part', { zoom: true })}` }, { value: 'growth', label: 'Growth', title: 'How it learned: a film of its training, its learning curve and the rule it learns by' }], this.centerView, (v) => this.setCenterView(v), 'View');
     this.boardTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Show' }),
       UI.chip(maze ? 'Values' : evo ? 'Population' : 'Its view of each move', this.show.values, (on) => { this.show.values = on; this.dirty = true; }, maze ? 'Colour each square by the value of its best move' : evo ? 'Under the cart, the last generation: one bar per network, fittest first' : 'In each empty cell, the chance to win it gives the player to move'),
       maze ? UI.chip('Best moves', this.show.arrows, (on) => { this.show.arrows = on; this.dirty = true; }, 'An arrow for the move it rates best on each square') : null,
@@ -496,6 +555,14 @@
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: `The agent and its model: ${NA.openHint('a part', { zoom: true })}`, kicker: 'Architecture', build: (size) => NA.archRL.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
+    this.growth = NA.growth.mount(this.archStage, {
+      get unit() { return UNIT[this.lab.S.id]; }, lab: this,
+      version: () => `${this.S.id}:${this.S.model}:${this.S.film ? this.S.film.version() : 0}`,
+      frames: () => (this.S.film ? this.S.film.frames() : []),
+      curve: () => this.filmCurve(),
+      math: (f) => this.filmMath(f),
+      fromScratch: () => { this.runTry({ action: 'scratch' }); this.filmTick(true); },
+    }, { title: 'How it learned', rl: true, what: 'The board', emptyText: 'Train it, and the moments of its learning collect here. A trained agent opens with all it knows: Learn again from scratch watches it start from nothing.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 });
     root.append(this.foot = el('div', { class: 'lab-foot' }, ...(evo
       ? [key('s2', 'the best, carried on'), key('s1', 'children'), el('span', { class: 'lg-item', text: `bar: steps the pole stayed up (${fmtInt(NA.rlEvo.MAXT)} at most) · arrow: the way it pushes` })]
@@ -554,11 +621,12 @@
   };
   LAB.setCenterView = function (v) {
     this.centerView = v;
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.foot.hidden = arch; this.boardTools.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', grow = v === 'growth';
+    this.stage.hidden = arch || grow; this.foot.hidden = arch || grow; this.boardTools.hidden = arch || grow; this.archStage.hidden = !arch;
+    this.growth.show(grow);
     this.viewSeg.set(v);
     this.dirty = true; this.arch.dirty = true;
-    if (arch) this.arch.refreshFocus(); else this.info.set(BOARD_INFO(this));
+    if (grow) { this.filmTick(); this.info.set(NA.growth.info(UNIT[this.S.id], true)); } else if (arch) this.arch.refreshFocus(); else this.info.set(BOARD_INFO(this));
   };
   // the board on the left (or on top) of the canvas, the picture of its model beside it
   LAB.layout = function () {

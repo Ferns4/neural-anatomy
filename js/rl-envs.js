@@ -4,12 +4,73 @@
    takes one of a few actions, and answers with a reward and the next observation until the episode ends. Most can
    be seen more than one way (view): a few numbers, a picture, or the last few readings; input says which, in the
    model builder's terms (a vector, an image of channels × height × width, or a sequence of positions × numbers).
-   Everything is seeded, so a run can be repeated exactly. Needs rl.js (the mazes). */
+   The model builder can change how each one pays (a reward table, or a formula of its own), leave inputs out,
+   add sensor noise, and for the pole its push, length and gravity. Everything is seeded, so a run can be repeated
+   exactly. Needs rl.js (the mazes); a reward formula needs builder-tasks.js (the formula language). */
 (function (NA) {
   'use strict';
   const E = {};
   const RL = () => NA.rl;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+  // ------------------------------------------------------------------ rewards, inputs and noise
+  /* What each world pays for, and how much: its reward table, with the RL lab's amounts as the defaults. A key
+     given in the options replaces its default; rFormula replaces the whole table with a formula in the names of
+     REWARD_VARS (the builder's formula language: no eval). */
+  E.REWARDS = {
+    levers: [{ key: 'rPay', label: 'When a lever pays', def: 1 }],
+    maze: [{ key: 'rGoal', label: 'Reaching the exit', def: 1 }, { key: 'rPit', label: 'Falling in a pit', def: -1 }, { key: 'rStep', label: 'Every other step', def: -0.02 },
+      { key: 'rWall', label: 'Walking into a wall', def: 0 }, { key: 'rNew', label: 'A square not yet visited', def: 0 }, { key: 'rCloser', label: 'A step closer (with the closer bonus on)', def: 0.1 }],
+    pole: [{ key: 'rUp', label: 'Every step it stays up', def: 1 }, { key: 'rFell', label: 'When it falls', def: 0 }],
+    catch: [{ key: 'rCatch', label: 'Catching the ball', def: 1 }, { key: 'rMiss', label: 'Missing it', def: -1 }, { key: 'rMove', label: 'Moving the paddle', def: 0 }],
+  };
+  E.REWARD_VARS = {
+    levers: [['paid', '1 when the lever pays out'], ['right', '1 when it was the lever of the light’s colour']],
+    maze: [['goal', '1 on reaching the exit'], ['pit', '1 on falling in a pit'], ['wall', '1 on walking into a wall (it stays put)'], ['closer', '1 for a step closer to the exit by the shortest safe way, −1 for a step away'],
+      ['new', '1 on a square it has not been on this episode'], ['dist', 'safe steps from here to the exit'], ['t', 'steps so far']],
+    pole: [['x', 'the cart’s position: −2.4 and 2.4 are the ends of the track'], ['v', 'the cart’s speed'], ['angle', 'the pole’s lean in degrees: it falls past ±12'],
+      ['spin', 'how fast the pole turns, degrees a second'], ['fell', '1 on the step it falls'], ['push', '1 for a push right, −1 left'], ['t', 'steps so far']],
+    catch: [['caught', '1 when the ball lands on the paddle'], ['missed', '1 when it lands beside it'], ['moved', '1 when the paddle moved'],
+      ['dx', 'the ball across minus the paddle across, in squares'], ['down', 'the ball’s row, 0 at the top to 7'], ['t', 'steps so far']],
+  };
+  const rewardTable = (id, o) => Object.fromEntries(E.REWARDS[id].map((r) => [r.key, typeof o[r.key] === 'number' && Number.isFinite(o[r.key]) ? o[r.key] : r.def]));
+  // your own reward, compiled once; null (the table) when there is none or it does not compile
+  E.rewardFormula = (id, src) => {
+    const C = NA.builderTasks && NA.builderTasks.compile;
+    if (!src || !C) return null;
+    const c = C(String(src).slice(0, 200), E.REWARD_VARS[id].map((v) => v[0]));
+    return c.error ? null : c.f;
+  };
+  /* Inputs that can be left out, by name, in the views that are a list of numbers. A model that is not told the
+     speeds, say, has to do without them (or work them out, given a memory). */
+  const span = (a, b) => NA.range(b - a).map((i) => a + i);
+  E.INPUT_GROUPS = {
+    pole: { state: [['cart position', [0]], ['cart speed', [1]], ['pole angle', [2]], ['pole turning speed', [3]]] },
+    catch: { numbers: [['ball across', [0]], ['ball down', [1]], ['ball drift', [2]], ['paddle across', [3]]] },
+    maze: { around: [['walls', span(0, 24)], ['pits', span(24, 48)], ['the exit', span(48, 72)], ['where it has been', span(72, 96)], ['which way the exit is', span(96, 104)]] },
+  };
+  // the inputs a world keeps (hide: names of groups to leave out) and the noise on each (noise: its spread)
+  function sensors(w, id, o) {
+    const groups = (E.INPUT_GROUPS[id] || {})[w.view], hide = Array.isArray(o.hide) ? o.hide : [];
+    w.noise = typeof o.noise === 'number' && o.noise > 0 ? Math.min(o.noise, 2) : 0;
+    w.hidden = [];
+    if (!groups || !hide.length) return;
+    const drop = new Set(groups.filter(([name]) => hide.includes(name)).flatMap(([, idx]) => idx));
+    if (!drop.size || drop.size >= w.obsSize) return; // at least one input stays
+    w.hidden = groups.filter(([name]) => hide.includes(name)).map(([name]) => name);
+    w.keep = NA.range(w.obsSize).filter((i) => !drop.has(i));
+    w.obsNames = w.keep.map((i) => w.obsNames[i]);
+    w.obsSize = w.keep.length;
+    w.input = { kind: 'vector', dim: w.obsSize };
+  }
+  // what the model is given: the world's numbers, those it keeps, plus noise
+  function sensed() {
+    const x = this.rawObs();
+    if (!this.keep && !this.noise) return x;
+    const y = this.keep ? Float32Array.from(this.keep, (i) => x[i]) : x;
+    if (this.noise) { const r = this.rng || (this.rng = new NA.RNG(5)); for (let i = 0; i < y.length; i++) y[i] += this.noise * r.gauss(); }
+    return y;
+  }
 
   // ------------------------------------------------------------------ levers: a contextual bandit
   /* A light shows one of k colours; pulling the lever of that colour pays 1 most of the time (p), any other lever
@@ -17,14 +78,20 @@
      see, and the only one here with no delayed reward. */
   class Levers {
     constructor(o = {}) {
-      this.k = o.levers || 3; this.p = o.p === undefined ? 0.8 : o.p; this.q = o.q === undefined ? 0.2 : o.q;
+      this.k = o.levers || 3; this.p = typeof o.p === 'number' ? o.p : 0.8; this.q = typeof o.q === 'number' ? o.q : 0.2;
       this.obsSize = this.k; this.input = { kind: 'vector', dim: this.k }; this.nA = this.k; this.maxSteps = 1;
       this.actions = ['lever A', 'lever B', 'lever C', 'lever D', 'lever E'].slice(0, this.k);
       this.obsNames = this.actions.map((_, i) => `light ${'ABCDE'[i]}`);
+      this.rw = rewardTable('levers', o); this.rf = E.rewardFormula('levers', o.rFormula); sensors(this, 'levers', o);
     }
-    reset(rng) { this.light = rng.int(this.k); this.t = 0; this.last = null; return this.obs(); }
-    obs() { const o = new Float32Array(this.k); o[this.light] = 1; return o; }
-    step(a, rng) { const r = rng.next() < (a === this.light ? this.p : this.q) ? 1 : 0; this.t++; this.last = { a, r }; return { obs: this.obs(), r, done: true }; }
+    reset(rng) { this.rng = rng; this.light = rng.int(this.k); this.t = 0; this.last = null; return this.obs(); }
+    rawObs() { const o = new Float32Array(this.k); o[this.light] = 1; return o; }
+    step(a, rng) {
+      const right = a === this.light, paid = rng.next() < (right ? this.p : this.q);
+      const r = this.rf ? this.rf({ paid: +paid, right: +right }) : paid ? this.rw.rPay : 0;
+      this.t++; this.last = { a, r, paid };
+      return { obs: this.obs(), r, done: true };
+    }
     snap() { return { light: this.light, last: this.last }; }
     // the share of lights for which its best lever is the right one (every light once)
     score(policy) { let ok = 0; for (let l = 0; l < this.k; l++) { this.light = l; if (policy(this.obs()) === l) ok++; } return ok / this.k; }
@@ -46,12 +113,13 @@
       this.fixed = new (RL().Maze)(def.rows); this.fixed.slip = this.slip; this.maze = this.fixed; this.dist = MazeWorld.distances(this.fixed);
       const n = this.fixed.n, W = this.fixed.W, H = this.fixed.H;
       this.input = this.view === 'square' ? { kind: 'vector', dim: n } : this.view === 'picture' ? { kind: 'image', c: 5, h: H, w: W } : { kind: 'vector', dim: 104 };
-      this.obsSize = this.view === 'square' ? n : this.view === 'picture' ? 5 * n : 104; this.nA = 4; this.maxSteps = 80;
+      this.obsSize = this.view === 'square' ? n : this.view === 'picture' ? 5 * n : 104; this.nA = 4; this.maxSteps = o.maxSteps > 0 ? Math.min(o.maxSteps, 1000) : 80;
       this.actions = ['up', 'right', 'down', 'left'];
       const CH = ['a wall', 'a pit', 'the goal', 'you', 'been'];
       this.obsNames = this.view === 'square' ? NA.range(n).map((i) => `on square (${i % W}, ${Math.floor(i / W)})`)
         : this.view === 'picture' ? NA.range(5 * n).map((i) => `${CH[Math.floor(i / n)]} at (${(i % n) % W}, ${Math.floor((i % n) / W)})`)
           : NA.range(104).map((i) => RL().MazeNet.inputName(i));
+      this.rw = rewardTable('maze', o); this.rf = E.rewardFormula('maze', o.rFormula); sensors(this, 'maze', o);
     }
     // the fewest safe steps from every square to the goal (-1: none)
     static distances(M) {
@@ -61,14 +129,15 @@
       return d;
     }
     reset(rng) {
-      if (this.random) { this.maze = new (RL().Maze)(RL().randomMaze(() => rng.next())); this.maze.slip = this.slip; if (this.closer) this.dist = MazeWorld.distances(this.maze); }
+      this.rng = rng;
+      if (this.random) { this.maze = new (RL().Maze)(RL().randomMaze(() => rng.next())); this.maze.slip = this.slip; if (this.closer || this.rf) this.dist = MazeWorld.distances(this.maze); }
       else if (this.maze !== this.fixed) { this.maze = this.fixed; this.dist = MazeWorld.distances(this.fixed); }
       const M = this.maze;
       this.s = M.start; this.seen = new Uint8Array(M.n); this.seen[this.s] = 1; this.t = 0; this.path = [this.s]; this.end = null;
       return this.obs();
     }
-    obs() {
-      const x = new Float32Array(this.obsSize), M = this.maze, n = M.n;
+    rawObs() {
+      const x = new Float32Array(this.view === 'square' ? this.maze.n : this.view === 'picture' ? 5 * this.maze.n : 104), M = this.maze, n = M.n;
       if (this.view === 'square') x[this.s] = 1;
       else if (this.view === 'picture') {
         for (let i = 0; i < n; i++) { const c = M.cell[i]; if (c === '#') x[i] = 1; else if (c === 'X') x[n + i] = 1; else if (c === 'G') x[2 * n + i] = 1; if (this.seen[i]) x[4 * n + i] = 1; }
@@ -77,12 +146,20 @@
       return x;
     }
     step(a, rng) {
-      const s0 = this.s, t = this.maze.step(this.s, a, rng.fn || (rng.fn = () => rng.next()));
+      const s0 = this.s, t = this.maze.step(this.s, a, rng.fn || (rng.fn = () => rng.next())), fresh = !this.seen[t.s];
       this.s = t.s; this.seen[t.s] = 1; this.t++; this.path.push(t.s);
       const done = t.done || this.t >= this.maxSteps;
       if (done) this.end = t.done ? (t.r > 0 ? 'goal' : 'pit') : 'lost';
-      let r = t.r;
-      if (this.closer && this.end !== 'pit' && this.dist[s0] >= 0 && this.dist[t.s] >= 0) r += 0.1 * (this.dist[s0] - this.dist[t.s]);
+      const c = this.maze.cell[t.s], goal = c === 'G', pit = c === 'X', wall = t.s === s0, d0 = this.dist[s0], d1 = this.dist[t.s];
+      const closer = !pit && d0 >= 0 && d1 >= 0 ? d0 - d1 : 0, rw = this.rw;
+      let r;
+      if (this.rf) r = this.rf({ goal: +goal, pit: +pit, wall: +wall, closer, new: +(fresh && !goal && !pit), dist: Math.max(0, d1), t: this.t });
+      else {
+        r = goal ? rw.rGoal : pit ? rw.rPit : rw.rStep;
+        if (wall) r += rw.rWall;
+        if (fresh && !goal && !pit) r += rw.rNew;
+        if (this.closer) r += rw.rCloser * closer;
+      }
       return { obs: this.obs(), r, done };
     }
     snap() { return { rows: this.maze.rows, s: this.s, path: this.path.slice(), end: this.end }; }
@@ -115,35 +192,41 @@
     constructor(o = {}) {
       // start: how far from upright and still each episode may begin (xStart: the cart, from the middle)
       this.view = o.view === 'readings' ? 'readings' : 'state'; this.start = o.start || 0.05; this.xStart = o.xStart || this.start;
-      this.maxSteps = o.steps || 200; this.nA = 2; this.actions = ['push left', 'push right'];
+      this.maxSteps = o.steps > 0 ? Math.min(o.steps, 5000) : 200; this.nA = 2; this.actions = ['push left', 'push right'];
+      // the physics: a push of force N, a pole of length m (0.1 kg) on a 1 kg cart, gravity in m/s²
+      this.force = o.force > 0 ? o.force : 10; this.len = o.length > 0 ? o.length : 1; this.g = o.gravity > 0 ? o.gravity : 9.8;
+      this.half = this.len / 2; this.pml = 0.1 * this.half;
       if (this.view === 'readings') { this.input = { kind: 'series', len: 4, dim: 2 }; this.obsSize = 8; this.obsNames = [3, 2, 1, 0].flatMap((k) => [`cart position ${k ? k + ' steps ago' : 'now'}`, `pole angle ${k ? k + ' steps ago' : 'now'}`]); }
       else { this.input = { kind: 'vector', dim: 4 }; this.obsSize = 4; this.obsNames = ['cart position', 'cart speed', 'pole angle', 'pole turning speed']; }
+      this.rw = rewardTable('pole', o); this.rf = E.rewardFormula('pole', o.rFormula); sensors(this, 'pole', o);
     }
     reset(rng) {
       const s = this.start;
+      this.rng = rng;
       this.x = rng.uniform(-this.xStart, this.xStart); this.v = rng.uniform(-s, s); this.th = rng.uniform(-s, s); this.w = rng.uniform(-s, s); this.t = 0; this.a = null;
       this.hist = [0, 0, 0].map(() => [this.x / 2.4, this.th / 0.2095]);
       return this.obs();
     }
-    obs() {
+    rawObs() {
       if (this.view === 'state') return Float32Array.of(this.x / 2.4, this.v / 3, this.th / 0.2095, this.w / 3.5);
       const o = new Float32Array(8);
       [...this.hist, [this.x / 2.4, this.th / 0.2095]].forEach((r, k) => o.set(r, 2 * k));
       return o;
     }
     step(a) {
-      // the equations of motion, one 0.02 s Euler step (gravity 9.8, cart 1 kg, pole 0.1 kg and 1 m, push 10 N)
+      // the equations of motion, one 0.02 s Euler step (by default gravity 9.8, cart 1 kg, pole 0.1 kg and 1 m, push 10 N)
       // a = 1 pushes right, 0 left; anything else (you, trying it yourself, not pushing) not at all
-      const F = a === 1 ? 10 : a === 0 ? -10 : 0, ct = Math.cos(this.th), st = Math.sin(this.th);
-      const tmp = (F + 0.05 * this.w * this.w * st) / 1.1;
-      const acc = (9.8 * st - ct * tmp) / (0.5 * (4 / 3 - (0.1 * ct * ct) / 1.1)), xacc = tmp - (0.05 * acc * ct) / 1.1;
+      const F = a === 1 ? this.force : a === 0 ? -this.force : 0, ct = Math.cos(this.th), st = Math.sin(this.th);
+      const tmp = (F + this.pml * this.w * this.w * st) / 1.1;
+      const acc = (this.g * st - ct * tmp) / (this.half * (4 / 3 - (0.1 * ct * ct) / 1.1)), xacc = tmp - (this.pml * acc * ct) / 1.1;
       this.hist.push([this.x / 2.4, this.th / 0.2095]); this.hist.shift();
       this.x += 0.02 * this.v; this.v += 0.02 * xacc; this.th += 0.02 * this.w; this.w += 0.02 * acc;
       this.t++; this.a = a;
-      const fell = Math.abs(this.x) > 2.4 || Math.abs(this.th) > 0.2095;
-      return { obs: this.obs(), r: 1, done: fell || this.t >= this.maxSteps, fell };
+      const fell = Math.abs(this.x) > 2.4 || Math.abs(this.th) > 0.2095, deg = 180 / Math.PI;
+      const r = this.rf ? this.rf({ x: this.x, v: this.v, angle: this.th * deg, spin: this.w * deg, fell: +fell, push: a === 1 ? 1 : a === 0 ? -1 : 0, t: this.t }) : this.rw.rUp + (fell ? this.rw.rFell : 0);
+      return { obs: this.obs(), r, done: fell || this.t >= this.maxSteps, fell };
     }
-    snap() { return { x: this.x, th: this.th, a: this.a, t: this.t }; }
+    snap() { return { x: this.x, th: this.th, a: this.a, t: this.t, len: this.len }; }
     // how long its best moves keep the pole up, as a share of the episode, over 5 starts
     score(policy) { const r = new NA.RNG(4242); let s = 0; for (let k = 0; k < 5; k++) { let o = this.reset(r), done = false; while (!done) ({ obs: o, done } = this.step(policy(o))); s += this.t; } return s / (5 * this.maxSteps); }
   }
@@ -162,12 +245,13 @@
       if (this.view === 'numbers') { this.input = { kind: 'vector', dim: 4 }; this.obsSize = 4; this.obsNames = ['ball across', 'ball down', 'ball drift', 'paddle across']; }
       else { this.input = { kind: 'image', c: ch, h: this.H, w: this.W }; this.obsSize = ch * n; this.obsNames = NA.range(ch * n).map((i) => `${i < n ? 'now' : 'a step ago'}: pixel ${at(i % n)}`); }
       this.actions = ['left', 'stay', 'right'];
+      this.rw = rewardTable('catch', o); this.rf = E.rewardFormula('catch', o.rFormula); sensors(this, 'catch', o);
     }
-    reset(rng) { this.bx = rng.int(this.W); this.by = 0; this.vx = this.drift ? rng.int(3) - 1 : 0; this.px = 2; this.t = 0; this.caught = null; this.prev = null; return this.obs(); }
+    reset(rng) { this.rng = rng; this.bx = rng.int(this.W); this.by = 0; this.vx = this.drift ? rng.int(3) - 1 : 0; this.px = 2; this.t = 0; this.caught = null; this.prev = null; return this.obs(); }
     picture(o, at, bx, by, px) { const W = this.W; o[at + by * W + bx] = 1; o[at + (this.H - 1) * W + px] = 1; }
-    obs() {
+    rawObs() {
       if (this.view === 'numbers') return Float32Array.of(this.bx / (this.W - 1), this.by / (this.H - 1), this.vx, this.px / (this.W - 1));
-      const o = new Float32Array(this.obsSize), n = this.W * this.H;
+      const n = this.W * this.H, o = new Float32Array((this.view === 'pixels' ? 2 : 1) * n);
       this.picture(o, 0, this.bx, this.by, this.px);
       if (this.view === 'pixels') { const p = this.prev || [this.bx, this.by, this.px]; this.picture(o, n, p[0], p[1], p[2]); }
       return o;
@@ -179,13 +263,18 @@
       // a wall turns it back: it bounces off, one square in from the edge
       if (this.bx < 0) { this.bx = 1; this.vx = 1; } else if (this.bx > this.W - 1) { this.bx = this.W - 2; this.vx = -1; }
       this.t++;
-      if (this.by >= this.H - 1) { this.caught = this.bx === this.px; return { obs: this.obs(), r: this.caught ? 1 : -1, done: true }; }
-      return { obs: this.obs(), r: 0, done: false };
+      const moved = this.px !== this.prev[2], end = this.by >= this.H - 1;
+      if (end) this.caught = this.bx === this.px;
+      const rw = this.rw, r = this.rf ? this.rf({ caught: +(end && this.caught), missed: +(end && !this.caught), moved: +moved, dx: this.bx - this.px, down: this.by, t: this.t })
+        : (moved ? rw.rMove : 0) + (end ? (this.caught ? rw.rCatch : rw.rMiss) : 0);
+      return { obs: this.obs(), r, done: end };
     }
     snap() { return { bx: this.bx, by: this.by, px: this.px, caught: this.caught }; }
     // the share of 40 balls its best moves catch (the same 40 every time)
     score(policy) { const r = new NA.RNG(4242); let ok = 0; for (let k = 0; k < 40; k++) { let o = this.reset(r), done = false; while (!done) ({ obs: o, done } = this.step(policy(o))); if (this.caught) ok++; } return ok / 40; }
   }
+
+  for (const W of [Levers, MazeWorld, Pole, Catch]) W.prototype.obs = sensed;
 
   // ------------------------------------------------------------------ the catalogue
   E.WORLDS = {
@@ -219,7 +308,7 @@
       ctx.strokeStyle = T.c(cols[i]); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x, cy + rad * 2.8); ctx.lineTo(x + (on ? rad : -rad * 0.4), cy + rad * 0.6); ctx.stroke();
       ctx.beginPath(); ctx.arc(x + (on ? rad : -rad * 0.4), cy + rad * 0.6, rad * 0.35, 0, Math.PI * 2); ctx.fillStyle = T.c(cols[i]); ctx.fill();
       ctx.fillStyle = T.c('line-2'); ctx.fillRect(x - rad * 0.8, cy + rad * 2.8, rad * 1.6, rad * 0.5);
-      if (on) { ctx.fillStyle = T.c(s.last.r ? 'pos' : 'muted'); ctx.font = `700 ${Math.max(11, rad * 0.6)}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(s.last.r ? '+1' : '0', x, cy + rad * 4.4); }
+      if (on) { const r = s.last.r; ctx.fillStyle = T.c(r > 0 ? 'pos' : r < 0 ? 'neg' : 'muted'); ctx.font = `700 ${Math.max(11, rad * 0.6)}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(r > 0 ? '+' + NA.fmt(r, r % 1 ? 2 : 0) : NA.fmt(r, r % 1 ? 2 : 0), x, cy + rad * 4.4); }
     }
   }
   // the maze as the RL lab draws it: the goal (the exit) +1, pits −1, S where every episode starts
@@ -242,7 +331,7 @@
     ctx.fillStyle = T.c('s7'); ctx.beginPath(); ctx.arc(x0 + (s.s % M.W + 0.5) * cs, y0 + (Math.floor(s.s / M.W) + 0.5) * cs, cs * 0.22, 0, Math.PI * 2); ctx.fill();
   }
   function drawPole(ctx, r, s, T) {
-    const gy = r.y + r.h * 0.78, sc = r.w / 5.6, cx = r.x + r.w / 2 + clamp(s.x, -2.6, 2.6) * sc, cw = Math.max(26, sc * 0.5), ch = cw * 0.5, L = Math.min(r.h * 0.6, sc * 1.6);
+    const gy = r.y + r.h * 0.78, sc = r.w / 5.6, cx = r.x + r.w / 2 + clamp(s.x, -2.6, 2.6) * sc, cw = Math.max(26, sc * 0.5), ch = cw * 0.5, L = Math.min(r.h * 0.6, sc * 1.6) * Math.sqrt(clamp(s.len || 1, 0.25, 4));
     ctx.strokeStyle = T.c('line-2'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(r.x + r.w / 2 - 2.4 * sc, gy); ctx.lineTo(r.x + r.w / 2 + 2.4 * sc, gy); ctx.stroke();
     for (const e of [-2.4, 2.4]) { ctx.beginPath(); ctx.moveTo(r.x + r.w / 2 + e * sc, gy - 8); ctx.lineTo(r.x + r.w / 2 + e * sc, gy + 8); ctx.stroke(); }
     ctx.fillStyle = T.c('ink-2'); ctx.fillRect(cx - cw / 2, gy - ch, cw, ch);

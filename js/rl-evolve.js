@@ -98,7 +98,8 @@
     const S = L.S, t0 = performance.now();
     if (maxSteps === Infinity) { if (t0 - (L.genAt || 0) < 120) return 0; L.genAt = t0; maxSteps = 1; }
     let k = 0;
-    do { S.evo.generation(); S.n = S.evo.gen; k++; } while (performance.now() - t0 < budget && k < maxSteps);
+    if (L.filmTick) L.filmTick(); // its film starts before the first generation
+    do { S.evo.generation(); S.n = S.evo.gen; k++; if (S.film && S.evo.gen >= S.film.next) S.film.tick(); } while (performance.now() - t0 < budget && k < maxSteps);
     L.step = S.n; L.bump();
     return k;
   };

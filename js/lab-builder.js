@@ -345,6 +345,7 @@
     const every = (list) => list.flatMap((b) => [b, ...(Array.isArray(b.branches) ? b.branches.flat() : [])]);
     for (const b of every([...S.blocks, ...(S.parts || []).flatMap((p) => p.blocks)])) for (const k of Object.keys(b)) if (typeof b[k] === 'number' && !num(b[k], -512, 512)) return false; // your parts and branches too
     for (const ps of Object.values(S.ps)) if (ps && typeof ps === 'object') for (const k of Object.keys(ps)) if (typeof ps[k] === 'number' && !num(ps[k], -1e4, 1e4)) return false;
+    for (const ps of Object.values(S.ps)) if (ps && ((ps.rFormula !== undefined && (typeof ps.rFormula !== 'string' || ps.rFormula.length > 200)) || (ps.hide !== undefined && !(Array.isArray(ps.hide) && ps.hide.length <= 8 && ps.hide.every((h) => typeof h === 'string' && h.length <= 40))))) return false;
     const T = Object.assign({}, DEFAULT_TRAIN, S.train);
     if (!num(T.lr, 1e-6, 10) || !num(T.batch, 1, 1024) || (T.steps !== undefined && !num(T.steps, 0, 2e5)) || !OPT_LABEL[T.opt] || !SCHED_LABEL[T.sched || 'const']) return false;
     if (S.custom && Array.isArray(S.custom.points) && S.custom.points.length > 3000) return false;
@@ -385,6 +386,7 @@
     this.vizVersion = (this.vizVersion || 0) + 1; this._region = null; this.confusion = null; this.lastEval = 0; this.evalMs = 0;
     this.evalEvery = classic ? Math.max(1, Math.round(model.target / 60)) : T.steps ? Math.max(1, Math.round(T.steps / 120)) : 25; // about 120 points on the curves
     this.evaluate(true);
+    run.film = this.filmFor(run); run.film.tick(true);
     this.inspDirty = true; this.resultsDirty = true; this.renderWorkbench();
     return true;
   };
@@ -411,7 +413,58 @@
   };
   // the play button says what it will do
   Object.defineProperty(BL, 'labels', { get() { return this.canContinue() ? { play: 'Continue', title: 'Keep training this run (Space)' } : {}; } });
-  BL.onPause = function () { if (this.run && this.run.status === 'running') this.run.status = 'paused'; this.evaluate(true); this.inspDirty = true; };
+  BL.onPause = function () { if (this.run && this.run.status === 'running') this.run.status = 'paused'; this.evaluate(true); if (this.run && this.run.film && !this.stale) this.run.film.tick(true); this.inspDirty = true; };
+  // ------------------------------------------------------------------ a run's film (growth.js)
+  // the layers with weights, named by their blocks: their arrays as they are now
+  BL.layersOf = function (model, cfg) {
+    if (!model || model.classic) return null;
+    const blocks = (cfg || this.run.cfg).blocks, out = [];
+    if (model.embed && model.embed.params.length) out.push({ name: 'Embedding', arrays: model.embed.params.map((p) => p.w) });
+    model.layers.forEach((L, i) => {
+      if (!L.params || !L.params.length) return;
+      const b = blocks[i], t = b ? b.type : 'output';
+      out.push({ name: b ? `${i + 1}. ${t === 'rnn' ? (b.cell || 'rnn').toUpperCase() : t[0].toUpperCase() + t.slice(1)}` : 'Output', arrays: L.params.map((p) => p.w) });
+    });
+    return out;
+  };
+  /* A run's film: its results picture at moments spread on a log scale of steps, the run's score then, how big each
+     layer's weights were and how far they had moved from the run's start, and the numbers of a step then */
+  BL.filmFor = function (run) {
+    const model = this.model, d = this.data, agent = this.agent, layers = this.layersOf(model, run.cfg), start = layers ? NA.growth.copyLayers(layers) : null;
+    return new NA.growth.Recorder({
+      step: () => run.step,
+      draw: (ctx, w, h) => BV.draw(ctx, { x: 4, y: 4, w: w - 8, h: h - 8 }, { data: d, model, vizVersion: -1 - run.step, _region: null, confusion: this.confusion, seqView: {}, demo: this.demo, run }),
+      metrics: () => (run.last && run.last.vm !== null && run.last.vm !== undefined ? { [d.family === 'control' ? 'Score of its best moves' : `Validation ${this.metricName(d.family)}`]: BT.isValue(d.family) ? fmt(run.last.vm, 3) : fmtPct(run.last.vm, 1) } : {}),
+      inside: () => (layers ? NA.growth.sizes(this.layersOf(model, run.cfg), start) : null),
+      numbers: () => ({ loss: run.ema, val: run.last ? run.last.val : null, ret: run.last ? run.last.ret : null, grad: this.gradNorm, lr: this.lrAt(run.step - (run.sched0 || 0)), eps: agent && agent.eps ? agent.eps() : null,
+        layerGrads: layers && model.gradNorms ? (() => { const g = model.gradNorms(); return model.layers.map((L, i) => (L.params && L.params.length ? g[i] : null)).filter((v) => v !== null); })() : null,
+        best: agent ? agent.genBest : undefined, mean: agent ? agent.genMean : undefined }),
+    });
+  };
+  // the curve the film is set against: the score of its best moves (rewards), or the losses
+  BL.filmCurve = function () {
+    const run = this.run;
+    if (!run) return null;
+    if (run.family === 'control' || this.data.family === 'control') return { label: 'Score of its best moves', higher: true, fmt: (v) => fmtPct(v, 0), points: run.curve.map((p) => [p.step, p.vm]) };
+    if (this.model && this.model.classic) return { label: `Validation ${this.metricName(this.data.family)}`, higher: true, fmt: (v) => (BT.isValue(this.data.family) ? fmt(v, 3) : fmtPct(v, 1)), points: run.curve.map((p) => [p.step, p.vm]) };
+    return { label: 'Training loss', higher: false, fmt: (v) => fmt(v, 4), points: run.curve.map((p) => [p.step, p.train]), second: { label: 'validation loss', points: run.curve.map((p) => [p.step, p.val]) } };
+  };
+  // the math of a moment: what it minimises (or is paid), the rule of a step, with that moment's numbers
+  BL.filmMath = function (f, before) {
+    const run = this.run, d = this.data, x = f.x || {}, T = run.cfg.train, G = NA.growth.math, names = (f.inside || []).map((q) => q.name);
+    const moved = (q) => (q && q.inside && q.inside.length ? q.inside.reduce((s, L) => s + L.moved, 0) / q.inside.length : undefined);
+    const step = G.descent({ opt: T.opt, lr: x.lr, grad: x.grad, gradWhat: 'length of the whole gradient', norm: true, decay: T.wd, layers: (x.layerGrads || []).map((g, i) => ({ name: names[i] || `Layer ${i + 1}`, grad: g })) });
+    if (this.model && this.model.classic) return [{ title: 'How it learns', lines: [{ t: this.model.unit ? `It is built ${this.model.unit()} by ${this.model.unit()}, with no gradient steps` : 'It is built step by step, with no gradient steps', strong: true }], note: 'Classic models are fitted by their own recipes (splitting the data, keeping neighbours, adding trees), so there is no learning rate and no gradient here.' }];
+    if (d.family === 'control') {
+      const ps = run.cfg.ps[run.cfg.problem] || {}, m = d.method, E = NA.rlEnvs, vars = E.REWARD_VARS[d.world].map((v) => v[0]), own = ps.rFormula && !BT.compile(ps.rFormula, vars).error;
+      const rw = E.REWARDS[d.world].filter((r) => r.key !== 'rCloser' || ps.closer).map((r) => { const v = typeof ps[r.key] === 'number' ? ps[r.key] : r.def; return `${v > 0 ? '+' : ''}${fmt(v, Math.abs(v) < 0.1 && v ? 2 : v % 1 ? 1 : 0)}  ${r.label.toLowerCase().replace(/ \(.*\)$/, '')}`; });
+      const pays = { title: 'What it is paid: its reward', lines: own ? [{ t: `r = ${ps.rFormula}`, strong: true }] : rw.map((l, i) => (i ? l : { t: l, strong: true })), note: `It learns to collect as much reward as it can: ${own ? 'your formula' : 'this table'} is the goal it is given. The score measures the real goal: ${E.WORLDS[d.world].goal}.` };
+      const g = ps.gamma, rule = m === 'dqn' ? G.dqn({ gamma: g, eps: x.eps, loss: x.loss }) : m === 'pg' ? G.pg({ gamma: g, ret: x.ret }) : m === 'a2c' ? G.a2c({ gamma: g, ret: x.ret }) : m === 'ppo' ? G.ppo({ gamma: g, ret: x.ret }) : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean });
+      return [pays, rule, m === 'ga' ? null : step];
+    }
+    return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step,
+      before ? G.change('step', { step: before.step, v: before.x && before.x.loss, moved: moved(before) }, { step: f.step, v: x.loss, moved: moved(f) }, 'L') : null];
+  };
   BL.stepOnce = function () { if (this.training) this.pause(); if (!this.run || this.stale || this.run.done) { if (!this.newRun()) return; } this.trainChunk(0, 1); this.evaluate(true); };
   BL.reset = function () { const was = this.training; if (was) this.pause(); this.stale = true; if (this.newRun()) { NA.ui.toast.show(`Run ${this.run.n}: the same setup from fresh weights.`); if (was) this.play(); } };
   BL.fastForward = function () {};
@@ -461,6 +514,7 @@
       if (run.step % this.evalEvery === 0 && performance.now() - this.lastEval > 6 * this.evalMs) this.evaluate(false);
     } while (performance.now() - t0 < budget && k < cap);
     if (performance.now() - this.lastEval > (this.training ? Math.max(400, 8 * this.evalMs) : 0)) this.evaluate(false);
+    if (run.film && run.step >= run.film.next) { if (performance.now() - this.lastEval > 50) this.evaluate(false); run.film.tick(); }
     return k;
   };
   BL.finish = function (status) {
@@ -469,6 +523,7 @@
     run.status = status; run.done = true;
     if (this.training) { this.training = false; NA.app.emit('training'); }
     this.evaluate(true);
+    if (run.film) run.film.tick(true);
     if (status === 'done') NA.ui.toast.show(this.model && this.model.classic
       ? `Run ${run.n} is complete: ${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'}, ${this.metricText(run)}.${this.model.canExtend() ? ' Continue adds more.' : ''}`
       : `Run ${run.n} stopped at step ${fmtInt(run.step)}: ${this.metricText(run)}. Press Continue to keep training it, or change the model for a new run to compare.`);
@@ -566,7 +621,7 @@
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
       const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
-      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor' })[k] || k} ${pa[k]} → ${pb[k]}`);
+      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', ...REWARD_WORDS })[k] || k} ${k === 'hide' ? (pa[k] && pa[k].length ? pa[k].join(', ') : 'none') : pa[k] === undefined ? 'as before' : pa[k]} → ${k === 'hide' ? (pb[k].length ? pb[k].join(', ') : 'none') : pb[k] === '' ? 'the table' : pb[k]}`);
       if (a.problem === 'draw' && JSON.stringify(a.custom.points) !== JSON.stringify(b.custom.points)) out.push(`points: ${a.custom.points.length} → ${b.custom.points.length}`);
     }
     // blocks: match by type in order (longest common subsequence), then compare settings
@@ -678,6 +733,7 @@
       if (this.archStale && (!this.training || now - (this.lastArch || 0) > 700)) { this.lastArch = now; this.archStale = false; this.arch.dirty = true; this.arch.refreshFocus(); }
       this.arch.frame(now);
     }
+    if (this.centerView === 'growth' && this.growth && (!this.training || now - (this.lastGrow || 0) > 500)) { this.lastGrow = now; this.growth.frame(now); }
   };
 
   // the quick settings in the control bar (the phone's settings sheet), rebuilt whenever the setup changes them
@@ -961,7 +1017,7 @@
   BL.buildCenter = function (root) {
     this.undoBtn = el('button', { class: 'icon-btn', type: 'button', title: 'Undo (Ctrl+Z)', 'aria-label': 'Undo', onclick: () => this.undo() }, '↶');
     this.redoBtn = el('button', { class: 'icon-btn', type: 'button', title: 'Redo (Ctrl+Y)', 'aria-label': 'Redo', onclick: () => this.redo() }, '↷');
-    this.viewSeg = UI.seg([{ value: 'model', label: 'Model' }, { value: 'both', label: 'Both' }, { value: 'results', label: 'Results' }, { value: 'arch', label: 'Architecture', title: 'Zoom into your model: blocks, neurons, their sums, down to the transistors' }], this.centerView, (v) => { this.centerView = v; this.layoutCenter(); }, 'Show');
+    this.viewSeg = UI.seg([{ value: 'model', label: 'Model' }, { value: 'both', label: 'Both' }, { value: 'results', label: 'Results' }, { value: 'arch', label: 'Architecture', title: 'Zoom into your model: blocks, neurons, their sums, down to the transistors' }, { value: 'growth', label: 'Growth', title: 'How it learned: a film of the run, its learning curve and the math of each step' }], this.centerView, (v) => { this.centerView = v; this.layoutCenter(); }, 'Show');
     this.archStyle = NA.store.get('builder.archStyle', 'network') === 'blocks' ? 'blocks' : 'network';
     this.styleSeg = UI.seg([{ value: 'network', label: 'Network', title: 'The model drawn as a network: neurons, their wires and what each one computes' }, { value: 'blocks', label: 'Boxes', title: 'The model as boxes, with the shape of the data between them' }], this.archStyle, (v) => { this.archStyle = v; NA.store.set('builder.archStyle', v); if (this.arch) { this.arch.dirty = true; this.arch.refreshFocus(); } }, 'Architecture drawn as');
     this.styleSeg.classList.add('bd-style');
@@ -999,7 +1055,19 @@
       build: (size) => NA.archBuilder.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     this.info = UI.infoPanel(this.archBox, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 760 });
     root.append(this.archBox);
-    this.resCanvas.addEventListener('pointerdown', (e) => this.resultsPointer(e));
+    // how it learned: the film of the run (growth.js)
+    this.growStage = el('div', { class: 'lab-stage gw-pane' });
+    this.growBox = el('div', { class: 'bd-arch bd-grow' }, this.growStage);
+    root.append(this.growBox);
+    this.growth = new NA.growth.View(this.growStage, {
+      unit: 'step',
+      version: () => `${this.run ? this.run.n : 0}:${this.run && this.run.film ? this.run.film.version() : 0}:${this.stale ? 1 : 0}`,
+      frames: () => (this.run && this.run.film && !this.stale ? this.run.film.frames() : []),
+      curve: () => this.filmCurve(),
+      math: (f, before) => this.filmMath(f, before),
+      fromScratch: () => { this.reset(); if (!this.training) this.play(); },
+      scratchLabel: 'New run from scratch',
+    }, { title: 'How it learned', what: 'Its results', emptyText: 'Press Train. The moments of the run collect here: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.' });
     this.resCanvas.addEventListener('contextmenu', (e) => { if (this.problem().id === 'draw') e.preventDefault(); });
     this.resizeObs = new ResizeObserver(() => { this.layoutCenter(); this.resultsDirty = true; });
     this.resizeObs.observe(this.split); this.resizeObs.observe(this.resBox);
@@ -1007,9 +1075,11 @@
   };
   // side by side when there is room, otherwise one at a time
   BL.layoutCenter = function () {
-    const arch = this.centerView === 'arch';
-    this.split.hidden = arch; this.archBox.hidden = !arch;
+    const arch = this.centerView === 'arch', grow = this.centerView === 'growth';
+    this.split.hidden = arch || grow; this.archBox.hidden = !arch;
+    if (this.growBox) this.growBox.hidden = !grow;
     if (this.styleSeg) this.styleSeg.hidden = !arch;
+    if (grow) { this.viewSeg.set('growth'); NA.$$('button', this.viewSeg).forEach((b) => { if (b.dataset.v === 'both') b.hidden = (this.root || this.growBox.parentElement).clientWidth < 600 || !!(NA.mobile && NA.mobile.mobile); }); this.growth.dirty = true; return; }
     if (arch) { this.viewSeg.set('arch'); NA.$$('button', this.viewSeg).forEach((b) => { if (b.dataset.v === 'both') b.hidden = (this.root || this.archBox.parentElement).clientWidth < 600 || !!(NA.mobile && NA.mobile.mobile); }); this.archStale = true; return; }
     const w = this.split.clientWidth, narrow = w < 600 || (NA.mobile && NA.mobile.mobile);
     let v = this.centerView;
@@ -1859,16 +1929,38 @@
         UI.note('Each token becomes a learned vector of this many numbers, plus a learned vector for its position. Attention heads split it.'));
     }
     if (ctl.length) sec.push(UI.section(fam === 'control' ? 'The world' : 'Data', ...ctl));
+    if (fam === 'control') sec.push(...worldSenses(this, p, s));
     const d = this.dataFor();
     if (!d.error) sec.push(UI.section('What the model sees', el('div', { class: 'kv-grid' }, ...(fam === 'control' ? [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Actions', d.actions.join(', ')], ['Learns by', NA.brl.METHODS[d.method].label]] : [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Training examples', fmtInt(d.nTr)], ['Validation examples', fmtInt(d.nVa)]]).map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
     body.append(...sec);
   };
-  // A world's settings: how the model sees it, and for the maze which one, random mazes, a bonus for getting closer
-  // and a slippery floor; for the levers, how many.
+  // the run list's words for a reward's amount
+  const REWARD_WORDS = Object.fromEntries(Object.values(NA.rlEnvs.REWARDS).flat().map((r) => [r.key, r.label.toLowerCase().replace(/ \(.*\)$/, '')]));
+  // A choice among values for a world setting, with the one in use added when a link set another
+  function worldPick(L, s, label, key, values, def, show, title) {
+    const cur = typeof s[key] === 'number' ? s[key] : def, vals = values.includes(cur) ? values : [...values, cur].sort((a, b) => a - b);
+    return UI.field(label, UI.select(vals.map((v) => ({ value: v, label: show ? show(v) : String(v) })), cur, (v) => L.edit((S) => { S.ps[S.problem][key] = +v; })), title);
+  }
+  const signed = (v) => (v > 0 ? '+' : '') + fmt(v, Math.abs(v) < 0.1 && v !== 0 ? 2 : Math.abs(v) % 1 ? 1 : 0);
+  const pctOf = (v) => fmtPct(v, 0);
+  const GRAVITY = { 1.6: 'Moon', 3.7: 'Mars', 9.8: 'Earth', 24.8: 'Jupiter' };
+  // A world's settings: for the maze which one, random mazes, a bonus for getting closer, a slippery floor and the
+  // longest episode; the pole's push, length, gravity and longest episode; the catch's drift; for the levers how
+  // many and how often they pay.
   function worldControls(L, p, s) {
-    const set = (fn) => L.edit((S) => fn(S.ps[S.problem])), out = [], views = BT.VIEWS[p.task];
-    if (p.task === 'levers') out.push(UI.field('Levers', UI.seg([3, 5].map((v) => ({ value: v, label: String(v) })), s.levers, (v) => set((q) => { q.levers = +v; }), 'Levers')), UI.note('The lever that matches the light pays 1 four times in five, any other one time in five. One pull per episode.'));
-    if (views) out.push(UI.field('It sees', UI.seg(views, s.view, (v) => L.setWorldView(v), 'What it sees')), UI.note(`${(views.find((q) => q.value === s.view) || views[0]).title}.`));
+    const set = (fn) => L.edit((S) => fn(S.ps[S.problem])), out = [];
+    if (p.task === 'levers') {
+      out.push(UI.field('Levers', UI.seg([3, 5].map((v) => ({ value: v, label: String(v) })), s.levers, (v) => set((q) => { q.levers = +v; }), 'Levers')),
+        worldPick(L, s, 'The matching lever pays', 'pRight', [0.5, 0.6, 0.8, 0.9, 1], 0.8, pctOf), worldPick(L, s, 'Any other lever pays', 'pOther', [0, 0.1, 0.2, 0.4], 0.2, pctOf),
+        UI.note(`The lever that matches the light pays ${pctOf(s.pRight ?? 0.8)} of the time, any other ${pctOf(s.pOther ?? 0.2)}. One pull per episode.`));
+    }
+    if (p.task === 'pole') {
+      out.push(worldPick(L, s, 'Push', 'force', [5, 10, 20], 10, (v) => `${v} N`, 'How hard each push is'), worldPick(L, s, 'Pole length', 'poleLen', [0.5, 1, 2], 1, (v) => `${v} m`),
+        worldPick(L, s, 'Gravity', 'gravity', [1.6, 3.7, 9.8, 24.8], 9.8, (v) => `${GRAVITY[v] || 'Gravity'}: ${v} m/s²`), worldPick(L, s, 'Longest episode', 'maxSteps', [100, 200, 500, 1000], 200, (v) => `${fmtInt(v)} steps`),
+        UI.note('A longer pole tips over more slowly, and so does any pole where gravity is weaker: both are easier to balance. A stronger push corrects faster but overshoots more. The score is the share of the longest episode it keeps the pole up.'));
+    }
+    if (p.task === 'catch') out.push(UI.field('Ball drift', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], s.drift !== false, (v) => set((q) => { q.drift = v; }), 'Ball drift')),
+      UI.note(s.drift !== false ? 'Each ball drifts left, right or straight down, bouncing off the walls: where it lands depends on which way it drifts.' : 'Every ball falls straight down: where it starts is where it lands.'));
     if (p.task === 'maze') {
       out.push(UI.field('Maze', UI.select(NA.rl.MAZE_SET.map((m) => ({ value: m.id, label: m.name })), s.maze, (v) => set((q) => { q.maze = v; }))),
         UI.field('Train on', UI.seg([{ value: false, label: 'This maze' }, { value: true, label: 'Random mazes', title: 'A new random maze every episode' }], !!s.random, (v) => set((q) => { q.random = v; }), 'Train on')),
@@ -1876,9 +1968,52 @@
         UI.field('Closer bonus', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], !!s.closer, (v) => set((q) => { q.closer = v; }), 'Bonus for getting closer')),
         UI.note(s.closer ? '0.1 for every step that brings it closer to the goal by the shortest safe way, and as much off for every step away. Reward shaping: it cannot change which route is best, since every route’s bonuses add up to the same, but it says which way is warmer long before the goal is ever found.' : 'Rewards only at the end: +1 at the goal, −1 in a pit, and −0.02 a step. Random moves almost never find the goal of most mazes, so there is next to nothing to learn from.'),
         UI.field('Floor', UI.seg([{ value: 0, label: 'Dry' }, { value: 0.1, label: 'Slippery' }], s.slip || 0, (v) => set((q) => { q.slip = v; }), 'Floor')),
-        UI.note('On a slippery floor one move in ten goes sideways: a safe route keeps away from the pits.'));
+        UI.note('On a slippery floor one move in ten goes sideways: a safe route keeps away from the pits.'),
+        worldPick(L, s, 'Longest episode', 'maxSteps', [40, 80, 160], 80, (v) => `${v} steps`));
     }
     return out;
+  }
+  /* What the model is given and what it is paid: how it sees the world, which inputs and with how much noise;
+     then the reward, as a table of amounts or a formula of your own. */
+  function worldSenses(L, p, s) {
+    const E = NA.rlEnvs, set = (fn) => L.edit((S) => fn(S.ps[S.problem])), views = BT.VIEWS[p.task], ins = [];
+    if (views) ins.push(UI.field('It sees', UI.seg(views, s.view, (v) => L.setWorldView(v), 'What it sees')), UI.note(`${(views.find((q) => q.value === s.view) || views[0]).title}.`));
+    const groups = (E.INPUT_GROUPS[p.task] || {})[s.view], hide = Array.isArray(s.hide) ? s.hide : [];
+    if (groups) {
+      ins.push(el('div', { class: 'chip-row', role: 'group', 'aria-label': 'Inputs it is given' }, ...groups.map(([name]) => UI.chip(name, !hide.includes(name), (on) => {
+        if (!on && groups.every(([g]) => g === name || hide.includes(g))) { NA.ui.toast.show('It needs at least one input.'); L.inspDirty = true; return; }
+        set((q) => { const h = new Set(q.hide || []); if (on) h.delete(name); else h.add(name); q.hide = groups.map(([g]) => g).filter((g) => h.has(g)); });
+      }, `${hide.includes(name) ? 'Not given' : 'Given'}: ${name}`))),
+      UI.note(hide.length ? `It is not given ${hide.join(', ')}: the model has fewer inputs and has to do without them${p.task === 'pole' ? '. The Last 4 readings view gives it a history instead, from which a memory (a GRU or LSTM block) can work the speeds out' : ''}.` : 'Each chip is an input it is given. Switch one off and the model learns without it: can it still do the job?'));
+    }
+    ins.push(worldPick(L, s, 'Sensor noise', 'noise', [0, 0.05, 0.1, 0.3], 0, (v) => (v ? `± ${v}` : 'None'), 'Random noise on every input'),
+      UI.note(s.noise ? `Every input, every step, is off by a random amount (a spread of ${s.noise}): real sensors are never exact.` : 'No noise: every input is exact.'));
+    // the rewards
+    const vars = E.REWARD_VARS[p.task], names = vars.map((v) => v[0]), table = E.REWARDS[p.task].filter((r) => r.key !== 'rCloser' || s.closer);
+    const CHOICES = { rPay: [0.5, 1, 2, 5], rGoal: [0.5, 1, 2, 5, 10], rPit: [0, -0.5, -1, -2, -5, -10], rStep: [0, -0.01, -0.02, -0.05, -0.1], rWall: [0, -0.05, -0.1, -0.5, -1], rNew: [0, 0.01, 0.05, 0.1],
+      rCloser: [0.05, 0.1, 0.2, 0.5], rUp: [0, 0.1, 1], rFell: [0, -1, -10, -100], rCatch: [0.5, 1, 2, 5], rMiss: [0, -0.5, -1, -2, -5], rMove: [0, -0.01, -0.05, -0.1, -0.5] };
+    const own = !!s.rFormula && !BT.compile(s.rFormula, names).error, rw = [];
+    rw.push(UI.note(`What it is paid for, step by step. It learns to collect as much reward as it can, so the reward is the goal it is given. The score still measures the real goal (${E.WORLDS[p.task].goal}): a reward that pays for something else shows there.`));
+    const grid = el('div', { class: 'bd-rewards' + (own ? ' is-off' : '') }, ...table.map((r) => worldPick(L, s, r.label, r.key, CHOICES[r.key], r.def, signed)));
+    rw.push(grid);
+    if (own) rw.push(UI.note('Your formula below is in use instead of this table.'));
+    const inp = el('input', { class: 'lm-input', type: 'text', value: s.rFormula || '', spellcheck: 'false', placeholder: 'empty: the table above', 'aria-label': 'Your own reward, a formula' }), msg = el('p', { class: 'sec-note' });
+    const check = () => {
+      const v = inp.value.trim(), c = v ? BT.compile(v, names) : null;
+      msg.textContent = !v ? (s.rFormula ? 'Press Enter to go back to the table.' : 'Or write the reward as a formula of the names below, and press Enter.') : c.error || (v === s.rFormula ? 'In use: this is its reward now.' : 'Looks good: press Enter to use it.');
+      msg.classList.toggle('lm-warn', !!(c && c.error));
+      return c;
+    };
+    const use = () => { const v = inp.value.trim(), c = check(); if (!v) set((q) => { q.rFormula = ''; }); else if (!c.error) set((q) => { q.rFormula = v; }); };
+    inp.addEventListener('input', check);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') use(); });
+    inp.addEventListener('change', use);
+    check();
+    const EXAMPLES = { levers: ['paid', 'right', '2paid - 1'], maze: ['goal - pit', 'goal - pit + 0.05new', 'goal - pit - 0.1wall', '-dist/10'], pole: ['1 - abs(angle)/12', '1 - abs(x)/2.4', '-10fell', 'fell'], catch: ['caught - missed - 0.1moved', '1 - abs(dx)/4', '-abs(dx)', 'missed - caught'] };
+    rw.push(el('label', { class: 'field bd-formula' }, el('span', { text: 'r =' }), inp), msg,
+      el('div', { class: 'chip-row' }, ...EXAMPLES[p.task].map((f) => el('button', { class: 'chip bd-tpl chip-mono', type: 'button', onclick: () => { inp.value = f; set((q) => { q.rFormula = f; }); } }, f))),
+      el('dl', { class: 'bd-vars' }, ...vars.flatMap(([n, what]) => [el('dt', { class: 'mono', text: n }), el('dd', { text: what })])));
+    return [UI.section('Its inputs', ...ins), UI.section('Its reward', ...rw)];
   }
   // ------------------------------------------------------------------ your own table (CSV)
   // The file is read here in the browser; it is not sent anywhere.

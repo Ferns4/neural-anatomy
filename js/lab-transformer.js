@@ -30,7 +30,7 @@
     const W = NA.lmWeights[variant === 'scratch' ? 'twoLayer' : variant];
     this.variant = variant;
     this.model = new TF.TinyGPT(Object.assign({}, W.cfg, { seed: variant === 'scratch' ? 7 : W.cfg.seed }));
-    this.history = [];
+    this.history = []; this.film = null;
     if (variant !== 'scratch') {
       this.model.setParams(TF.decodeWeights(W.weights));
       this.step = W.train.steps;
@@ -73,6 +73,7 @@
   TL.trainChunk = function (budget, maxSteps) {
     const t0 = performance.now();
     let k = 0;
+    if (!this.film) this.filmTick(); // its film starts before the first step
     do {
       const batch = [];
       for (let b = 0; b < this.batch; b++) batch.push(this.gen.story().ids);
@@ -81,12 +82,63 @@
       this.runLoss = this.runLoss === null ? r.loss : 0.95 * this.runLoss + 0.05 * r.loss;
       this.step++; k++;
       if (this.step % 50 === 0) this.recordPoint();
+      // a moment of its film, with a point of the curve to go with it
+      if (this.film && this.step >= this.film.next) { this.lastG = r.gnorm; if (this.step % 50) this.recordPoint(); this.film.tick(); }
     } while (performance.now() - t0 < budget && k < maxSteps);
     this.analysis = null;
     this.bumpVersion();
     return k;
   };
-  TL.onPause = function () { this.recordPoint(); this.bumpVersion(); };
+  TL.onPause = function () { this.recordPoint(); this.bumpVersion(); if (this.film) this.film.tick(true); };
+  // ------------------------------------------------------------------ its film (growth.js)
+  TL.filmTick = function (force) {
+    if (!this.film) {
+      const m = this.model, layers = () => [{ name: 'Embeddings', arrays: [m.E.w, m.Pos.w] }, ...m.layers.flatMap((P, l) => [{ name: `Attention ${l + 1}`, arrays: [P.Wqkv.w, P.Wo.w] }, { name: `MLP ${l + 1}`, arrays: [P.W1.w, P.W2.w] }]), { name: 'Unembedding', arrays: [m.U.w] }];
+      const start = NA.growth.copyLayers(layers());
+      this.film = new NA.growth.Recorder({
+        step: () => this.step,
+        draw: (ctx, w, h) => this.filmFrame(ctx, w, h), thumbs: true,
+        metrics: () => (this.current ? { 'Verbs that agree (validation)': fmtPct(this.current.agree, 0), 'Validation loss': fmt(this.current.val, 3) } : {}),
+        inside: () => NA.growth.sizes(layers(), start),
+        numbers: () => ({ val: this.current ? this.current.val : null, lr: this.lr * Math.min(1, (m.t || 0) / 100), lr0: this.lr, gnorm: this.lastG ?? null }),
+      });
+    }
+    this.film.tick(force);
+  };
+  /* A frame: its three likeliest next words after the first example prompt (the right one is the drink Alice
+     likes), and where each head of its last block looks: row i, the earlier tokens token i takes from. In a
+     thumbnail (narrower than 180 px), the bars and the maps without their words. */
+  TL.filmFrame = function (ctx, w, h) {
+    const m = this.model, ids = [D.W.BOS, ...D.tokenize(D.PROMPTS[0].text).ids].slice(0, m.cfg.T), n = m.forward(ids), V = m.cfg.V, l = m.cfg.L - 1;
+    const asked = ids[ids.length - 2], at = ids.findIndex((q, i) => q === asked && ids[i + 1] === D.W.LIKES), right = at >= 0 ? ids[at + 2] : -1;
+    const P = m.ws.probs.subarray((n - 1) * V, n * V), top = Array.from(P).map((p, i) => [p, i]).sort((a, b) => b[0] - a[0]).slice(0, 3), small = w < 180, pad = small ? 6 : 10;
+    ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(0, 0, w, h);
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    if (!small) { ctx.font = `500 12px ${NA.getFont('ui')}`; ctx.fillStyle = theme.c('ink-2'); ctx.fillText(`${D.detok(ids.slice(1))} …`, 10, 10, w - 20); }
+    top.forEach(([p, i], k) => {
+      const y = small ? 6 + k * 7 : 32 + k * 17, x = small ? pad : 90;
+      if (!small) { ctx.font = `${k ? 500 : 700} 12px ${NA.getFont('mono')}`; ctx.fillStyle = theme.c('ink'); ctx.fillText(`${D.VOCAB[i]}${i === right ? ' ✓' : ''}`, 10, y, 76); }
+      ctx.fillStyle = theme.c(i === right ? 'pos' : 'muted', i === right ? 1 : 0.5); ctx.fillRect(x, y + 1, Math.max(1, (w - x - (small ? pad : 54)) * p), small ? 5 : 10);
+      if (!small) { ctx.font = `500 11px ${NA.getFont('mono')}`; ctx.fillStyle = theme.c('ink-2'); ctx.fillText(fmtPct(p, 0), w - 46, y); }
+    });
+    const H = m.cfg.H, gap = small ? 4 : 10, y0 = small ? 30 : 102, side = Math.min((w - 2 * pad - (H - 1) * gap) / H, h - y0 - 6), cs = side / n;
+    for (let hh = 0; hh < H; hh++) {
+      const A = m.ws.att[l][hh], x0 = pad + hh * (side + gap);
+      if (!small) { ctx.font = `500 10.5px ${NA.getFont('ui')}`; ctx.fillStyle = theme.c('muted'); ctx.fillText(`layer ${l + 1}, head ${hh + 1}`, x0, y0 - 15); }
+      for (let i = 0; i < n; i++) for (let j = 0; j <= i; j++) { ctx.fillStyle = theme.seqColor(Math.sqrt(A[i * n + j])); ctx.fillRect(x0 + j * cs, y0 + i * cs, Math.ceil(cs), Math.ceil(cs)); }
+    }
+  };
+  TL.filmMath = function (f, before) {
+    const x = f.x || {}, G = NA.growth.math, nV = D.VOCAB.length;
+    return [
+      G.loss(null, x.val, { formula: 'L = −(1/T) Σₜ log p(xₜ₊₁ | x₁ … xₜ)', of: 'on the validation stories', note: `Cross-entropy of the next word: at every position, −log of the probability it gave the word that came next. Guessing among all ${nV} words scores ln ${nV} ≈ ${fmt(Math.log(nV), 2)}; many words of a story are chosen at random, so even a perfect model stays well above 0.` }),
+      { title: 'What each head computes', lines: [{ t: 'Attention(Q, K, V) = softmax(Q·Kᵀ / √d_head + mask) · V', strong: true }, 'mask: −∞ above the diagonal, so a token only sees the ones before it', 'the maps: a row per token, its softmax, how much it takes from each earlier one'],
+        note: 'Q, K and V are each token’s vector times learned matrices. Nobody tells a head to look back at the drink: the gradient steps that make L smaller shape its matrices until one does.' },
+      G.descent({ opt: 'adamw', lr: x.lr, b2: 0.99, decay: 0.01, grad: x.gnorm, norm: true, gradWhat: 'all its weights; scaled down to 1 when longer',
+        extra: x.lr0 && x.lr < x.lr0 ? `warm-up: η rises to ${x.lr0} over the first 100 steps` : null }),
+      before ? G.change('step', { step: before.step, v: before.x && before.x.val }, { step: f.step, v: x.val }, 'L (validation)') : null,
+    ];
+  };
   TL.stepOnce = function () { if (this.training) this.pause(); this.trainChunk(0, 1); this.recordPoint(); };
   TL.reset = function () { if (this.training) this.pause(); this.load('scratch'); NA.ui.toast.show('New random weights. Press Train: grammar appears within seconds, lookups after about 2,000 steps.'); };
 
@@ -237,6 +289,7 @@
   TL.archText = function () { const c = this.model.cfg; return `${c.V} tokens → ${c.L} × (attention ${c.H} heads + MLP) → next token`; };
 
   TL.frame = function (now) {
+    if (this.centerView === 'growth' && (!this.training || now - (this.lastGrow || 0) > 500)) { this.lastGrow = now; this.growth.frame(now); }
     this.runFrame();
     if (now - (this.lastRo || 0) > 120) { this.lastRo = now; this.readouts(); }
     if (this.dirty && this.canvas && this.canvas.offsetParent && (!this.training || now - (this.lastDraw || 0) > 90)) { this.lastDraw = now; this.dirty = false; this.draw(); }
@@ -346,7 +399,7 @@
     this.renderHeadSeg();
     const lensChip = UI.chip('Logit lens', this.lens, (on) => { this.lens = on; this.dirty = true; }, 'Print what the model would predict if it stopped at each stage');
     this.centerView = this.centerView || 'tokens';
-    this.viewSeg = UI.seg([{ value: 'tokens', label: 'Tokens', title: 'Every token through every stage' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'tokens', label: 'Tokens', title: 'Every token through every stage' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }, { value: 'growth', label: 'Growth', title: 'How it learned: a film of its training, its learning curve and the math of each step' }], this.centerView, (v) => this.setCenterView(v), 'View');
     this.tokTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Heads' }), this.headSeg, lensChip);
     root.append(el('div', { class: 'lab-toolbar' }, this.viewSeg, this.tokTools));
     this.stage = el('div', { class: 'lab-stage' });
@@ -359,6 +412,16 @@
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'arc = attention from the selected token to an earlier one; width = weight'),
       this.footBlocks = el('span', { class: 'lg-item', text: FOOT_BLOCKS(L) })); // load() keeps the count in step with the model
     root.append(this.stage, this.archStage);
+    this.growth = NA.growth.mount(this.archStage, {
+      unit: 'step',
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
+      frames: () => (this.film ? this.film.frames() : []),
+      curve: () => ({ label: 'Lookups right (validation)', higher: true, fmt: (v) => fmtPct(v, 0), points: this.history.map((q) => [q.step, q.lookup]) }),
+      math: (f, before) => this.filmMath(f, before),
+      fromScratch: () => { if (this.training) this.pause(); this.load('scratch'); this.play(); this.filmTick(true); NA.ui.toast.show('New random weights, training now: grammar appears within seconds, lookups after about 2,000 steps.'); },
+    }, { title: 'How it learned', what: 'Its three likeliest next words after “alice drinks”, and where each head of its last block looks',
+      key: [{ tok: 'pos', label: 'the right word', box: true }, { tok: 'muted', label: 'other guesses', box: true, faint: true }, { label: 'maps: a row per token, brighter where it looks' }],
+      emptyText: 'Train it, and the moments of its learning collect here. The page opens on a model trained in advance: Learn again from scratch watches grammar appear within seconds, and lookups after about 2,000 steps.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot);
     this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, wheel: 'fixed', onChange: () => { this.dirty = true; NA.tooltip.hide(); } });
@@ -371,11 +434,12 @@
   };
   TL.setCenterView = function (v) {
     this.centerView = v;
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.foot.hidden = arch; this.tokTools.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', grow = v === 'growth';
+    this.stage.hidden = arch || grow; this.foot.hidden = arch || grow; this.tokTools.hidden = arch || grow; this.archStage.hidden = !arch;
+    this.growth.show(grow);
     this.viewSeg.set(v);
     this.dirty = true; this.arch.dirty = true;
-    if (arch) this.arch.refreshFocus();
+    if (grow) { this.filmTick(); this.info.set(NA.growth.info('step')); } else if (arch) this.arch.refreshFocus();
     else this.info.set(TOKENS_INFO(this));
   };
   // The info panel follows the part being looked at in the architecture.

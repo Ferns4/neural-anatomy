@@ -36,7 +36,7 @@
     this.dataset = dataset;
     this.D = points(dataset, W ? W.noise : 0.03);
     this.model = new DM.Diffusion({ T: W ? W.T : 100, hidden: W ? W.hidden : [64, 64, 64], seed: scratch ? 2 : 1 });
-    this.history = []; this.step = 0; this.pretrained = false;
+    this.history = []; this.step = 0; this.pretrained = false; this.film = null;
     if (W && !scratch) {
       this.model.net.setParams(NA.tf.decodeWeights(W.weights));
       this.step = W.steps; this.pretrained = true;
@@ -55,11 +55,14 @@
   DF.trainChunk = function (budget, maxSteps) {
     const t0 = performance.now();
     let k = 0;
+    if (!this.film) this.filmTick(); // its film starts before the first step
     do {
       const r = this.model.trainStep(this.D.pts, this.D.n, this.batch, this.lr);
       this.runLoss = this.runLoss === null ? r.loss : 0.98 * this.runLoss + 0.02 * r.loss;
       this.step++; k++;
       if (this.step % 50 === 0) { this.history.push({ step: this.step, loss: this.runLoss }); if (this.history.length > 500) this.history = this.history.filter((q, i) => i % 2 === 0); }
+      // a moment of its film, with a point of the curve to go with it
+      if (this.film && this.step >= this.film.next) { if (this.step % 50) this.history.push({ step: this.step, loss: this.runLoss }); this.film.tick(); }
       // refresh the samples now and then so progress is visible: a quick 25-step preview, labelled as one
       if (this.step % 600 === 0) this.generate(true, 25, true);
     } while (performance.now() - t0 < budget && k < maxSteps);
@@ -67,7 +70,42 @@
     this.inspDirty = true; this.leftDirty = true; this.archStale = true;
     return k;
   };
-  DF.onPause = function () { this.generate(true); this.bump(); };
+  DF.onPause = function () { this.generate(true); this.bump(); if (this.film) this.film.tick(true); };
+  // ------------------------------------------------------------------ its film (growth.js)
+  DF.filmTick = function (force) {
+    if (!this.film) {
+      const net = this.model.net, layers = () => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] })), start = NA.growth.copyLayers(layers());
+      this.film = new NA.growth.Recorder({
+        step: () => this.step,
+        draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
+        inside: () => NA.growth.sizes(layers(), start),
+        numbers: () => ({ loss: this.runLoss, lr: this.lr }),
+      });
+    }
+    this.film.tick(force);
+  };
+  // a frame: 240 points it generates now, 20 DDIM steps from the same noise every time, over the training data
+  DF.filmFrame = function (ctx, w, h) {
+    const n = 240, rng = new NA.RNG(4242), xy = new Float32Array(2 * n), ts = this.schedule(20), D = this.D;
+    for (let i = 0; i < 2 * n; i++) xy[i] = rng.gauss();
+    for (let i = 0; i + 1 < ts.length; i++) this.model.reverseStep(xy, n, ts[i], true, null, ts[i + 1]);
+    ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(0, 0, w, h);
+    const s = Math.min(w, h) / 6.4, cx = w / 2, cy = h / 2;
+    ctx.fillStyle = theme.c('muted', 0.4);
+    for (let i = 0; i < D.n; i += 2) ctx.fillRect(cx + D.pts[2 * i] * s - 1, cy - D.pts[2 * i + 1] * s - 1, 2, 2);
+    ctx.fillStyle = theme.c('pos');
+    for (let i = 0; i < n; i++) { ctx.beginPath(); ctx.arc(cx + xy[2 * i] * s, cy - xy[2 * i + 1] * s, 2.2, 0, Math.PI * 2); ctx.fill(); }
+  };
+  DF.filmMath = function (f, before) {
+    const x = f.x || {}, G = NA.growth.math, v = (q, d = 4) => (Number.isFinite(q) ? fmt(q, d) : '—');
+    return [
+      { title: 'What training makes smaller: the loss', lines: [{ t: 'L = (1/B) Σᵢ ½·‖εᵢ − ε_θ(x_t, t)‖²', strong: true }, 'x_t = √ᾱ_t·x₀ + √(1 − ᾱ_t)·ε      t: a random step from 1 to T, ε: random noise',
+        `L = ${v(x.loss)} (smoothed)   B = ${this.batch} points a step   T = ${this.model.T}`],
+        note: 'Each training point x₀ gets a random amount of noise, and the network is asked for the noise ε back. The better it guesses the noise, the better it can take noise away again, a step at a time, to generate.' },
+      G.descent({ opt: 'adam', lr: x.lr }),
+      before ? G.change('step', { step: before.step, v: before.x && before.x.loss }, { step: f.step, v: x.loss }, 'L') : null,
+    ];
+  };
   DF.stepOnce = function () { if (this.training) this.pause(); this.trainChunk(0, 1); this.bump(); };
   DF.reset = function () { if (this.training) this.pause(); this.load(this.dataset, true); NA.ui.toast.show('Random weights: the samples are noise. Press Train; shapes appear after a few thousand steps.'); };
 
@@ -138,6 +176,7 @@
   DF.archText = function () { return `(x, y, t) → 3 × 64 SiLU → predicted noise ε_θ · ${this.model.T} noise steps`; };
 
   DF.frame = function (now) {
+    if (this.view === 'growth' && (!this.training || now - (this.lastGrow || 0) > 500)) { this.lastGrow = now; this.growth.frame(now); }
     this.runFrame();
     this.advanceGen(this.training ? 4 : 10);
     if (this.animating && now - (this.lastAnim || 0) > (this.gen.ts.length > 40 ? 16 : 70) && this.k < this.gen.xs.length - 1) {
@@ -233,7 +272,7 @@
 
   // ------------------------------------------------------------------ centre: samples
   DF.buildCenter = function (root) {
-    this.viewSeg = UI.seg([{ value: 'generate', label: 'Generate', title: 'Noise turning into data' }, { value: 'forward', label: 'Add noise', title: 'The forward process on the training data' }, { value: 'field', label: 'Denoiser', title: 'Where the network thinks each point’s clean version is' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }], this.view, (v) => this.setView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'generate', label: 'Generate', title: 'Noise turning into data' }, { value: 'forward', label: 'Add noise', title: 'The forward process on the training data' }, { value: 'field', label: 'Denoiser', title: 'Where the network thinks each point’s clean version is' }, { value: 'arch', label: 'Architecture', title: 'The model’s parts: click or zoom in to open them' }, { value: 'growth', label: 'Growth', title: 'How it learned: a film of its training, its learning curve and the math of each step' }], this.view, (v) => this.setView(v), 'View');
     // each view shows only the switches that change it (setView): trails and x̂₀ exist only while generating
     const toggle = (key) => (on) => { this.show[key] = on; this.dirty = true; this.renderFoot(); };
     this.chipOf = {
@@ -253,6 +292,16 @@
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: `Diffusion model architecture: ${NA.openHint('a part', { zoom: true })}`, build: (size) => NA.archDiffusion.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab));
+    this.growth = NA.growth.mount(this.archStage, {
+      unit: 'step',
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
+      frames: () => (this.film ? this.film.frames() : []),
+      curve: () => ({ label: 'Loss (smoothed)', higher: false, fmt: (v) => fmt(v, 4), points: this.history.map((q) => [q.step, q.loss]) }),
+      math: (f, before) => this.filmMath(f, before),
+      fromScratch: () => { if (this.training) this.pause(); this.load(this.dataset, true); this.play(); this.filmTick(true); NA.ui.toast.show('Random weights, training now: the film fills up as noise learns to become the data.'); },
+    }, { title: 'How it learned', what: 'Points it generates from the same noise every time, over the training data',
+      key: [{ tok: 'pos', label: 'points it generates', dot: true }, { tok: 'muted', label: 'the training data', dot: true, faint: true }],
+      emptyText: 'Train it, and the moments of its learning collect here. The page opens on a model trained in advance: Learn again from scratch watches noise slowly learn to become the data.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot = el('div', { class: 'lab-foot' })); // the key for the view on show (renderFoot)
     this.canvas.addEventListener('click', (e) => this.click(e));
@@ -311,8 +360,10 @@
   DF.setView = function (v) {
     this.view = v;
     this.viewSeg.set(v);
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.chips.hidden = arch; this.foot.hidden = arch; this.playBtn.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', grow = v === 'growth';
+    this.stage.hidden = arch || grow; this.chips.hidden = arch || grow; this.foot.hidden = arch || grow; this.playBtn.hidden = arch || grow; this.archStage.hidden = !arch;
+    this.slider.parentElement.hidden = grow; this.growth.show(grow);
+    if (grow) this.filmTick();
     this.chipOf.trails.hidden = this.chipOf.x0.hidden = v !== 'generate';
     this.sweep = 0;
     this.renderFoot();
@@ -343,7 +394,8 @@
   };
   // The explanation under the picture follows the view (and, in the architecture, the part being looked at).
   DF.showInfo = function () {
-    if (this.view === 'arch') this.arch.refreshFocus();
+    if (this.view === 'growth') this.info.set(NA.growth.info('step'));
+    else if (this.view === 'arch') this.arch.refreshFocus();
     else this.info.set((this.view === 'generate' ? GEN_INFO : this.view === 'forward' ? FWD_INFO : FIELD_INFO)(this));
   };
   const PRE = '# model, T, abar_at and reverse_step as in the whole-model code (Architecture view, top level, Python tab)\n';

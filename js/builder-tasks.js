@@ -400,28 +400,39 @@
   }
 
   // ------------------------------------------------------------------ worlds to act in
-  /* The settings of each world beside the learning ones (BRL.defaults): how the model sees it (view), and for the
-     maze which one, a bonus for getting closer, a new random maze every episode, a slippery floor; for the levers
-     how many. */
+  /* The settings of each world beside the learning ones (BRL.defaults): how the model sees it (view), the inputs
+     it is not given (hide) and sensor noise; for the maze which one, a bonus for getting closer, a new random maze
+     every episode, a slippery floor and the longest episode; for the pole its push, length, gravity and longest
+     episode; the catch's drift; for the levers how many and how often they pay. The rewards (rGoal…, or a formula
+     rFormula) are left out until you change them: the world then pays as the RL lab's does. */
   const WORLD_DEFAULTS = {
-    levers: { levers: 3 },
-    maze: { view: 'around', maze: 'pits', closer: true, random: false, slip: 0 },
-    pole: { view: 'state' },
-    catch: { view: 'numbers' },
+    levers: { levers: 3, pRight: 0.8, pOther: 0.2, hide: [], noise: 0 },
+    maze: { view: 'around', maze: 'pits', closer: true, random: false, slip: 0, maxSteps: 80, hide: [], noise: 0 },
+    pole: { view: 'state', force: 10, poleLen: 1, gravity: 9.8, maxSteps: 200, hide: [], noise: 0 },
+    catch: { view: 'numbers', drift: true, hide: [], noise: 0 },
   };
   BT.VIEWS = {
     maze: [{ value: 'around', label: 'Around it', title: 'The 24 squares around it (walls, pits, the exit when it is that close, where it has been), and which way the exit is, near or far: 104 inputs. What it learns can carry over to other mazes' }, { value: 'square', label: 'Its square', title: 'Which square it is on, one input per square (48). Nothing tells it where the exit is: like a table, it finds it from the rewards, and learns this maze and no other' }, { value: 'picture', label: 'Picture', title: 'The whole maze as a picture of 5 channels, 6 × 8: walls, pits, the exit, where it is, where it has been. For convolutions' }],
     pole: [{ value: 'state', label: '4 numbers', title: 'The cart’s position and speed, the pole’s angle and how fast it turns' }, { value: 'readings', label: 'Last 4 readings', title: 'Only the cart’s position and the pole’s angle, for the last 4 steps (a sequence of 4 × 2): the speeds have to be worked out from how they change' }],
     catch: [{ value: 'numbers', label: '4 numbers', title: 'Where the ball is, which way it drifts, where the paddle is' }, { value: 'pixels', label: 'Pixels', title: 'Two pictures of the 8 × 5 board, now and a step ago (2 channels): which way the ball drifts is in the difference' }],
   };
-  // the settings the world itself takes
-  BT.worldSettings = (p, s) => (p.task === 'levers' ? { levers: s.levers } : p.task === 'maze' ? { view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0 } : { view: s.view });
+  // the settings the world itself takes (rl-envs.js names): yours where you set them, its own where you did not
+  BT.worldSettings = (p, s) => {
+    const t = p.task, o = t === 'levers' ? { levers: s.levers, p: s.pRight, q: s.pOther } : t === 'maze' ? { view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0, maxSteps: s.maxSteps }
+      : t === 'pole' ? { view: s.view, force: s.force, length: s.poleLen, gravity: s.gravity, steps: s.maxSteps } : { view: s.view, drift: s.drift !== false };
+    for (const r of NA.rlEnvs.REWARDS[t]) if (typeof s[r.key] === 'number') o[r.key] = s[r.key];
+    if (s.rFormula) o.rFormula = s.rFormula;
+    if (Array.isArray(s.hide) && s.hide.length) o.hide = s.hide.slice();
+    if (s.noise) o.noise = s.noise;
+    return o;
+  };
   function controlData(p, s, seed) {
     const E = NA.rlEnvs, BRL = NA.brl, ws = BT.worldSettings(p, s), world = E.make(p.task, ws), method = BRL.METHODS[s.method] ? s.method : 'dqn', K = BRL.outputs(method, world.nA);
     // no examples with answers: observations from random play, so every view that shows an input has one to show
     const n = 200, nTr = 160, X = E.samples(world, n, new NA.RNG(seed * 31 + 7)), F = world.obsSize;
     const names = method === 'dqn' || method === 'ga' ? world.actions.map((a) => (method === 'dqn' ? `Q(${a})` : a)) : [...world.actions, ...(K > world.nA ? ['value'] : [])];
     return { family: 'control', task: p.task, world: p.task, ws, method, s, input: world.input, output: { kind: 'value', k: K }, nA: world.nA, actions: world.actions.slice(), obsNames: world.obsNames, names,
+      keep: world.keep ? Array.from(world.keep) : null, hidden: world.hidden || [], ownReward: !!world.rf,
       Xtr: X.slice(0, nTr * F), Ytr: new Float32Array(nTr * K), nTr, Xva: X.slice(nTr * F), Yva: new Float32Array((n - nTr) * K), nVa: n - nTr };
   }
 
@@ -591,11 +602,17 @@
   // ------------------------------------------------------------------ a small formula language for "your own function"
   /* Numbers, x, + − × / ^, parentheses, pi and e, and sin cos tan exp log ln sqrt abs tanh sign floor round
      min max. Multiplication can be implied: 2x, 3sin(x), (x+1)(x−1). Returns { f, py } or { error }: f computes
-     the formula, py is the same formula as PyTorch code on a tensor x (for the Python tab). No eval. */
+     the formula, py is the same formula as PyTorch code on a tensor x (for the Python tab). No eval.
+     vars: other names in place of x (a reward in the names a world offers); f then takes an object of their
+     values. opts.scalar: py on plain Python numbers (math.sin, abs, min…) rather than tensors. */
   const FUN = { sin: Math.sin, cos: Math.cos, tan: Math.tan, exp: Math.exp, log: Math.log, ln: Math.log, sqrt: Math.sqrt, abs: Math.abs, tanh: Math.tanh, sign: Math.sign, floor: Math.floor, round: Math.round, relu: (v) => Math.max(0, v), sigmoid: (v) => 1 / (1 + Math.exp(-v)) };
   const FUN2 = { min: Math.min, max: Math.max, pow: Math.pow };
   const PYNUM = (v) => (Number.isNaN(v) ? "float('nan')" : !Number.isFinite(v) ? (v > 0 ? 'math.inf' : '-math.inf') : String(+v.toPrecision(12)));
-  BT.compile = function (src) {
+  // the same functions on one Python number
+  const PYS = { sin: 'math.sin', cos: 'math.cos', tan: 'math.tan', exp: 'math.exp', log: 'math.log', ln: 'math.log', sqrt: 'math.sqrt', abs: 'abs', tanh: 'math.tanh', floor: 'math.floor', round: 'round' };
+  const pyScalar = (w, a) => (w === 'sign' ? `(1.0 if (${a}) > 0 else -1.0 if (${a}) < 0 else 0.0)` : w === 'relu' ? `max(0.0, ${a})` : w === 'sigmoid' ? `1 / (1 + math.exp(-(${a})))` : `${PYS[w]}(${a})`);
+  BT.compile = function (src, vars, opts = {}) {
+    const V = vars || ['x'], named = !!vars, scalar = !!opts.scalar;
     const s = String(src || '').replace(/×|·/g, '*').replace(/−/g, '-').replace(/²/g, '^2').replace(/³/g, '^3').replace(/π/g, 'pi').toLowerCase();
     let i = 0;
     const ws = () => { while (s[i] === ' ') i++; };
@@ -650,11 +667,11 @@
       if (!m) fail(`I do not understand "${c}".`);
       let w = m[0];
       // a run of letters may hide an implied product, like "xsin": take the longest known name at the start
-      const names = ['x', 'pi', 'e', ...Object.keys(FUN), ...Object.keys(FUN2)].sort((a, b) => b.length - a.length);
+      const names = [...V, 'pi', 'e', ...Object.keys(FUN), ...Object.keys(FUN2)].sort((a, b) => b.length - a.length);
       const hit = names.find((n) => w.startsWith(n));
-      if (!hit) fail(`Unknown name "${w}". Use x, pi, e and sin, cos, tan, exp, log, sqrt, abs, tanh, sign, floor, round, min, max.`);
+      if (!hit) fail(`Unknown name "${w}". Use ${V.join(', ')}, pi, e and sin, cos, tan, exp, log, sqrt, abs, tanh, sign, floor, round, min, max.`);
       w = hit; i += w.length;
-      if (w === 'x') return { f: (x) => x, py: 'x', k: false, p: 5 };
+      if (V.includes(w)) { const name = w; return { f: named ? (x) => x[name] : (x) => x, py: name, k: false, p: 5 }; }
       if (w === 'pi') return lit(Math.PI, 'math.pi');
       if (w === 'e' && peek() !== '(') return lit(Math.E, 'math.e');
       if (peek() !== '(') fail(`"${w}" needs brackets, as in ${w}(x).`);
@@ -667,19 +684,20 @@
         if (peek() !== ')') fail('A bracket is not closed.');
         i++;
         const fn = FUN2[w];
-        const py = w === 'pow' ? `${wrap(a, 5)} ** ${wrap(b, 3)}` : a.k || b.k ? `torch.clamp(${(a.k ? b : a).py}, ${w === 'min' ? 'max' : 'min'}=${(a.k ? a : b).py})` : `torch.${w === 'min' ? 'minimum' : 'maximum'}(${a.py}, ${b.py})`;
+        const py = w === 'pow' ? `${wrap(a, 5)} ** ${wrap(b, 3)}` : scalar ? `${w}(${a.py}, ${b.py})` : a.k || b.k ? `torch.clamp(${(a.k ? b : a).py}, ${w === 'min' ? 'max' : 'min'}=${(a.k ? a : b).py})` : `torch.${w === 'min' ? 'minimum' : 'maximum'}(${a.py}, ${b.py})`;
         return node((x) => fn(a.f(x), b.f(x)), py, a.k && b.k, w === 'pow' ? 4 : 5);
       }
       if (peek() !== ')') fail('A bracket is not closed.');
       i++;
       const fn = FUN[w];
-      return node((x) => fn(a.f(x)), `torch.${w === 'ln' ? 'log' : w}(${a.py})`, a.k, 5);
+      return node((x) => fn(a.f(x)), scalar ? pyScalar(w, a.py) : `torch.${w === 'ln' ? 'log' : w}(${a.py})`, a.k, scalar && w === 'sigmoid' ? 2 : 5);
     }
     try {
-      if (!s.trim()) fail('Type a formula in x.');
+      if (!s.trim()) fail(named ? 'Type a formula.' : 'Type a formula in x.');
       const f = expr();
       if (i < s.length && peek() !== undefined) fail(`Unexpected "${s[i]}".`);
-      if (!Number.isFinite(f.f(0.37)) && !Number.isFinite(f.f(-0.61))) fail('The formula has no finite values between −1 and 1.');
+      const at = (v) => (named ? Object.fromEntries(V.map((n) => [n, v])) : v);
+      if (!Number.isFinite(f.f(at(0.37))) && !Number.isFinite(f.f(at(-0.61)))) fail(named ? 'The formula gives no finite values.' : 'The formula has no finite values between −1 and 1.');
       return { f: f.f, py: f.py, constant: f.k };
     } catch (e) { return { error: e.message }; }
   };

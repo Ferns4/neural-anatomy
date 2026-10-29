@@ -23,7 +23,7 @@
     const sizes = [1, ...Array(this.depth).fill(this.width), 1];
     this.plain = new PN.PINN(sizes, 1);
     this.pinn = new PN.PINN(sizes, 1);
-    this.history = []; this.step = 0;
+    this.history = []; this.step = 0; this.film = null;
     const W = NA.pinnWeights;
     if (pretrained && W && W.pinn.sizes.join() === sizes.join()) {
       this.plain.setParams(NA.tf.decodeWeights(W.plain.weights));
@@ -40,12 +40,15 @@
   PL.trainChunk = function (budget, maxSteps) {
     const t0 = performance.now(), P = this.prob, w = this.weights(), plainW = { data: 1, phys: 0, ic: 0 };
     let k = 0, last = null;
+    if (!this.film) this.filmTick(); // its film starts before the first step
     do {
       const lr = this.lrNow();
       this.plain.trainStep(P, P.data, P.colloc, plainW, lr);
       last = this.pinn.trainStep(P, P.data, P.colloc, w, lr);
       this.step++; k++;
       if (this.step % 100 === 0) this.record(last);
+      // a moment of its film, with a point of the curve to go with it
+      if (this.film && this.step >= this.film.next) { if (this.step % 100) this.record(last); this.last = last; this.film.tick(); }
     } while (performance.now() - t0 < budget && k < maxSteps);
     this.last = last;
     if (!isFinite(last.total)) { this.pause(); NA.ui.toast.show('Training diverged. Lower the learning rate and retrain.'); }
@@ -57,7 +60,42 @@
     this.history.push({ step: this.step, data: r.data, phys: r.phys, ic: r.ic, pinnErr: this.m.pinnErr, plainErr: this.m.plainErr });
     if (this.history.length > 400) this.history = this.history.filter((q, i) => i % 2 === 0 || i === this.history.length - 1);
   };
-  PL.onPause = function () { this.measure(); this.bump(); };
+  PL.onPause = function () { this.measure(); this.bump(); if (this.film) this.film.tick(true); };
+  // ------------------------------------------------------------------ its film (growth.js)
+  PL.filmTick = function (force) {
+    if (!this.film) {
+      const net = this.pinn, layers = () => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] })), start = NA.growth.copyLayers(layers());
+      this.film = new NA.growth.Recorder({
+        step: () => this.step,
+        draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
+        metrics: () => ({ 'The plain network’s error': fmtPct(this.m.plainErr, 1), 'How far the PINN breaks the equation': fmt(this.m.pinnRes, 3) }),
+        inside: () => NA.growth.sizes(layers(), start),
+        numbers: () => ({ r: this.last ? { data: this.last.data, phys: this.last.phys, ic: this.last.ic, total: this.last.total } : null, lr: this.lrNow(), w: this.weights() }),
+      });
+    }
+    this.film.tick(force);
+  };
+  // a frame: the exact motion (dashed), the plain network and the PINN, the measurements and the time they cover
+  PL.filmFrame = function (ctx, w, h) {
+    const P = this.prob, n = 120, xs = [], ex = [], pl = [], pi = [];
+    for (let i = 0; i <= n; i++) { const t = i / n; xs.push(t); ex.push(PN.exact(t, P.zeta, P.omega)); pl.push(this.plain.forward(t, 0)[0]); pi.push(this.pinn.forward(t, 0)[0]); }
+    NA.growth.plot(ctx, w, h, { xs, x0: 0, x1: 1, y0: -1.3, y1: 1.3, band: [0, P.tMax], points: P.data.map((d) => [d.t, d.u]),
+      lines: [{ ys: ex, tok: 'ink-2', width: 1.5, dash: [5, 4] }, { ys: pl, tok: 'neg' }, { ys: pi, tok: 'pos' }] });
+  };
+  PL.filmMath = function (f, before) {
+    const x = f.x || {}, r = x.r || {}, w = x.w || this.weights(), G = NA.growth.math, v = (q, d = 4) => (Number.isFinite(q) ? fmt(q, d) : '—');
+    return [
+      { title: 'What training makes smaller: the PINN’s loss', lines: [{ t: 'L = λ_data·L_data + λ_phys·L_phys + λ_ic·L_ic', strong: true },
+        'L_data = mean (u(tᵢ) − uᵢ)²      over the measurements',
+        'L_phys = mean ( (u″ + 2ζω·u′ + ω²·u) / ω² )²      over the collocation points',
+        'L_ic = (u(0) − 1)² + (u′(0) / ω)²      the start: let go from 1, at rest',
+        `λ_data = ${v(w.data, 0)}   λ_phys = ${v(w.phys, 2)}   λ_ic = ${v(w.ic, 0)}`,
+        `L_data = ${v(r.data)}   L_phys = ${v(r.phys)}   L_ic = ${v(r.ic)}   L = ${v(r.total)}`],
+        note: 'The plain network makes L_data alone smaller. The PINN also pays for breaking the equation of motion, at points where there is no data, so it has a reason to follow the physics there.' },
+      G.descent({ opt: 'adam', lr: x.lr }),
+      before ? G.change('step', { step: before.step, v: before.x && before.x.r ? before.x.r.total : null }, { step: f.step, v: r.total }, 'L') : null,
+    ];
+  };
   PL.stepOnce = function () { if (this.training) this.pause(); this.trainChunk(0, 1); this.measure(); };
   PL.reset = function () { if (this.training) this.pause(); this.setup(); NA.ui.toast.show('Both networks re-initialized. Press Train.'); };
   PL.retrain = function (msg) { this.pause(); this.setup(); this.play(); if (msg) NA.ui.toast.show(msg); };
@@ -97,6 +135,7 @@
   PL.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); };
   PL.archText = function () { return `t → ${this.depth} × ${this.width} tanh → u(t), with u′ and u″ by exact differentiation`; };
   PL.frame = function (now) {
+    if (this.centerView === 'growth' && (!this.training || now - (this.lastGrow || 0) > 500)) { this.lastGrow = now; this.growth.frame(now); }
     /* Three plots share the stage, so the explanation stays open at first only if all three still fit at a useful
        size with it open: the fit at least 150 px tall and a phase portrait of PH_MIN or more. Measured on the
        first frame, once the panels have their final sizes, and before anything is painted. */
@@ -118,7 +157,7 @@
       this.arch.frame(now);
     }
     // so does the explanation under the picture; refresh it when training pauses
-    if (this.infoStale && !this.training && !this.arch.anim) { this.infoStale = false; if (this.centerView === 'arch') this.arch.refreshFocus(); else this.info.set(PLOTS_INFO(this)); }
+    if (this.infoStale && !this.training && !this.arch.anim) { this.infoStale = false; if (this.centerView === 'arch') this.arch.refreshFocus(); else if (this.centerView !== 'growth') this.info.set(PLOTS_INFO(this)); }
     if (this.leftDirty && this.ui.left.offsetParent && (!this.training || now - (this.lastLeft || 0) > 300)) { this.lastLeft = now; this.leftDirty = false; this.renderLeft(); }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 400)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
   };
@@ -166,7 +205,7 @@
     const sizes = [1, ...Array(this.depth).fill(this.width), 1];
     this.pinn = new PN.PINN(sizes, 1);
     this.plain = new PN.PINN(sizes, 1);
-    this.history = []; this.step = 0; this.pretrained = false;
+    this.history = []; this.step = 0; this.film = null; this.pretrained = false;
     this.measure(); this.bump(); this.play();
     const w = this.weights(), parts = [w.data && 'data', w.phys && 'physics', w.ic && 'initial conditions'].filter(Boolean);
     NA.ui.toast.show(parts.length ? `PINN loss: ${parts.join(' + ')}. Retraining.` : 'With no loss terms the PINN has nothing to learn from.');
@@ -191,7 +230,7 @@
   PL.buildCenter = function (root) {
     const show = this.show || (this.show = { plain: true, pinn: true, exact: true });
     this.centerView = this.centerView || 'plots';
-    this.viewSeg = UI.seg([{ value: 'plots', label: 'Plots', title: 'The fits, the residual and the phase portrait' }, { value: 'arch', label: 'Architecture', title: 'The network and its loss: click or zoom in to open the parts' }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'plots', label: 'Plots', title: 'The fits, the residual and the phase portrait' }, { value: 'arch', label: 'Architecture', title: 'The network and its loss: click or zoom in to open the parts' }, { value: 'growth', label: 'Growth', title: 'How it learned: a film of its training, its learning curve and the math of each step' }], this.centerView, (v) => this.setCenterView(v), 'View');
     this.plotTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Show' }),
       UI.chip('Exact solution', show.exact, (on) => { show.exact = on; this.dirty = true; }),
       UI.chip('Plain network', show.plain, (on) => { show.plain = on; this.dirty = true; }),
@@ -203,6 +242,17 @@
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: `PINN architecture: ${NA.openHint('a part', { zoom: true })}`, build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
+    this.growth = NA.growth.mount(this.archStage, {
+      unit: 'step',
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
+      frames: () => (this.film ? this.film.frames() : []),
+      curve: () => ({ label: 'The PINN’s error', tok: 'pos', higher: false, fmt: (v) => fmtPct(v, 1), points: this.history.map((q) => [q.step, q.pinnErr]),
+        second: { label: 'The plain network’s error', tok: 'neg', points: this.history.map((q) => [q.step, q.plainErr]), judge: false } }),
+      math: (f, before) => this.filmMath(f, before),
+      fromScratch: () => { this.retrain('Both networks start again from random weights: the film fills up as they learn.'); this.filmTick(true); },
+    }, { title: 'How it learned', what: 'The fits: the exact motion dashed, the plain network and the PINN, over the measurements',
+      key: [{ tok: 'ink-2', label: 'exact', dash: true }, { tok: 'neg', label: 'plain network' }, { tok: 'pos', label: 'PINN' }, { tok: 'ink', label: 'measurements', dot: true }],
+      emptyText: 'Train it, and the moments of its learning collect here. The page opens on networks trained in advance: Learn again from scratch watches them start from random weights.' });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     // the PINN's entry and the collocation points follow the loss terms in use (renderFoot)
     this.footPinn = el('span');
@@ -229,11 +279,12 @@
   };
   PL.setCenterView = function (v) {
     this.centerView = v;
-    const arch = v === 'arch';
-    this.stage.hidden = arch; this.foot.hidden = arch; this.plotTools.hidden = arch; this.archStage.hidden = !arch;
+    const arch = v === 'arch', grow = v === 'growth';
+    this.stage.hidden = arch || grow; this.foot.hidden = arch || grow; this.plotTools.hidden = arch || grow; this.archStage.hidden = !arch;
+    this.growth.show(grow);
     this.viewSeg.set(v);
     this.dirty = true; this.arch.dirty = true;
-    if (arch) this.arch.refreshFocus();
+    if (grow) { this.filmTick(); this.info.set(NA.growth.info('step')); } else if (arch) this.arch.refreshFocus();
     else this.info.set(PLOTS_INFO(this));
   };
   const pct = (v) => fmtPct(v, v < 0.1 ? 1 : 0);

@@ -810,50 +810,71 @@ def story():
   // seeded randomness for a score, so every measure plays the same starts (and training carries on where it was)
   const SEEDED = (seed, body) => ['state = random.getstate()', `random.seed(${seed})`, ...body, 'random.setstate(state)'];
   const PLAY = (pre) => [`${pre}o, done = self.reset(), False`, `${pre}while not done:`, `${pre}    o, _, done = self.step(policy(o))`];
+  /* The world in Python, as the builder plays it: its physics, the inputs it gives (KEEP: those the model is
+     given, NOISE: sensor noise) and what it pays, from the reward table or your own formula (written as Python on
+     plain numbers by the formula language). With the defaults it is the RL lab's world, line for line. */
   function worldPy(d) {
-    const w = d.world, ws = d.ws;
+    const w = d.world, ws = d.ws, E = NA.rlEnvs;
+    const num = (v) => { const s = String(+(+v).toPrecision(12)); return /^-?\d+$/.test(s) ? s + '.0' : s; }, say = (v) => (v > 0 ? '+' : '') + String(+(+v).toPrecision(12));
+    const rw = Object.fromEntries(E.REWARDS[w].map((r) => [r.key, typeof ws[r.key] === 'number' ? ws[r.key] : r.def]));
+    const own = ws.rFormula ? NA.builderTasks.compile(ws.rFormula, E.REWARD_VARS[w].map((v) => v[0]), { scalar: true }) : null, f = own && !own.error ? own : null;
+    // the inputs it keeps and the noise on them: obs() becomes raw_obs(), and obs() what the model is given
+    const keep = d.keep, noise = ws.noise || 0;
+    const consts = [...(keep ? [`    KEEP = [${keep.join(', ')}]${' '.repeat(Math.max(1, 34 - keep.join(', ').length))}# the inputs it is given (not: ${(d.hidden || []).join(', ')})`] : []),
+      ...(noise ? [`    NOISE = ${num(noise)}                                # sensor noise: a random amount on every input, every step`] : [])];
+    const sense = (lines) => (!keep && !noise ? lines : [lines[0].replace('def obs(self):', 'def raw_obs(self):'), ...lines.slice(1), '',
+      '    def obs(self):                                # what the model is given', `        v = self.raw_obs()${keep ? '[self.KEEP]' : ''}`, noise ? '        return v + self.NOISE * torch.randn_like(v)' : '        return v']);
+    const head = (lines) => [...lines, ...consts];
+    const ownLine = f ? [`        r = ${f.py}`] : null;
+    const pays = (parts) => (f ? `Its reward is your own: r = ${f.py}` : parts);
     if (w === 'levers') {
-      const k = ws.levers || 3;
-      return ['class World:', `    """A light shows one of ${k} colours. The lever of that colour pays 1 four times in five, any other one time`, '    in five. One pull per episode."""',
-        `    actions = [${d.actions.map((a) => JSON.stringify(a)).join(', ')}]`, '',
+      const k = ws.levers || 3, p = typeof ws.p === 'number' ? ws.p : 0.8, q = typeof ws.q === 'number' ? ws.q : 0.2, pct = (v) => `${Math.round(v * 100)}%`;
+      return [...head(['class World:', `    """A light shows one of ${k} colours. The lever of that colour pays ${pct(p)} of the time, any other ${pct(q)}. One`, `    pull per episode. ${pays(`A lever that pays gives ${say(rw.rPay)}.`)}"""`,
+        `    actions = [${d.actions.map((a) => JSON.stringify(a)).join(', ')}]`]), '',
         '    def reset(self):', `        self.light = random.randrange(${k})`, '        return self.obs()', '',
-        '    def obs(self):                                # one input per colour: 1 for the light that is on', `        return F.one_hot(torch.tensor(self.light), ${k}).float()`, '',
-        '    def step(self, a):                            # -> (observation, reward, done)', '        paid = random.random() < (0.8 if a == self.light else 0.2)', '        return self.obs(), float(paid), True', '',
+        ...sense(['    def obs(self):                                # one input per colour: 1 for the light that is on', `        return F.one_hot(torch.tensor(self.light), ${k}).float()`]), '',
+        '    def step(self, a):                            # -> (observation, reward, done)', `        paid = random.random() < (${num(p)} if a == self.light else ${num(q)})`,
+        ...(f ? ['        paid, right = float(paid), float(a == self.light)', ...ownLine, '        return self.obs(), r, True'] : [`        return self.obs(), ${rw.rPay === 1 ? 'float(paid)' : `${num(rw.rPay)} if paid else 0.0`}, True`]), '',
         '    def score(self, policy):', '        """The share of lights for which its best lever is the right one."""', '        right = 0', `        for light in range(${k}):`, '            self.light = light', '            right += policy(self.obs()) == light', `        return right / ${k}`];
     }
     if (w === 'pole') {
-      const rd = ws.view === 'readings';
-      return ['class World:', '    """A pole hinged on a cart that can be pushed left or right (Barto, Sutton and Anderson, 1983). It falls when it',
-        '    leans more than 12 degrees or the cart runs off its track; +1 for every step it stays up, up to 200."""', '    actions = ["push left", "push right"]', '    max_steps = 200', '',
+      const rd = ws.view === 'readings', F = ws.force > 0 ? ws.force : 10, len = ws.length > 0 ? ws.length : 1, g = ws.gravity > 0 ? ws.gravity : 9.8, steps = ws.steps > 0 ? ws.steps : 200, half = len / 2, pml = 0.1 * half;
+      const reward = f ? ['        x, v, angle, spin, t = self.x, self.v, math.degrees(self.th), math.degrees(self.w), self.t', '        push, fell = (1.0 if a == 1 else -1.0), float(fell)', ...ownLine]
+        : [`        r = ${num(rw.rUp)}${rw.rFell ? ` + (${num(rw.rFell)} if fell else 0.0)` : ''}`];
+      return [...head(['class World:', '    """A pole hinged on a cart that can be pushed left or right (Barto, Sutton and Anderson, 1983). It falls when it',
+        `    leans more than 12 degrees or the cart runs off its track. ${pays(`${say(rw.rUp)} for every step${rw.rFell ? `, ${say(rw.rFell)} when it falls` : ' it stays up'}`)}; at most ${steps} steps."""`,
+        '    actions = ["push left", "push right"]', `    max_steps = ${steps}`]), '',
         '    def reset(self):', '        self.x, self.v, self.th, self.w = (random.uniform(-0.05, 0.05) for _ in range(4))', '        self.t = 0',
         rd ? '        self.hist = [(self.x / 2.4, self.th / 0.2095)] * 3     # the readings before this one' : null, '        return self.obs()', '',
-        rd ? '    def obs(self):                                # (4, 2): position and angle, the last 4 steps, oldest first; no speeds' : '    def obs(self):                                # position, speed, angle, turning speed, scaled to about ±1',
-        rd ? '        return torch.tensor(self.hist + [(self.x / 2.4, self.th / 0.2095)])' : '        return torch.tensor([self.x / 2.4, self.v / 3, self.th / 0.2095, self.w / 3.5])', '',
-        '    def step(self, a):                            # one 0.02 s step: gravity 9.8, cart 1 kg, pole 0.1 kg and 1 m, a push of 10 N',
-        '        force = 10.0 if a == 1 else -10.0', '        ct, st = math.cos(self.th), math.sin(self.th)', '        tmp = (force + 0.05 * self.w * self.w * st) / 1.1',
-        '        acc = (9.8 * st - ct * tmp) / (0.5 * (4 / 3 - 0.1 * ct * ct / 1.1))', '        xacc = tmp - 0.05 * acc * ct / 1.1',
+        ...sense([rd ? '    def obs(self):                                # (4, 2): position and angle, the last 4 steps, oldest first; no speeds' : '    def obs(self):                                # position, speed, angle, turning speed, scaled to about ±1',
+          rd ? '        return torch.tensor(self.hist + [(self.x / 2.4, self.th / 0.2095)])' : '        return torch.tensor([self.x / 2.4, self.v / 3, self.th / 0.2095, self.w / 3.5])']), '',
+        `    def step(self, a):                            # one 0.02 s step: gravity ${num(g).replace(/\.0$/, '')}, cart 1 kg, pole 0.1 kg and ${num(len).replace(/\.0$/, '')} m, a push of ${num(F).replace(/\.0$/, '')} N`,
+        `        force = ${num(F)} if a == 1 else -${num(F)}`, '        ct, st = math.cos(self.th), math.sin(self.th)', `        tmp = (force + ${num(pml)} * self.w * self.w * st) / 1.1`,
+        `        acc = (${num(g)} * st - ct * tmp) / (${num(half)} * (4 / 3 - 0.1 * ct * ct / 1.1))`, `        xacc = tmp - ${num(pml)} * acc * ct / 1.1`,
         rd ? '        self.hist = self.hist[1:] + [(self.x / 2.4, self.th / 0.2095)]' : null,
         '        self.x, self.v, self.th, self.w = self.x + 0.02 * self.v, self.v + 0.02 * xacc, self.th + 0.02 * self.w, self.w + 0.02 * acc', '        self.t += 1',
-        '        fell = abs(self.x) > 2.4 or abs(self.th) > 0.2095', '        return self.obs(), 1.0, fell or self.t >= self.max_steps', '',
-        '    def score(self, policy):', '        """How long its best moves keep the pole up, as a share of 200 steps, over 5 starts."""', '        total = 0',
+        '        fell = abs(self.x) > 2.4 or abs(self.th) > 0.2095', ...reward, '        return self.obs(), r, bool(fell) or self.t >= self.max_steps', '',
+        '    def score(self, policy):', `        """How long its best moves keep the pole up, as a share of ${steps} steps, over 5 starts."""`, '        total = 0',
         ...SEEDED(4242, ['for _ in range(5):', ...PLAY('    '), '    total += self.t']).map((l) => '        ' + l), '        return total / (5 * self.max_steps)'].filter((l) => l !== null);
     }
     if (w === 'catch') {
-      const px = ws.view === 'pixels';
-      return ['class World:', '    """A ball falls down a 5 x 8 board, one row a step, drifting sideways and bouncing off the walls; a paddle on the',
-        '    bottom row moves left, stays or moves right. +1 if the ball lands on the paddle, -1 if it misses."""', '    actions = ["left", "stay", "right"]', '',
-        '    def reset(self):', '        self.bx, self.by, self.vx, self.px = random.randrange(5), 0, random.randrange(3) - 1, 2', '        self.prev, self.caught = None, None', '        return self.obs()', '',
+      const px = ws.view === 'pixels', drift = ws.drift !== false;
+      const reward = f ? ['        caught, missed, moved = float(end and self.caught), float(end and not self.caught), float(moved)', '        dx, down, t = self.bx - self.px, self.by, self.t', ...ownLine]
+        : [`        r = ${rw.rMove ? `(${num(rw.rMove)} if moved else 0.0) + ` : ''}((${num(rw.rCatch)} if self.caught else ${num(rw.rMiss)}) if end else 0.0)`];
+      return [...head(['class World:', `    """A ball falls down a 5 x 8 board, one row a step${drift ? ', drifting sideways and bouncing off the walls' : ', straight down'}; a paddle on the`,
+        `    bottom row moves left, stays or moves right. ${pays(`${say(rw.rCatch)} if the ball lands on the paddle, ${say(rw.rMiss)} if it misses${rw.rMove ? `, ${say(rw.rMove)} for every move` : ''}.`)}"""`, '    actions = ["left", "stay", "right"]']), '',
+        '    def reset(self):', `        self.bx, self.by, self.vx, self.px = random.randrange(5), 0, ${drift ? 'random.randrange(3) - 1' : '0'}, 2`, '        self.prev, self.caught, self.t = None, None, 0', '        return self.obs()', '',
         ...(px ? ['    def picture(self, bx, by, px):', '        p = torch.zeros(8, 5)', '        p[by, bx] = 1.0                          # the ball', '        p[7, px] = 1.0                           # the paddle', '        return p', '',
-          '    def obs(self):                                # (2, 8, 5): the board now and a step ago', '        return torch.stack([self.picture(self.bx, self.by, self.px), self.picture(*(self.prev or (self.bx, self.by, self.px)))])']
-          : ['    def obs(self):                                # where the ball is, which way it drifts, where the paddle is', '        return torch.tensor([self.bx / 4, self.by / 7, float(self.vx), self.px / 4])']), '',
+          ...sense(['    def obs(self):                                # (2, 8, 5): the board now and a step ago', '        return torch.stack([self.picture(self.bx, self.by, self.px), self.picture(*(self.prev or (self.bx, self.by, self.px)))])'])]
+          : sense(['    def obs(self):                                # where the ball is, which way it drifts, where the paddle is', '        return torch.tensor([self.bx / 4, self.by / 7, float(self.vx), self.px / 4])'])), '',
         '    def step(self, a):', '        self.prev = (self.bx, self.by, self.px)', '        self.px = min(max(self.px + a - 1, 0), 4)', '        self.by, self.bx = self.by + 1, self.bx + self.vx',
         '        if self.bx < 0:                           # a wall turns it back', '            self.bx, self.vx = 1, 1', '        elif self.bx > 4:', '            self.bx, self.vx = 3, -1',
-        '        if self.by >= 7:', '            self.caught = self.bx == self.px', '            return self.obs(), 1.0 if self.caught else -1.0, True', '        return self.obs(), 0.0, False', '',
+        '        self.t += 1', '        moved, end = self.px != self.prev[2], self.by >= 7', '        if end:', '            self.caught = self.bx == self.px', ...reward, '        return self.obs(), r, end', '',
         '    def score(self, policy):', '        """The share of 40 balls its best moves catch (the same 40 every time)."""', '        caught = 0',
         ...SEEDED(4242, ['for _ in range(40):', ...PLAY('    '), '    caught += self.caught']).map((l) => '        ' + l), '        return caught / 40'];
     }
     // the maze
-    const def = NA.rl.MAZE_SET.find((m) => m.id === ws.maze) || NA.rl.MAZE_SET[0], view = ws.view, rnd = ws.random, slip = ws.slip || 0;
+    const def = NA.rl.MAZE_SET.find((m) => m.id === ws.maze) || NA.rl.MAZE_SET[0], view = ws.view, rnd = ws.random, slip = ws.slip || 0, most = ws.maxSteps > 0 ? ws.maxSteps : 80;
     const obs = view === 'square' ? ['    def obs(self):                                # which square it is on: one input per square', '        return F.one_hot(torch.tensor(self.s), len(self.maze.cell)).float()']
       : view === 'picture' ? ['    def obs(self):                                # (5, 6, 8): walls, pits, the goal, where it is, where it has been', '        m = self.maze', '        p = torch.zeros(5, m.H, m.W)',
         '        for i, c in enumerate(m.cell):', '            y, x = divmod(i, m.W)', '            if c in "#XG":', '                p["#XG".index(c), y, x] = 1.0', '            if i in self.seen:', '                p[4, y, x] = 1.0', '        p[3, self.s // m.W, self.s % m.W] = 1.0', '        return p']
@@ -861,6 +882,14 @@ def story():
           '        m, x0, y0 = self.maze, self.s % self.maze.W, self.s // self.maze.W', '        v, k = torch.zeros(104), 0', '        for dy in range(-2, 3):', '            for dx in range(-2, 3):', '                if dx == 0 and dy == 0:', '                    continue',
           '                x, y = x0 + dx, y0 + dy', '                c = m.cell[y * m.W + x] if 0 <= x < m.W and 0 <= y < m.H else "#"', '                if c in "#XG":', '                    v["#XG".index(c) * 24 + k] = 1.0', '                elif y * m.W + x in self.seen:', '                    v[72 + k] = 1.0', '                k += 1',
           '        gx, gy = m.goal % m.W - x0, m.goal // m.W - y0', '        if gx > 0:', '            v[96 + (gx > 2)] = 1.0', '        if gx < 0:', '            v[98 + (gx < -2)] = 1.0', '        if gy > 0:', '            v[100 + (gy > 2)] = 1.0', '        if gy < 0:', '            v[102 + (gy < -2)] = 1.0', '        return v'];
+    const fresh = !!f || !!rw.rNew;
+    const reward = f ? ['        goal, pit, wall = float(c == "G"), float(c == "X"), float(self.s == s0)', '        new = float(fresh and c not in "GX")',
+      '        closer = m.dist[s0] - m.dist[self.s] if c != "X" and m.dist[s0] >= 0 and m.dist[self.s] >= 0 else 0', '        dist, t = max(0, m.dist[self.s]), self.t', ...ownLine]
+      : [`        r = ${num(rw.rGoal)} if c == "G" else ${num(rw.rPit)} if c == "X" else ${num(rw.rStep)}`,
+        rw.rWall ? '        if self.s == s0:                          # walked into a wall' : null, rw.rWall ? `            r += ${num(rw.rWall)}` : null,
+        rw.rNew ? '        if fresh and c not in "GX":               # a square it had not been on' : null, rw.rNew ? `            r += ${num(rw.rNew)}` : null,
+        ws.closer ? '        if c != "X" and m.dist[s0] >= 0 and m.dist[self.s] >= 0:' : null, ws.closer ? `            r += ${num(rw.rCloser)} * (m.dist[s0] - m.dist[self.s])` : null];
+    const paysText = f ? `Its reward is your own: r = ${f.py}` : `${say(rw.rGoal)} at the goal, ${say(rw.rPit)} in a pit, ${say(rw.rStep)} a step${rw.rWall ? `, ${say(rw.rWall)} into a wall` : ''}${rw.rNew ? `, ${say(rw.rNew)} on a new square` : ''}`;
     return [`MAZE = [${def.rows.map((r) => JSON.stringify(r)).join(', ')}]   # ${def.name}`, 'DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]               # up, right, down, left', '', '',
       'class Maze:', '    def __init__(self, rows):', '        self.H, self.W, self.cell = len(rows), len(rows[0]), "".join(rows)', '        self.start, self.goal = self.cell.index("S"), self.cell.index("G")', '        self.dist = self.distances()', '',
       '    def move(self, s, a):                         # where move a leads from square s (into a wall or off the board: nowhere)', '        x, y = s % self.W + DIRS[a][0], s // self.W + DIRS[a][1]',
@@ -871,15 +900,14 @@ def story():
         '        g = [["#" if rng.random() < 0.22 else "." for _ in range(8)] for _ in range(6)]', '        for _ in range(1 + int(rng.random() * 3)):', '            g[int(rng.random() * 6)][int(rng.random() * 8)] = "X"',
         '        free = [(x, y) for y in range(6) for x in range(8) if g[y][x] == "."]', '        s, t = free[int(rng.random() * len(free))], free[int(rng.random() * len(free))]', '        if s == t:', '            continue',
         '        g[s[1]][s[0]], g[t[1]][t[0]] = "S", "G"', '        m = Maze(["".join(r) for r in g])', '        if m.dist[m.start] >= 8:', '            return m', '', ''] : []),
-      'class World:', `    """+1 at the goal, -1 in a pit, -0.02 a step, at most 80 steps${ws.closer ? '; and a bonus of 0.1 for every step that brings it' : '."""'}`,
-      ws.closer ? '    closer to the goal by the shortest safe way, as much off for every step away (reward shaping)."""' : null, '    actions = ["up", "right", "down", "left"]', '',
+      ...head(['class World:', `    """${paysText}, at most ${most} steps${!f && ws.closer ? `; and a bonus of ${String(+(+rw.rCloser).toPrecision(12))} for every step that brings it` : '."""'}`,
+        !f && ws.closer ? '    closer to the goal by the shortest safe way, as much off for every step away (reward shaping)."""' : null, '    actions = ["up", "right", "down", "left"]']), '',
       '    def __init__(self):', '        self.fixed = self.maze = Maze(MAZE)', rnd ? '        self.tests = [random_maze(random.Random(1234 + k)) for k in range(20)]   # 20 mazes it never trains on' : null, '',
       '    def reset(self, maze=None):', `        self.maze = maze or ${rnd ? 'random_maze(random)                      # a new random maze every episode' : 'self.fixed'}`, '        self.s, self.t, self.end = self.maze.start, 0, None', '        self.seen = {self.s}', '        return self.obs()', '',
-      ...obs, '',
+      ...sense(obs), '',
       '    def step(self, a):', slip ? `        if random.random() < ${slip}:                 # a slippery floor: sideways instead` : null, slip ? '            a = (a + random.choice((1, 3))) % 4' : null,
-      '        m, s0 = self.maze, self.s', '        self.s = m.move(self.s, a)', '        self.t += 1', '        self.seen.add(self.s)', '        c = m.cell[self.s]', '        r = 1.0 if c == "G" else -1.0 if c == "X" else -0.02', '        done = c in "GX" or self.t >= 80',
-      '        if done:', '            self.end = "goal" if c == "G" else "pit" if c == "X" else "lost"',
-      ws.closer ? '        if c != "X" and m.dist[s0] >= 0 and m.dist[self.s] >= 0:' : null, ws.closer ? '            r += 0.1 * (m.dist[s0] - m.dist[self.s])' : null, '        return self.obs(), r, done', '',
+      '        m, s0 = self.maze, self.s', '        self.s = m.move(self.s, a)', '        self.t += 1', fresh ? '        fresh = self.s not in self.seen' : null, '        self.seen.add(self.s)', '        c = m.cell[self.s]', `        done = c in "GX" or self.t >= ${most}`,
+      '        if done:', '            self.end = "goal" if c == "G" else "pit" if c == "X" else "lost"', ...reward, '        return self.obs(), r, done', '',
       '    def score(self, policy):', rnd ? '        """The share of 20 new mazes its best moves find the goal of."""' : slip ? '        """The share of 5 tries in which its best moves reach the goal."""' : '        """1 if its best moves reach the goal, 0 if not."""',
       `        mazes, reached = ${rnd ? 'self.tests' : `[self.fixed] * ${slip ? 5 : 1}`}, 0`,
       ...SEEDED(4242, ['for m in mazes:', '    o, done = self.reset(m), False', '    while not done:', '        o, _, done = self.step(policy(o))', '    reached += self.end == "goal"']).map((l) => '        ' + l), '        return reached / len(mazes)'].filter((l) => l !== null);
