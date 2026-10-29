@@ -137,7 +137,7 @@
     $('#btnLive').addEventListener('click', () => App.backToLive());
     $('#btnResume').addEventListener('click', () => App.play());
     new ResizeObserver(() => { CH.tlDirty = true; }).observe(CH.tl.parentElement);
-    new ResizeObserver(fitTagline).observe($('.topbar'));
+    new ResizeObserver(fitTagline).observe($('.topbar-sub')); // its own box: the window, or a button that appears beside it (Install app)
     if (document.fonts) document.fonts.ready.then(fitTagline);
 
     // events
