@@ -629,7 +629,7 @@
     if (kindSets.length > 1) {
       const tiles = el('div', { class: 'ds-tiles', role: 'radiogroup', 'aria-label': 'Dataset' });
       for (const [id, d] of kindSets) {
-        const c = document.createElement('canvas');
+        const c = el('canvas', { 'aria-hidden': 'true' }); // the button's name says what it shows
         const b = el('button', { class: 'ds-tile', type: 'button', role: 'radio', 'aria-checked': String(id === ds.id), title: `${d.label}: ${d.hint}`, onclick: () => App.applyPatch({ dataset: id }) }, c, el('span', { text: d.label }));
         tiles.appendChild(b);
         drawDatasetThumb(c, id);

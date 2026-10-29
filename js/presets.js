@@ -5,7 +5,7 @@
   // `try` entries may carry an action: a patch applied through App.applyPatch().
   const PRESETS = [
     {
-      id: 'neuron', group: 'Foundations', name: 'Single Neuron', tagline: 'One neuron draws one straight line.',
+      id: 'neuron', group: 'Foundations', name: 'Single Neuron', short: 'Neuron', tagline: 'One neuron draws one straight line.',
       data: { dataset: 'blobs', n: 400, noise: 0.15, trainRatio: 0.7, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [], act: 'tanh' },
       hyper: { lr: 0.3, optimizer: 'sgd', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -48,7 +48,7 @@
       ],
     },
     {
-      id: 'ring', group: 'Foundations', name: 'ReLU Polygon', tagline: 'Each ReLU is a fold along one line.',
+      id: 'ring', group: 'Foundations', name: 'ReLU Polygon', short: 'Polygon', tagline: 'Each ReLU is a fold along one line.',
       data: { dataset: 'circle', n: 400, noise: 0.1, trainRatio: 0.7, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [5], act: 'relu' },
       hyper: { lr: 0.02, optimizer: 'adam', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -70,7 +70,7 @@
       ],
     },
     {
-      id: 'spiral', group: 'Representation', name: 'Deep Spiral', tagline: 'Depth builds features out of features.',
+      id: 'spiral', group: 'Representation', name: 'Deep Spiral', short: 'Spiral', tagline: 'Depth builds features out of features.',
       data: { dataset: 'spiral', n: 500, noise: 0.1, trainRatio: 0.7, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [12, 12, 6], act: 'tanh' },
       hyper: { lr: 0.015, optimizer: 'adam', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -91,7 +91,7 @@
       ],
     },
     {
-      id: 'pinwheel', group: 'Representation', name: 'Three Classes', tagline: 'Softmax splits the plane three ways.',
+      id: 'pinwheel', group: 'Representation', name: 'Three Classes', short: '3 Classes', tagline: 'Softmax splits the plane three ways.',
       data: { dataset: 'pinwheel', n: 600, noise: 0.1, trainRatio: 0.7, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [12, 12], act: 'relu' },
       hyper: { lr: 0.01, optimizer: 'adam', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -111,7 +111,7 @@
       ],
     },
     {
-      id: 'sine', group: 'Function fitting', name: 'Curve Fitting', tagline: 'Sums of ReLUs approximate any curve.',
+      id: 'sine', group: 'Function fitting', name: 'Curve Fitting', short: 'Curves', tagline: 'Sums of ReLUs approximate any curve.',
       data: { dataset: 'sine', n: 200, noise: 0.1, trainRatio: 0.7, seed: 1 },
       arch: { hidden: [12], act: 'relu' },
       hyper: { lr: 0.02, optimizer: 'adam', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -133,7 +133,7 @@
       ],
     },
     {
-      id: 'digits', group: 'Perception', name: 'Digit Recognizer', tagline: 'Hidden neurons learn stroke templates.',
+      id: 'digits', group: 'Perception', name: 'Digit Recognizer', short: 'Digits', tagline: 'Hidden neurons learn stroke templates.',
       data: { dataset: 'digits', n: 2500, noise: 0, trainRatio: 0.8, seed: 1 },
       arch: { hidden: [16], act: 'relu' },
       hyper: { lr: 0.005, optimizer: 'adam', batch: 32, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -154,7 +154,7 @@
       ],
     },
     {
-      id: 'vanishing', group: 'Failure modes', name: 'Vanishing Gradients', tagline: 'Deep sigmoid stacks starve early layers.',
+      id: 'vanishing', group: 'Failure modes', name: 'Vanishing Gradients', short: 'Vanishing', tagline: 'Deep sigmoid stacks starve early layers.',
       data: { dataset: 'circle', n: 400, noise: 0.1, trainRatio: 0.7, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [8, 8, 8, 8, 8], act: 'sigmoid' },
       hyper: { lr: 1, optimizer: 'sgd', batch: 16, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -176,7 +176,7 @@
       ],
     },
     {
-      id: 'overfit', group: 'Failure modes', name: 'Overfitting', tagline: 'Memorizing noise instead of the shape.',
+      id: 'overfit', group: 'Failure modes', name: 'Overfitting', short: 'Overfit', tagline: 'Memorizing noise instead of the shape.',
       data: { dataset: 'moons', n: 100, noise: 0.9, trainRatio: 0.5, features: ['x1', 'x2'], seed: 1 },
       arch: { hidden: [32, 32], act: 'relu' },
       hyper: { lr: 0.01, optimizer: 'adam', batch: 10, reg: 'none', regRate: 0, init: 'auto', seed: 1 },
@@ -203,7 +203,7 @@
   // Models that are not plain MLPs open in their own lab (lab.js); `try` entries name lab actions.
   PRESETS.push(
     {
-      id: 'transformer', group: 'Language models', lab: 'transformer', name: 'Tiny Transformer', tagline: 'A small language model, from embeddings to attention.',
+      id: 'transformer', group: 'Language models', lab: 'transformer', name: 'Tiny Transformer', short: 'Tiny GPT', tagline: 'A small language model, from embeddings to attention.',
       meta: 'GPT-style · 2 layers × 4 heads · 28k parameters · 36 words',
       about: 'A GPT-style transformer trained to predict the next word of a tiny made-up language. The embedding layer turns each word into a vector of 32 numbers and adds a vector for its position; two blocks of self-attention and MLPs then let every word gather information from the words before it. The stories are built so that some words can only be predicted by looking back: in "alice likes tea . bob likes milk . alice drinks", the last word depends on what Alice likes, which changes from story to story.',
       look: [
@@ -224,7 +224,7 @@
       ],
     },
     {
-      id: 'pinn', group: 'Physics-informed', lab: 'pinn', name: 'Physics-Informed Network', tagline: 'A network that obeys a differential equation.',
+      id: 'pinn', group: 'Physics-informed', lab: 'pinn', name: 'Physics-Informed Network', short: 'PINN', tagline: 'A network that obeys a differential equation.',
       meta: 'PINN · 1–32–32–32–1 tanh · damped oscillator',
       about: 'Ten noisy measurements of a damped spring, all from its first third of a second. A plain network fits them and then has no idea what happens next. A physics-informed neural network (PINN) is trained on the same measurements plus one more loss: how far its curve is from obeying the oscillator equation u″ + 2ζω·u′ + ω²·u = 0 at 40 collocation points. Its derivatives u′ and u″ come from differentiating the network itself, exactly, so the equation can be checked anywhere, even where there is no data.',
       look: [
@@ -244,7 +244,7 @@
       ],
     },
     {
-      id: 'diffusion', group: 'Generative models', lab: 'diffusion', name: 'Diffusion Model', tagline: 'Making new data by learning to remove noise.',
+      id: 'diffusion', group: 'Generative models', lab: 'diffusion', name: 'Diffusion Model', short: 'Diffusion', tagline: 'Making new data by learning to remove noise.',
       meta: 'DDPM · 2-D points · 100 noise steps · 9k parameters',
       about: 'A denoising diffusion model, the idea behind modern image generators, shrunk to points in a plane. Training takes points of a pinwheel, adds a random amount of Gaussian noise and teaches a small network to predict exactly which noise was added. To generate, start from pure noise and repeatedly remove a little of the predicted noise: over 100 steps the points flow back onto the pinwheel, although no point is copied from the data.',
       look: [
@@ -264,7 +264,7 @@
       ],
     },
     {
-      id: 'yolo26', group: 'Perception', lab: 'yolo26', name: 'YOLO26 Object Detector', tagline: 'Every object in one pass, with no NMS.',
+      id: 'yolo26', group: 'Perception', lab: 'yolo26', name: 'YOLO26 Object Detector', short: 'YOLO26', tagline: 'Every object in one pass, with no NMS.',
       meta: 'YOLO26 layout · 385k parameters · 4 classes · 128 px',
       about: 'YOLO26 (Ultralytics, January 2026) is the newest of the YOLO real-time detectors. This is its layer list from yolo26.yaml (Conv, C3k2, SPPF and C2PSA blocks, an FPN-PAN neck and a detection head at three scales) at half the width of YOLO26n, trained here on 614,400 synthetic scenes of circles, triangles, squares and stars. Like the real model it has two heads: a one-to-many head that proposes several overlapping boxes per object and needs non-maximum suppression (NMS) to clean them up, and a one-to-one head trained to put exactly one box on each object, so its output is final as it comes.',
       look: [
@@ -283,7 +283,7 @@
       ],
     },
     {
-      id: 'radar', group: 'Signal processing', lab: 'radar', name: 'Radar Pulse Classifier', tagline: 'Naming a radar waveform from raw I/Q samples.',
+      id: 'radar', group: 'Signal processing', lab: 'radar', name: 'Radar Pulse Classifier', short: 'Radar', tagline: 'Naming a radar waveform from raw I/Q samples.',
       meta: '1-D CNN · 27k parameters · 6 classes · 256 I/Q samples',
       about: 'A receiver samples the radio spectrum as I/Q: 256 complex samples, 12.8 µs at 20 million samples a second. Somewhere in that window there may be a radar pulse, buried in noise. A small 1-D convolutional network reads the raw samples and names the waveform: an unmodulated pulse, a linear-FM chirp, a Barker-13 phase code, a Frank polyphase code, a Costas frequency-hopping code, or nothing but noise. It was trained on about 3 million synthetic signals with random timing, carrier offset, phase, code parameters and signal-to-noise ratio (−12 to +20 dB per sample).',
       look: [
@@ -304,7 +304,7 @@
 
   // The model builder: you choose the problem, the parts, the loss and the settings (lab-builder.js).
   PRESETS.push({
-    id: 'builder', group: 'Build your own', lab: 'builder', name: 'Model Builder', tagline: 'Build a model from parts, train it and compare runs.',
+    id: 'builder', group: 'Build your own', lab: 'builder', name: 'Model Builder', short: 'Builder', tagline: 'Build a model from parts, train it and compare runs.',
     meta: 'Dense · neurons · conv · attention · transformer · your own data · learning from rewards',
     about: 'Pick a problem, or make your own: place points, type a function or write some sentences. Then build a model for it by dragging parts between the input and the output: dense layers or single neurons, activations, dropout and layer norm, convolutions and pooling for pictures, attention and whole transformer blocks for sequences. Choose the loss, the optimizer, the learning rate and the rest, and train it right here. Each time you change something and train again, the new run is listed with what changed, so you can see what each change did.',
     look: [
@@ -334,7 +334,7 @@
   // Reinforcement learning (lab-rl.js): no examples of good play, only rewards. The two board games were made for this site.
   PRESETS.push(
     {
-      id: 'rl-maze', group: 'Reinforcement learning', lab: 'rl', example: 'maze', name: 'Maze Runner', tagline: 'Q-learning: finding a route from rewards alone.',
+      id: 'rl-maze', group: 'Reinforcement learning', lab: 'rl', example: 'maze', name: 'Maze Runner', short: 'Maze', tagline: 'Q-learning: finding a route from rewards alone.',
       meta: 'Q-learning · 30 squares × 4 moves · no network',
       about: 'An agent starts in the corner of a maze and is told nothing about it. Reaching the goal gives +1, a pit −1, and every step costs 0.02. It keeps a table of values, one for each move from each square: how much reward it expects if it makes that move and then plays its best. After every move it nudges that value toward what it got plus the best value of where it landed (Q-learning). The first lucky arrival at the goal teaches one square; the values then spread back, square by square, until the arrows show the shortest way through.',
       look: [
@@ -363,7 +363,7 @@
       ],
     },
     {
-      id: 'rl-mazes', group: 'Reinforcement learning', lab: 'rl', example: 'maze', model: 'net', name: 'Many Mazes', tagline: 'One Q-network for any maze, even ones it never saw.',
+      id: 'rl-mazes', group: 'Reinforcement learning', lab: 'rl', example: 'maze', model: 'net', name: 'Many Mazes', short: 'Mazes', tagline: 'One Q-network for any maze, even ones it never saw.',
       meta: 'DQN · 104–64–4 Q-network · 6,980 parameters',
       about: 'A Q-table has a row for each square of one maze, so it learns that maze and no other. This agent uses a network instead, and is not told its square at all: it sees the 24 squares around it (walls, pits, the goal, where it has already been) and which way the goal lies, and outputs a Q-value for each move. It learned by Q-learning on random mazes, easy ones first, with the two tricks DQN used to learn Atari games from the screen: a replay memory and a target network. It never trained on any of the named mazes, yet it gets through all five, and through most random mazes nobody has seen.',
       look: [

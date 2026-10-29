@@ -23,7 +23,16 @@
       canvas.addEventListener('pointermove', (e) => this.onMove(e));
       canvas.addEventListener('pointerleave', () => { this.hoverX = null; NA.tooltip.hide(); this.draw(); });
     }
-    set(data) { this.data = data; this.draw(); }
+    set(data) { this.data = data; this.describe(); this.draw(); }
+    // what a screen reader says for the chart: each line's name and where it ends (a label its owner set stays)
+    describe() {
+      const c = this.canvas;
+      if (c.hasAttribute('aria-label') && c.getAttribute('aria-label') !== this.said) return;
+      const lines = (this.data.series || []).filter((s) => s.points && s.points.length).map((s) => { const p = s.points[s.points.length - 1]; return `${s.name || 'a line'} ${(this.opts.format || ((v) => fmt(v, 3)))(p[1])} at ${NA.fmtCompact(p[0])}`; });
+      this.said = `${this.opts.label || 'Chart'}${lines.length ? ': ' + lines.join('; ') : ': nothing yet'}`;
+      c.setAttribute('role', 'img');
+      c.setAttribute('aria-label', this.said);
+    }
     frame() {
       const c = this.canvas, w = c.parentElement ? c.parentElement.clientWidth : 300;
       this.W = Math.max(120, w); this.H = this.opts.height || 150;

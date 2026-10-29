@@ -16,14 +16,14 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Neural Anatomy">
 <meta property="og:title" content="Neural Anatomy">
-<meta property="og:description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model and YOLO26: watch them learn, zoom down to the transistors, and build your own.">
+<meta property="og:description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model, YOLO26 and agents that learn from rewards: watch them learn, zoom down to the transistors, and build your own.">
 <meta property="og:url" content="https://ferns4.github.io/neural-anatomy/">
 <meta property="og:image" content="https://ferns4.github.io/neural-anatomy/og-image.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <script>try{var t=JSON.parse(localStorage.getItem("na.theme"));if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Neural Anatomy</title>
-<meta name="description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model and YOLO26: watch them learn, zoom down to the transistors, and build your own.">
+<meta name="description" content="Look inside neural networks, from a single neuron to a transformer, a diffusion model, YOLO26 and agents that learn from rewards: watch them learn, zoom down to the transistors, and build your own.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap">
@@ -101,7 +101,8 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .topbar { grid-area: top; display: flex; align-items: center; gap: 18px; padding-block: 10px 0; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); }
 .brand svg { flex: none; }
-.wordmark { font: italic 400 25px/1 var(--font-display); letter-spacing: -0.01em; white-space: nowrap; }
+.wordmark { margin: 0; font: italic 400 25px/1 var(--font-display); letter-spacing: -0.01em; white-space: nowrap; }
+.app-main { display: contents; } /* the main region, without a box of its own: its parts stay in the page's grid */
 .model-picker { display: flex; align-items: center; gap: 12px; padding: 6px 10px 6px 14px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); min-width: 0; text-align: left; }
 .model-picker:hover { border-color: var(--ink-2); }
 .mp-eyebrow { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
@@ -132,6 +133,11 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .hyper { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-left: auto; }
 .field { display: flex; flex-direction: column; gap: 2px; }
 .field > span { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); white-space: nowrap; }
+.keep-case { text-transform: none; }
+/* a label's short form, for a phone's narrow bars (NA.shortLabel) */
+.lbl-short { display: none; }
+[data-layout="mobile"] .lbl-long { display: none; }
+[data-layout="mobile"] .lbl-short { display: inline; }
 .field select, .field input { height: 28px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel); padding: 0 6px; font-size: 12.5px; }
 .field input[type="number"] { width: 56px; font-family: var(--font-mono); }
 .seed-row { display: flex; gap: 4px; }
@@ -619,7 +625,7 @@ body[data-mode="lab"] .lab-hyper { display: flex; }
 [data-layout="mobile"] .arch-merge { height: 34px; padding: 0 12px 0 10px; }
 .arch-crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
 .arch-crumbs::-webkit-scrollbar { display: none; }
-.arch-crumb { padding: 3px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); color: var(--ink-2); font: 500 12px var(--font-ui); }
+.arch-crumb { min-height: 24px; padding: 3px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); color: var(--ink-2); font: 500 12px var(--font-ui); }
 .arch-crumb:hover { color: var(--ink); border-color: var(--ink-2); }
 .arch-crumb.is-here { background: var(--ink); color: var(--panel); border-color: var(--ink); cursor: default; }
 .arch-sep { color: var(--muted); }
@@ -809,7 +815,7 @@ body[data-lab="yolo26"] #btnFF, body[data-lab="radar"] #btnFF { display: none; }
 .vocab-group { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; align-items: baseline; }
 .vocab-k { font-size: 11px; color: var(--muted); }
 .vocab-words { display: flex; flex-wrap: wrap; gap: 4px; }
-.vocab-w { padding: 2px 7px; border: 1px solid var(--line-2); border-left: 3px solid var(--tok); border-radius: 5px; background: var(--panel); font: 500 11.5px var(--font-mono); color: var(--ink); }
+.vocab-w { min-height: 24px; padding: 2px 7px; border: 1px solid var(--line-2); border-left: 3px solid var(--tok); border-radius: 5px; background: var(--panel); font: 500 11.5px var(--font-mono); color: var(--ink); }
 .vocab-w:hover { border-color: var(--ink-2); border-left-color: var(--tok); }
 .seg button.is-off { text-decoration: line-through; opacity: 0.6; }
 .seg button[style*="--hc"][aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--hc), 0 0 0 1px var(--line-2); }
@@ -1094,20 +1100,26 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
 body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .app { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 8px; padding-block: 0 70px; }
 [data-layout="mobile"] .topbar { flex: none; flex-wrap: nowrap; gap: 8px; padding-block: 8px 0; }
-[data-layout="mobile"] .wordmark, [data-layout="mobile"] .mp-eyebrow, [data-layout="mobile"] .mp-arch, [data-layout="mobile"] .topbar-sub { display: none; }
+[data-layout="mobile"] .mp-eyebrow, [data-layout="mobile"] .mp-arch, [data-layout="mobile"] .topbar-sub { display: none; }
 [data-layout="mobile"] .model-picker { order: 0; flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 12px 0 14px; justify-content: space-between; }
 [data-layout="mobile"] .mp-name { overflow: hidden; text-overflow: ellipsis; }
 [data-layout="mobile"] .topbar-actions { margin-left: 0; }
 [data-layout="mobile"] .icon-btn { width: 40px; height: 40px; border-radius: 10px; }
+/* a 360 px phone: tighter gaps leave the model's short name about 74 px */
+@media (max-width: 379px) {
+  [data-layout="mobile"] .topbar { gap: 6px; }
+  [data-layout="mobile"] .model-picker { gap: 6px; padding: 0 10px 0 12px; }
+  [data-layout="mobile"] .topbar-actions { gap: 4px; }
+}
 [data-layout="mobile"] .controlbar { flex: none; flex-wrap: nowrap; gap: 8px; padding: 6px 8px; }
 [data-layout="mobile"] .transport { gap: 4px; }
 [data-layout="mobile"] .play-btn { min-width: 0; width: 48px; height: 40px; padding: 0; }
-[data-layout="mobile"] .pl-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+[data-layout="mobile"] .pl-label, [data-layout="mobile"] .wordmark { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 [data-layout="mobile"] .ff-progress { left: 46px; right: 46px; }
 [data-layout="mobile"] #btnFF { display: none; }
 [data-layout="mobile"] .readouts { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; justify-content: flex-end; gap: 10px; }
 [data-layout="mobile"] .readouts > :not(.ro-keep) { display: none; }
-[data-layout="mobile"] .readout { min-width: auto; flex: 1 1 auto; overflow: hidden; }
+[data-layout="mobile"] .readout { min-width: min-content; flex: 1 1 var(--lb, auto); overflow: hidden; }
 [data-layout="mobile"] .readout .ro-label { width: 0; min-width: 100%; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.03em; }
 [data-layout="mobile"] .ro-value { white-space: nowrap; }
 [data-layout="mobile"] .ro-value { font-size: 13px; }
@@ -1198,8 +1210,10 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .ip-body { max-height: 32vh; padding: 0 10px 10px; }
 [data-layout="mobile"] .lab-center .lab-stage { flex: 1 1 0; height: auto; min-height: 220px; }
 [data-layout="mobile"] .lab-stage canvas { touch-action: none; }
-/* the RL lab with its model drawn under the board: a taller stage, and the column scrolls (a finger on the board scrolls too) */
-body[data-layout="mobile"][data-lab="rl"] .lab-center { overflow-y: auto; overscroll-behavior: contain; }
+/* a lab's column scrolls when its parts do not fit, rather than squeezing them: a squeezed info panel drew its head
+   over the legend. The RL lab, with its model drawn under the board, has a taller stage (a finger on the board scrolls too) */
+body[data-layout="mobile"]:not([data-lab="builder"]) .lab-center { overflow-y: auto; overscroll-behavior: contain; }
+body[data-layout="mobile"]:not([data-lab="builder"]) .lab-center > :not(.lab-stage) { flex-shrink: 0; }
 [data-layout="mobile"] .lab-center .lab-stage.rl-tall { flex: none; height: max(540px, 72vh); }
 [data-layout="mobile"] .rl-stage canvas { touch-action: pan-y; }
 [data-layout="mobile"] .ip-title { font-size: 13px; }
@@ -1325,7 +1339,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
 [data-layout="mobile"] .predict-q, [data-layout="mobile"] .predict-result { font-size: 13.5px; }
 /* model builder: challenges, learning-rate sweep, run comparison */
 .bd-ch { margin-bottom: 4px; }
-.bd-ch-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 10px; border-bottom: 1px solid var(--line); }
+.bd-ch-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 2px 0 0; } /* the section below draws the one line under it */
 .bd-ch-row .sec-note { margin: 0; }
 .bd-ch-card { padding: 11px 12px 12px; margin-bottom: 0; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); }
 .bd-ch-card.is-won { border-color: var(--good); }
@@ -1468,6 +1482,29 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   [data-layout="mobile"] .net-legend { display: none; }
   [data-layout="mobile"] .topbar { padding-block: 4px 0; }
 }
+/* a phone on its side: the tab bar becomes a rail down the left edge, so the screen keeps its height for the model */
+@media (orientation: landscape) and (max-height: 500px) {
+  [data-layout="mobile"] .app { padding-block: 0 8px; padding-left: calc(80px + env(safe-area-inset-left, 0px)); }
+  [data-layout="mobile"] .mnav { grid-template-columns: none; grid-template-rows: repeat(4, 1fr); top: 0; right: auto; width: calc(72px + env(safe-area-inset-left, 0px)); height: auto; padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); border-top: 0; border-right: 1px solid var(--line); }
+  .mnav button[aria-current="page"]::before { top: 26%; bottom: 26%; left: auto; right: 0; width: 2.5px; height: auto; border-radius: 3px 0 0 3px; }
+  [data-layout="mobile"] .controlbar { padding-block: 4px; }
+  [data-layout="mobile"] .toast { bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+}
+/* any touch screen, a tablet in the desktop layout too: every control at least 32 px each way (plain selectors
+   leave a phone's own bigger sizes alone). The network's header controls keep their drawn size, since its layout
+   is measured around them, and get an invisible margin as their target instead; the builder's dots grow to a
+   phone's size, with the margin they already have */
+@media (pointer: coarse) {
+  select, .field input:not([type="range"]) { min-height: 34px; }
+  .seg button, .chip { min-height: 32px; }
+  .seg button, .tok { min-width: 32px; }
+  .btn { min-height: 34px; }
+  .icon-btn, .seed-row .icon-btn { min-width: 36px; min-height: 36px; }
+  .bd-nbtn, .bd-card-x, .zc-btn { min-width: 32px; min-height: 32px; }
+  [data-layout] .bd-dot { width: 22px; height: 22px; }
+  [data-layout] .lh-chip, [data-layout] .lh .mini-btn, [data-layout] .depth-ctl .mini-btn, [data-layout] .zc-level { position: relative; }
+  [data-layout] .lh-chip::after, [data-layout] .lh .mini-btn::after, [data-layout] .depth-ctl .mini-btn::after, [data-layout] .zc-level::after, .add-layer::after { content: ""; position: absolute; inset: -7px; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
@@ -1486,7 +1523,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
         </g>
         <g fill="var(--ink)"><circle cx="4" cy="7" r="2.6"/><circle cx="4" cy="19" r="2.6"/><circle cx="15" cy="4" r="2.6"/><circle cx="15" cy="13" r="2.6"/><circle cx="15" cy="22" r="2.6"/><circle cx="26" cy="13" r="3"/></g>
       </svg>
-      <span class="wordmark">Neural Anatomy</span>
+      <h1 class="wordmark">Neural Anatomy</h1>
     </div>
     <button class="model-picker" id="modelPicker" type="button" aria-haspopup="dialog" aria-controls="zoo">
       <span class="mp-eyebrow">Model</span>
@@ -1514,6 +1551,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
     </div>
   </header>
 
+  <main class="app-main">
   <section class="controlbar" aria-label="Training controls">
     <div class="transport">
       <button class="icon-btn" id="btnReset" type="button" title="Re-initialize the weights (R)" aria-label="Re-initialize the weights">
@@ -1635,6 +1673,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   <section class="panel lab-panel lab-left" id="labLeft" aria-label="Lab inputs"></section>
   <section class="panel lab-panel lab-center" id="labCenter" aria-label="Lab model"></section>
   <aside class="panel lab-panel lab-right" id="labRight" aria-label="Lab inspector"></aside>
+  </main>
 
   <footer class="timeline" aria-label="Training history">
     <div class="tl-head"><span class="tl-title">History</span><span class="tl-status" id="tlStatus">0 steps</span></div>
@@ -1732,69 +1771,69 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=dcbc4feb0c"></script>
-<script src="js/engine.js?v=dcbc4feb0c"></script>
-<script src="js/data.js?v=dcbc4feb0c"></script>
-<script src="js/presets.js?v=dcbc4feb0c"></script>
-<script src="js/app.js?v=dcbc4feb0c"></script>
-<script src="js/ui.js?v=dcbc4feb0c"></script>
-<script src="js/network-view.js?v=dcbc4feb0c"></script>
-<script src="js/data-view.js?v=dcbc4feb0c"></script>
-<script src="js/hidden-space.js?v=dcbc4feb0c"></script>
-<script src="js/landscape.js?v=dcbc4feb0c"></script>
-<script src="js/charts.js?v=dcbc4feb0c"></script>
-<script src="js/insights.js?v=dcbc4feb0c"></script>
-<script src="js/inspector.js?v=dcbc4feb0c"></script>
-<script src="js/walkthrough.js?v=dcbc4feb0c"></script>
-<script src="js/lab.js?v=dcbc4feb0c"></script>
-<script src="js/archview.js?v=dcbc4feb0c"></script>
-<script src="js/arch-deep.js?v=dcbc4feb0c"></script>
-<script src="js/net-deep.js?v=dcbc4feb0c"></script>
-<script src="js/circuit.js?v=dcbc4feb0c"></script>
-<script src="js/scale-view.js?v=dcbc4feb0c"></script>
-<script src="js/lm-data.js?v=dcbc4feb0c"></script>
-<script src="js/transformer.js?v=dcbc4feb0c"></script>
-<script src="js/lm-weights.js?v=dcbc4feb0c"></script>
-<script src="js/arch-transformer.js?v=dcbc4feb0c"></script>
-<script src="js/lab-transformer.js?v=dcbc4feb0c"></script>
-<script src="js/pinn.js?v=dcbc4feb0c"></script>
-<script src="js/pinn-weights.js?v=dcbc4feb0c"></script>
-<script src="js/arch-pinn.js?v=dcbc4feb0c"></script>
-<script src="js/lab-pinn.js?v=dcbc4feb0c"></script>
-<script src="js/diffusion.js?v=dcbc4feb0c"></script>
-<script src="js/diffusion-weights.js?v=dcbc4feb0c"></script>
-<script src="js/arch-diffusion.js?v=dcbc4feb0c"></script>
-<script src="js/lab-diffusion.js?v=dcbc4feb0c"></script>
-<script src="js/yolo.js?v=dcbc4feb0c"></script>
-<script src="js/arch-yolo.js?v=dcbc4feb0c"></script>
-<script src="js/lab-yolo.js?v=dcbc4feb0c"></script>
-<script src="js/radar.js?v=dcbc4feb0c"></script>
-<script src="js/radar-weights.js?v=dcbc4feb0c"></script>
-<script src="js/arch-radar.js?v=dcbc4feb0c"></script>
-<script src="js/lab-radar.js?v=dcbc4feb0c"></script>
-<script src="js/rl.js?v=dcbc4feb0c"></script>
-<script src="js/rl-weights.js?v=dcbc4feb0c"></script>
-<script src="js/rl-envs.js?v=dcbc4feb0c"></script>
-<script src="js/rl-evolve.js?v=dcbc4feb0c"></script>
-<script src="js/arch-rl.js?v=dcbc4feb0c"></script>
-<script src="js/lab-rl.js?v=dcbc4feb0c"></script>
-<script src="js/builder-engine.js?v=dcbc4feb0c"></script>
-<script src="js/builder-rl.js?v=dcbc4feb0c"></script>
-<script src="js/classic-ml.js?v=dcbc4feb0c"></script>
-<script src="js/builder-tasks.js?v=dcbc4feb0c"></script>
-<script src="js/builder-challenges.js?v=dcbc4feb0c"></script>
-<script src="js/part-guide.js?v=dcbc4feb0c"></script>
-<script src="js/builder-insights.js?v=dcbc4feb0c"></script>
-<script src="js/builder-viz.js?v=dcbc4feb0c"></script>
-<script src="js/builder-py.js?v=dcbc4feb0c"></script>
-<script src="js/arch-builder.js?v=dcbc4feb0c"></script>
-<script src="js/lab-builder.js?v=dcbc4feb0c"></script>
-<script src="js/mobile.js?v=dcbc4feb0c"></script>
-<script src="js/share.js?v=dcbc4feb0c"></script>
-<script src="js/glossary.js?v=dcbc4feb0c"></script>
-<script src="js/guide.js?v=dcbc4feb0c"></script>
-<script src="js/tour.js?v=dcbc4feb0c"></script>
-<script src="js/chrome.js?v=dcbc4feb0c"></script>
-<script src="pwa.js?v=dcbc4feb0c"></script>
+<script src="js/core.js?v=242b0f2cef"></script>
+<script src="js/engine.js?v=242b0f2cef"></script>
+<script src="js/data.js?v=242b0f2cef"></script>
+<script src="js/presets.js?v=242b0f2cef"></script>
+<script src="js/app.js?v=242b0f2cef"></script>
+<script src="js/ui.js?v=242b0f2cef"></script>
+<script src="js/network-view.js?v=242b0f2cef"></script>
+<script src="js/data-view.js?v=242b0f2cef"></script>
+<script src="js/hidden-space.js?v=242b0f2cef"></script>
+<script src="js/landscape.js?v=242b0f2cef"></script>
+<script src="js/charts.js?v=242b0f2cef"></script>
+<script src="js/insights.js?v=242b0f2cef"></script>
+<script src="js/inspector.js?v=242b0f2cef"></script>
+<script src="js/walkthrough.js?v=242b0f2cef"></script>
+<script src="js/lab.js?v=242b0f2cef"></script>
+<script src="js/archview.js?v=242b0f2cef"></script>
+<script src="js/arch-deep.js?v=242b0f2cef"></script>
+<script src="js/net-deep.js?v=242b0f2cef"></script>
+<script src="js/circuit.js?v=242b0f2cef"></script>
+<script src="js/scale-view.js?v=242b0f2cef"></script>
+<script src="js/lm-data.js?v=242b0f2cef"></script>
+<script src="js/transformer.js?v=242b0f2cef"></script>
+<script src="js/lm-weights.js?v=242b0f2cef"></script>
+<script src="js/arch-transformer.js?v=242b0f2cef"></script>
+<script src="js/lab-transformer.js?v=242b0f2cef"></script>
+<script src="js/pinn.js?v=242b0f2cef"></script>
+<script src="js/pinn-weights.js?v=242b0f2cef"></script>
+<script src="js/arch-pinn.js?v=242b0f2cef"></script>
+<script src="js/lab-pinn.js?v=242b0f2cef"></script>
+<script src="js/diffusion.js?v=242b0f2cef"></script>
+<script src="js/diffusion-weights.js?v=242b0f2cef"></script>
+<script src="js/arch-diffusion.js?v=242b0f2cef"></script>
+<script src="js/lab-diffusion.js?v=242b0f2cef"></script>
+<script src="js/yolo.js?v=242b0f2cef"></script>
+<script src="js/arch-yolo.js?v=242b0f2cef"></script>
+<script src="js/lab-yolo.js?v=242b0f2cef"></script>
+<script src="js/radar.js?v=242b0f2cef"></script>
+<script src="js/radar-weights.js?v=242b0f2cef"></script>
+<script src="js/arch-radar.js?v=242b0f2cef"></script>
+<script src="js/lab-radar.js?v=242b0f2cef"></script>
+<script src="js/rl.js?v=242b0f2cef"></script>
+<script src="js/rl-weights.js?v=242b0f2cef"></script>
+<script src="js/rl-envs.js?v=242b0f2cef"></script>
+<script src="js/rl-evolve.js?v=242b0f2cef"></script>
+<script src="js/arch-rl.js?v=242b0f2cef"></script>
+<script src="js/lab-rl.js?v=242b0f2cef"></script>
+<script src="js/builder-engine.js?v=242b0f2cef"></script>
+<script src="js/builder-rl.js?v=242b0f2cef"></script>
+<script src="js/classic-ml.js?v=242b0f2cef"></script>
+<script src="js/builder-tasks.js?v=242b0f2cef"></script>
+<script src="js/builder-challenges.js?v=242b0f2cef"></script>
+<script src="js/part-guide.js?v=242b0f2cef"></script>
+<script src="js/builder-insights.js?v=242b0f2cef"></script>
+<script src="js/builder-viz.js?v=242b0f2cef"></script>
+<script src="js/builder-py.js?v=242b0f2cef"></script>
+<script src="js/arch-builder.js?v=242b0f2cef"></script>
+<script src="js/lab-builder.js?v=242b0f2cef"></script>
+<script src="js/mobile.js?v=242b0f2cef"></script>
+<script src="js/share.js?v=242b0f2cef"></script>
+<script src="js/glossary.js?v=242b0f2cef"></script>
+<script src="js/guide.js?v=242b0f2cef"></script>
+<script src="js/tour.js?v=242b0f2cef"></script>
+<script src="js/chrome.js?v=242b0f2cef"></script>
+<script src="pwa.js?v=242b0f2cef"></script>
 </body>
 </html>

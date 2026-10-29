@@ -472,7 +472,7 @@
       root.append(section('Loss function', lossBtn, el('p', { class: 'sec-note', text: Ls.hint })));
       const mk = (title, opts, note, legend) => {
         const c = el('canvas');
-        const chart = new C.LineChart(c, opts);
+        const chart = new C.LineChart(c, Object.assign({ label: title }, opts));
         root.append(section(title, el('div', { class: 'chart-box' }, c), legend || null, note ? el('p', { class: 'sec-note', text: note }) : null));
         return chart;
       };

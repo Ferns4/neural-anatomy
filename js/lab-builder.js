@@ -629,7 +629,7 @@
       this.challenge = BC.byId[ch] ? ch : null;
     }
     document.body.classList.add('builder-on');
-    this.ro = UI.readouts(ui.readouts, [{ key: 'run', label: 'Run', keep: true }, { key: 'step', label: 'Step', keep: true }, { key: 'loss', label: 'Train loss' }, { key: 'val', label: 'Val. loss' }, { key: 'metric', label: 'Val. score', keep: true }, { key: 'params', label: 'Parameters' }]);
+    this.ro = UI.readouts(ui.readouts, [{ key: 'run', label: 'Run' }, { key: 'step', label: 'Step', keep: true }, { key: 'loss', label: 'Train loss' }, { key: 'val', label: 'Val. loss' }, { key: 'metric', label: 'Val. score', short: 'Score', keep: true }, { key: 'params', label: 'Parameters' }]);
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
@@ -840,7 +840,7 @@
     if (switched) this.setProblem(p.world);
     if (this.ps().method === p.method) NA.ui.toast.show(`${switched ? `${BT.byId[p.world].label}, learning from rewards: ` : ''}it learns by ${NA.brl.METHODS[p.method].label} already.`);
     else this.setMethod(p.method);
-    if (switched) NA.ui.toast.show(`${p.label} learns from rewards, so the problem is now ${BT.byId[p.world].label.toLowerCase()}, learning by ${NA.brl.METHODS[p.method].label}. Undo brings your setup back.`);
+    if (switched) NA.ui.toast.show(`${p.label} learns from rewards, so the problem switches to “${BT.byId[p.world].label}”, learning by ${NA.brl.METHODS[p.method].label}. Undo brings your setup back.`);
     this.selectBlock({ kind: 'output', id: 'output' }, true);
   };
   BL.addPart = function (p) {

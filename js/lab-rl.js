@@ -411,9 +411,9 @@
     clear(root);
     this.ro = UI.readouts(root, S.id === 'evolve' ? EVO.readoutDefs() : S.id === 'maze'
       ? (S.model === 'net'
-        ? [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'Its best move on every square, from S, on the maze shown' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }]
-        : [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'How often its best route (no exploring) reaches the goal of the maze shown, over 20 tries' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }, { key: 'c', label: 'Route', title: 'Steps on its best route through the maze shown' }])
-      : [{ key: 'n', label: 'Games', keep: true }, { key: 'a', label: 'Beats random', keep: true, title: 'Share of games it wins against a player who moves at random' }, { key: 'b', label: 'Beats rules', title: 'Share it wins against a rule-follower: win if it can, block if it must' }, { key: 'c', label: S.model === 'table' ? 'Positions' : 'Parameters' }]);
+        ? [{ key: 'n', label: 'Episodes', short: 'Tries', keep: true }, { key: 'a', label: 'This maze', short: 'Maze', keep: true, title: 'Its best move on every square, from S, on the maze shown' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }]
+        : [{ key: 'n', label: 'Episodes', short: 'Tries', keep: true }, { key: 'a', label: 'This maze', short: 'Maze', keep: true, title: 'How often its best route (no exploring) reaches the goal of the maze shown, over 20 tries' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }, { key: 'c', label: 'Route', title: 'Steps on its best route through the maze shown' }])
+      : [{ key: 'n', label: 'Games', keep: true }, { key: 'a', label: 'Beats random', short: 'Wins', keep: true, title: 'Share of games it wins against a player who moves at random' }, { key: 'b', label: 'Beats rules', title: 'Share it wins against a rule-follower: win if it can, block if it must' }, { key: 'c', label: S.model === 'table' ? 'Positions' : 'Parameters' }]);
   };
   LAB.readouts = function () {
     const S = this.S, h = S.history[S.history.length - 1];

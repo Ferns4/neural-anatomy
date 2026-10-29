@@ -124,7 +124,7 @@
   DF.activate = function (preset, ui) {
     this.ui = ui; this.preset = preset;
     if (!this.model) this.load(this.dataset);
-    this.ro = UI.readouts(ui.readouts, [{ key: 'step', label: 'Step', keep: true }, { key: 'loss', label: 'Loss' }, { key: 't', label: 'Noise step', keep: true }]);
+    this.ro = UI.readouts(ui.readouts, [{ key: 'step', label: 'Step', keep: true }, { key: 'loss', label: 'Loss' }, { key: 't', label: 'Noise step', short: 'Noise', keep: true }]);
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
@@ -198,7 +198,7 @@
     // labelled settings fields, styled like the rest of the page's dropdowns (and tall enough to tap on a phone)
     this.stepsSel = UI.select([100, 50, 25, 10].map((v) => ({ value: v, label: String(v) })), this.steps, (v) => { this.steps = +v; this.setView('generate'); this.generate(false); });
     const count = UI.select([300, 600, 1000].map((v) => ({ value: v, label: String(v) })), this.nSamples, (v) => { this.nSamples = +v; this.generate(false); });
-    this.schedCanvas = el('canvas');
+    this.schedCanvas = el('canvas', { role: 'img', 'aria-label': 'Noise schedule: at each noise step t, how much of the data is kept (√ᾱ_t, from 1 down to almost 0) and how much is noise (√(1 − ᾱ_t), from 0 up to almost 1)' });
     body.append(
       UI.section('Training data', UI.note('The model learns this distribution of 2-D points, then has to produce new points that look like it.'), this.dsTiles),
       UI.section('Generate', el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-primary', type: 'button', onclick: () => { this.setView('generate'); if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); this.generate(false); } }, 'Generate new points')),

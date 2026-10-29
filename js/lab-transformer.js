@@ -220,11 +220,11 @@
     this.buildHyper(ui.hyper);
     this.ro = UI.readouts(ui.readouts, [
       { key: 'step', label: 'Step', keep: true }, { key: 'train', label: 'Train loss' }, { key: 'val', label: 'Val. loss' },
-      { key: 'lookup', label: 'Lookups', keep: true, title: 'Validation stories: the right drink after "N drinks"' }, { key: 'agree', label: 'Agreement', title: 'Validation stories: verb number matches the subject' },
+      { key: 'lookup', label: 'Lookups', short: 'Lookup', keep: true, title: 'Validation stories: the right drink after "N drinks"' }, { key: 'agree', label: 'Agreement', title: 'Validation stories: verb number matches the subject' },
     ]);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
-    this.tabs = UI.tabs(ui.right, [{ id: 'overview', label: 'Overview' }, { id: 'attention', label: 'Attention' }, { id: 'embed', label: 'Embeddings' }, { id: 'lens', label: 'Logit lens' }, { id: 'training', label: 'Training' }], (id, body) => this.buildTab(id, body));
+    this.tabs = UI.tabs(ui.right, [{ id: 'overview', label: 'Overview' }, { id: 'attention', label: 'Attention' }, { id: 'embed', label: 'Embeddings', short: 'Embed.' }, { id: 'lens', label: 'Logit lens' }, { id: 'training', label: 'Training' }], (id, body) => this.buildTab(id, body));
     this.offTheme = theme.onChange(() => { this.dirty = true; this.inspDirty = true; this.leftDirty = true; });
     this.dirty = this.inspDirty = this.leftDirty = true;
   };

@@ -96,7 +96,7 @@
   RL.activate = function (preset, ui) {
     this.ui = ui; this.preset = preset;
     this.init();
-    this.ro = UI.readouts(ui.readouts, [{ key: 'n', label: 'Signal', keep: true }, { key: 'sent', label: 'Sent' }, { key: 'said', label: 'Network says' }, { key: 'score', label: 'Live score', keep: true }]);
+    this.ro = UI.readouts(ui.readouts, [{ key: 'n', label: 'Signal', keep: true }, { key: 'sent', label: 'Sent' }, { key: 'said', label: 'Network says' }, { key: 'score', label: 'Live score', short: 'Score', keep: true }]);
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);

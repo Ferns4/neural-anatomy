@@ -169,6 +169,8 @@
   };
 
   // ---------------------------------------------------------------- DOM
+  // A label with a shorter form for a phone's narrow bars: both are in the page and the layout shows one.
+  NA.shortLabel = (label, short) => (short && short !== label ? [el('span', { class: 'lbl-long', text: label }), el('span', { class: 'lbl-short', text: short })] : [label]);
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
     if (attrs) {

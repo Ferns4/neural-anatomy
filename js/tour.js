@@ -15,7 +15,7 @@
       { sel: '#btnPlay', title: 'Train it', text: 'Train runs gradient descent, Step makes a single update so you can see what changes, and the settings button holds the learning rate, optimizer, regularization and dropout.' },
       { sel: '#dataPanel', screen: 'data', title: 'What it learned', text: 'The output over the whole input space, with the data on top. Hidden space shows how each layer rearranges the data; Loss landscape, the terrain training walked down.' },
       { sel: '#inspTabs', screen: 'insp', title: 'Explanations', text: 'Insights explains what is going on and suggests experiments, some asking you to predict the result first. Neuron and Layer show the numbers; Backprop works through one training step by hand.' },
-      { sel: '.timeline', title: 'Rewind', text: 'Training is recorded as it goes: drag the history to see the network as it was at any step.' },
+      { sel: '.timeline', screen: 'network', title: 'Rewind', text: 'Training is recorded as it goes: drag the history to see the network as it was at any step.' },
       { sel: '#buildBtn', title: 'Build your own', text: 'Put a model together from layers, pick a problem (or upload a table), train it and compare runs. Challenges set goals to reach.' },
     ],
     builder: [
@@ -46,8 +46,17 @@
     if (!T.root) build();
     T.root.hidden = false;
     document.body.classList.add('touring');
+    T.ok = reachable();
     T.show(0, 1);
   };
+  // which steps will show, walking forward as show() does (on a phone a step with no screen of its own stays on the
+  // one the step before chose), so the count runs "1 of 7" to "7 of 7" when a part is not on this screen
+  function reachable() {
+    const was = phone() && NA.mobile.screen;
+    const ok = T.steps.map((s) => { if (phone() && s.screen && NA.mobile.go) NA.mobile.go(s.screen); return visible(document.querySelector(s.sel)); });
+    if (was) NA.mobile.go(was);
+    return ok;
+  }
   T.end = function () {
     if (!T.root || T.root.hidden) return;
     T.root.hidden = true;
@@ -98,11 +107,12 @@
       if (!visible(target)) continue;
       T.i = k; T.target = target;
       target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      T.count.textContent = `${k + 1} of ${T.steps.length}`;
+      const seen = T.ok.slice(0, k + 1).filter(Boolean).length, all = T.ok.filter(Boolean).length;
+      T.count.textContent = `${Math.max(1, seen)} of ${Math.max(all, seen)}`;
       T.title.textContent = s.title;
       T.text.textContent = s.text;
-      T.back.disabled = k === 0;
-      T.next.textContent = k >= T.steps.length - 1 ? 'Done' : 'Next';
+      T.back.disabled = k <= T.ok.indexOf(true);
+      T.next.textContent = k >= T.ok.lastIndexOf(true) ? 'Done' : 'Next';
       place();
       T.next.focus();
       return;

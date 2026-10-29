@@ -137,6 +137,8 @@
     $('#btnLive').addEventListener('click', () => App.backToLive());
     $('#btnResume').addEventListener('click', () => App.play());
     new ResizeObserver(() => { CH.tlDirty = true; }).observe(CH.tl.parentElement);
+    new ResizeObserver(fitTagline).observe($('.topbar'));
+    if (document.fonts) document.fonts.ready.then(fitTagline);
 
     // events
     App.on('training', syncTransport);
@@ -180,11 +182,19 @@
   }
   function syncHeader() {
     const p = App.preset, net = App.net;
-    $('#mpName').textContent = p.name;
+    $('#mpName').replaceChildren(...NA.shortLabel(p.name, p.short));
+    $('#modelPicker').setAttribute('aria-label', `Model: ${p.name}`);
     $('#buildBtn').setAttribute('aria-current', String(p.id === 'builder'));
     $('#mpArch').textContent = App.mode === 'lab' && NA.labHost.lab ? NA.labHost.lab.archText() : net.sizes.join(' → ');
     try { history.replaceState(null, '', '#' + p.id); } catch (e) { /* not allowed in some frames */ }
     document.title = 'Neural Anatomy';
+    requestAnimationFrame(fitTagline); // after the switch to a lab (or back) has swapped the tagline's text
+  }
+  // The tagline beside the model picker shows only when it fits whole (cut short, it read "Tra…"). Hidden rather
+  // than removed, so it keeps its share of the row and can be measured again when the window widens.
+  function fitTagline() {
+    const t = $('.topbar-sub');
+    if (t) t.style.visibility = t.scrollWidth > t.clientWidth + 1 ? 'hidden' : '';
   }
   function syncLenses() {
     $$('.seg[data-lens]').forEach((seg) => $$('button', seg).forEach((b) => b.setAttribute('aria-pressed', String(App.lenses[seg.dataset.lens] === b.dataset.v))));
@@ -227,7 +237,11 @@
     $('#roEpoch').textContent = fmt(App.epoch(step), 1);
     $('#roTrain').textContent = fmt(m.trainLoss, 3);
     $('#roVal').textContent = fmt(m.valLoss, 3);
-    $('#roAccLabel').textContent = document.body.dataset.layout === 'mobile' ? (cls ? 'Val. acc.' : 'Val. R²') : (cls ? 'Val. accuracy' : 'Val. R²');
+    const accLabel = document.body.dataset.layout === 'mobile' ? (cls ? 'Val. acc.' : 'Val. R²') : (cls ? 'Val. accuracy' : 'Val. R²');
+    if ($('#roAccLabel').textContent !== accLabel) {
+      $('#roAccLabel').textContent = accLabel;
+      $('#roAccLabel').parentNode.style.setProperty('--lb', `${accLabel.length * 7.9}px`); // its room on a phone's bar, as UI.readouts gives
+    }
     $('#roAcc').textContent = cls ? fmtPct(m.valAcc, 1) : fmt(m.valAcc, 3);
     // the held-out test button doubles as its last result ("Held-out test · Run ›" before the first run)
     const tr = App.testResult, stale = !!tr && tr.version !== App.version, tb = $('#btnTest');

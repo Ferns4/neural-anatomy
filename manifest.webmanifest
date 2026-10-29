@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Neural Anatomy",
   "short_name": "NN Anatomy",
-  "description": "Look inside neural networks, from a single neuron to a transformer, a diffusion model and YOLO26: watch them learn, zoom down to the transistors, and build your own.",
+  "description": "Look inside neural networks, from a single neuron to a transformer, a diffusion model, YOLO26 and agents that learn from rewards: watch them learn, zoom down to the transistors, and build your own.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

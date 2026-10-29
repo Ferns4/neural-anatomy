@@ -104,7 +104,7 @@
   UI.tabs = function (root, defs, onSelect, initial) {
     const bar = el('div', { class: 'insp-tabs', role: 'tablist' }), body = el('div', { class: 'insp-body', role: 'tabpanel' });
     const T = { current: null, body, bar };
-    const btns = defs.map((d) => el('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', tabindex: '-1', dataset: { tab: d.id }, onclick: () => T.select(d.id) }, d.label));
+    const btns = defs.map((d) => el('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', tabindex: '-1', dataset: { tab: d.id }, onclick: () => T.select(d.id) }, NA.shortLabel(d.label, d.short)));
     bar.append(...btns);
     bar.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
@@ -122,8 +122,10 @@
     return T;
   };
 
-  // A labelled control for the settings row (same look as the MLP settings).
-  UI.field = (label, control, title) => el('label', { class: 'field', title: title || null }, el('span', { text: label }), control);
+  // A labelled control for the settings row (same look as the MLP settings). The label is set in capitals, so its
+  // Greek letters keep their case: a capital ε reads as E, α as A, η as H.
+  const keepGreek = (text) => String(text).split(/([Ͱ-Ͽ]+)/).filter(Boolean).map((s) => (/[Ͱ-Ͽ]/.test(s) ? el('span', { class: 'keep-case', text: s }) : s));
+  UI.field = (label, control, title) => el('label', { class: 'field', title: title || null }, el('span', null, keepGreek(label)), control);
   UI.select = function (options, value, onChange, attrs = {}) {
     const s = el('select', attrs, ...options.map((o) => el('option', { value: o.value, selected: String(o.value) === String(value) }, o.label)));
     s.addEventListener('change', () => onChange(s.value));
@@ -156,19 +158,27 @@
     return b;
   };
 
-  /* Readouts in the control bar: defs [{ key, label, keep }] → { set(key, text) } */
+  /* Readouts in the control bar: defs [{ key, label, short, keep }] → { set(key, text) }. A phone's bar shows only the
+     kept ones, with their short label where there is one (each gets about 50 px on a 360 px screen); --lb is that
+     label's width there (7.9 px a capital), so a readout makes room for its label before its neighbours grow. */
   UI.readouts = function (root, defs) {
     const map = {}, names = {};
+    const fill = (k, label, short) => {
+      k.replaceChildren(...NA.shortLabel(label, short));
+      k.dataset.label = label + '|' + (short || '');
+      k.parentNode.style.setProperty('--lb', `${(short || label).length * 7.9}px`);
+    };
     for (const d of defs) {
-      const v = el('span', { class: 'ro-value', text: '—' }), k = el('span', { class: 'ro-label', text: d.label });
+      const v = el('span', { class: 'ro-value', text: '—' }), k = el('span', { class: 'ro-label' });
       root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null }, k, v));
-      map[d.key] = v; names[d.key] = k;
+      fill(k, d.label, d.short);
+      map[d.key] = v; names[d.key] = { k, short: d.short };
     }
     const count = (s) => (/^-?\d{1,3}(,\d{3})+$/.test(s) ? NA.fmtCount(+s.replace(/,/g, '')) : s);
     return {
       set(key, text) { const n = map[key]; text = count(String(text)); if (n && n.textContent !== text) n.textContent = text; },
       // a readout that means something else for this setup (the builder's return, for learning from rewards)
-      label(key, text) { const n = names[key]; if (n && n.textContent !== text) n.textContent = text; },
+      label(key, text, short) { const n = names[key]; if (!n) return; if (short !== undefined) n.short = short; if (n.k.dataset.label !== text + '|' + (n.short || '')) fill(n.k, text, n.short); },
     };
   };
 

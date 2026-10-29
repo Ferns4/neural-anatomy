@@ -84,7 +84,7 @@
     this.ui = ui; this.preset = preset;
     if (!this.prob) this.setup({}, true);
     this.ro = UI.readouts(ui.readouts, [
-      { key: 'step', label: 'Step', keep: true }, { key: 'pinn', label: 'PINN error', keep: true, title: 'Relative L2 error against the exact solution over the whole window' },
+      { key: 'step', label: 'Step', keep: true }, { key: 'pinn', label: 'PINN error', short: 'Error', keep: true, title: 'Relative L2 error against the exact solution over the whole window' },
       { key: 'plain', label: 'Plain error', title: 'Same, for the network trained on the data alone' }, { key: 'res', label: 'PINN residual', title: 'RMS of (u″ + 2ζωu′ + ω²u) / ω² over the window' },
     ]);
     this.buildHyper(ui.hyper);

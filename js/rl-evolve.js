@@ -250,7 +250,7 @@
   };
 
   // ------------------------------------------------------------------ the panels
-  EV.readoutDefs = () => [{ key: 'n', label: 'Generation', keep: true }, { key: 'a', label: 'Best', keep: true, title: `Steps the fittest network kept the pole up this generation (of ${fmtInt(MAXT)}), averaged over its 2 episodes` }, { key: 'b', label: 'Average', title: 'The population’s average' }, { key: 'c', label: 'Score', title: 'The best network from 5 fixed starts, as a share of 500 steps' }];
+  EV.readoutDefs = () => [{ key: 'n', label: 'Generation', short: 'Gen.', keep: true }, { key: 'a', label: 'Best', keep: true, title: `Steps the fittest network kept the pole up this generation (of ${fmtInt(MAXT)}), averaged over its 2 episodes` }, { key: 'b', label: 'Average', title: 'The population’s average' }, { key: 'c', label: 'Score', title: 'The best network from 5 fixed starts, as a share of 500 steps' }];
   EV.readouts = function (L) {
     const S = L.S, last = S.evo.last, sc = lastScore(S.history);
     L.ro.set('n', fmtInt(S.n)); L.ro.set('a', last ? `${fmt(last.best, 0)} steps` : '—'); L.ro.set('b', last ? fmt(last.mean, 0) : '—'); L.ro.set('c', sc ? fmtPct(sc.score, 0) : '—');

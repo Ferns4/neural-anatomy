@@ -246,8 +246,8 @@
       id: 'steady', level: 'Intermediate', topic: 'Rewards', title: 'Steady hands', problem: 'pole', template: 'mlp', ps: { method: 'a2c' }, train: { lr: 0.3 },
       brief: 'Actor-critic on the pole with a learning rate of 0.3: every update throws the policy somewhere new, and it never settles. Learning from rewards is touchier than learning from answers.',
       goals: [{ metric: 0.95 }],
-      hint: 'Take smaller steps: a learning rate of 0.003.',
-      solution: { train: { lr: 0.003 } },
+      hint: 'Take smaller steps: a learning rate of 0.003, then press ↺ for a fresh run. The jumpy run has already settled on moves that drop the pole, and carrying on from it will not bring it back.',
+      solution: { train: { lr: 0.003 }, fresh: true },
     },
     {
       id: 'evolve', level: 'Advanced', topic: 'Rewards', title: 'Evolve a balancer', problem: 'pole', template: 'mlp', ps: { method: 'ga' },

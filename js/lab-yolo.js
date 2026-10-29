@@ -40,7 +40,7 @@
   // ------------------------------------------------------------------ lifecycle
   YL.activate = function (preset, ui) {
     this.ui = ui; this.preset = preset;
-    this.ro = UI.readouts(ui.readouts, [{ key: 'found', label: 'Found', keep: true }, { key: 'boxes', label: 'Boxes' }, { key: 'ms', label: 'Network', keep: true, title: 'Time for one forward pass of the network' }]);
+    this.ro = UI.readouts(ui.readouts, [{ key: 'found', label: 'Found', keep: true }, { key: 'boxes', label: 'Boxes' }, { key: 'ms', label: 'Network', short: 'Time', keep: true, title: 'Time for one forward pass of the network' }]);
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
