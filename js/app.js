@@ -76,6 +76,14 @@
     const w = window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click';
     return lower ? w.toLowerCase() : w;
   };
+  /* How to open a part of a zoom view, and how to see what it is. With a mouse a click shows it and a double-click
+     opens it; on a touch screen a tap opens it and holding a finger on it shows it. o.zoom: zooming in opens it too;
+     o.cap: the start of a sentence. */
+  NA.touchFirst = () => !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  NA.openHint = function (what = 'a part', o = {}) {
+    const s = NA.touchFirst() ? `tap ${what} to open it${o.zoom ? ' (or pinch to zoom in)' : ''}; hold it for details` : `click ${what} for details; double-click it${o.zoom ? ' or zoom in' : ''} to open it`;
+    return o.cap ? s[0].toUpperCase() + s.slice(1) : s;
+  };
   App.defaultSelection = function () { return { l: 1, j: 0 }; };
   App.epoch = function (step) { return ((step === undefined ? this.step : step) * Math.min(this.hyper.batch, this.ds.trainIdx.length)) / this.ds.trainIdx.length; };
 

@@ -35,6 +35,11 @@
     V.canvas.addEventListener('pointermove', onMove);
     V.canvas.addEventListener('pointerleave', onLeave);
     V.canvas.addEventListener('click', onClick);
+    // on a touch screen a tap opens a neuron and a finger held still on it shows it (the card, the Inspect screen)
+    V.canvas.addEventListener('pointerdown', pressStart);
+    V.canvas.addEventListener('pointermove', pressMove);
+    V.canvas.addEventListener('pointerup', pressEnd); V.canvas.addEventListener('pointercancel', pressEnd);
+    V.canvas.addEventListener('contextmenu', (e) => { if (V.ptrType === 'touch') e.preventDefault(); });
     const mark = () => { V.dirty = true; };
     ['weights', 'probe', 'selection', 'hover', 'walk', 'highlight', 'ablation', 'overlay'].forEach((t) => App.on(t, mark));
     App.on('model', () => { V.layout = null; V.thumbsKey = ''; V.dirty = true; V.zoom.reset(); buildHeaders(); renderLegend(); });
@@ -992,10 +997,34 @@
   function onLeave() { App.setHover(null); V.hoverEdge = null; V.hoverPixel = null; V.dirty = true; NA.tooltip.hide(); }
   function onClick(ev) {
     if (V.zoom.suppressClick) { V.zoom.suppressClick = false; return; } // the gesture was a pan or pinch
+    if (V.held) { V.held = false; return; } // the end of a hold, which showed it already
     const r = V.canvas.getBoundingClientRect(), [px, py] = V.zoom.toWorld(ev.clientX - r.left, ev.clientY - r.top), h = hit(px, py);
+    // a tap on a neuron opens it (holding shows it instead)
+    if (V.ptrType === 'touch' && h && h.type === 'node' && NA.netDeep && NA.netDeep.openAt(ev.clientX - r.left, ev.clientY - r.top)) return;
+    pick(h);
+  }
+  function pick(h) {
     if (h && h.type === 'node') App.select({ l: h.nd.l, j: h.nd.j }, { fromGraph: true });
     else if (h && h.type === 'edge') App.select({ l: h.e.l + 1, j: h.e.j }, { fromGraph: true, weight: h.e.i });
   }
+  function pressStart(e) {
+    V.ptrType = e.pointerType; V.held = false;
+    pressEnd();
+    if (e.pointerType !== 'touch' || V.zoom.ptrs.size > 1) return;
+    V.press = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    V.pressTimer = setTimeout(() => {
+      const p = V.press;
+      V.press = null;
+      if (!p || V.zoom.ptrs.size > 1) return;
+      const r = V.canvas.getBoundingClientRect(), [px, py] = V.zoom.toWorld(p.x - r.left, p.y - r.top), h = hit(px, py);
+      if (!h || (h.type !== 'node' && h.type !== 'edge')) return;
+      V.held = true;
+      pick(h);
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch (err) { /* not allowed here */ }
+    }, 480);
+  }
+  function pressMove(e) { const p = V.press; if (p && (e.pointerId !== p.id || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 10)) pressEnd(); }
+  function pressEnd() { clearTimeout(V.pressTimer); V.press = null; }
 
   function row(label, value) { return el('div', { class: 'tt-row' }, el('span', { class: 'tt-k', text: label }), el('span', { class: 'tt-v', text: value })); }
   // "f(z) = …" and "a = f(<this z>) = …" for any neuron, including the output's squashing function.

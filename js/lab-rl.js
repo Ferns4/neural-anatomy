@@ -416,7 +416,7 @@
   LAB.buildCenter = function (root) {
     const maze = this.ex === 'maze';
     this.exSeg = UI.seg([{ value: 'maze', label: 'Maze' }, { value: 'three', label: 'Three-line' }, { value: 'four', label: 'Four-line' }], this.ex, (v) => { if (v !== this.ex) App.loadPreset(`rl-${v}`); }, 'Example');
-    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : 'Board' }, { value: 'arch', label: 'Architecture', title: 'The agent and its model, part by part: click a part for details, double-click it or zoom in to open it' }], this.centerView, (v) => this.setCenterView(v), 'View');
+    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : 'Board' }, { value: 'arch', label: 'Architecture', title: `The agent and its model, part by part: ${NA.openHint('a part', { zoom: true })}` }], this.centerView, (v) => this.setCenterView(v), 'View');
     this.boardTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Show' }),
       UI.chip(maze ? 'Values' : 'Its view of each move', this.show.values, (on) => { this.show.values = on; this.dirty = true; }, maze ? 'Colour each square by the value of its best move' : 'In each empty cell, the chance to win it gives the player to move'),
       maze ? UI.chip('Best moves', this.show.arrows, (on) => { this.show.arrows = on; this.dirty = true; }, 'An arrow for the move it rates best on each square') : null,
@@ -428,7 +428,7 @@
     this.canvas = el('canvas', { 'aria-label': maze ? 'The maze, with what the agent has learned about each square, and beside it what its model computes' : 'The board, and beside it what its model computes' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'The agent and its model: click a part for details; double-click it or zoom in to open it', kicker: 'Architecture', build: (size) => NA.archRL.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    this.arch = new NA.ArchView(this.archStage, { label: `The agent and its model: ${NA.openHint('a part', { zoom: true })}`, kicker: 'Architecture', build: (size) => NA.archRL.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 });
     root.append(this.foot = el('div', { class: 'lab-foot' }, ...(maze

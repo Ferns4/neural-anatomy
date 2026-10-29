@@ -248,7 +248,7 @@
     this.canvas = el('canvas', { 'aria-label': 'The radar signal and the network’s verdict' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'Radar classifier architecture: click a part for details; double-click it or zoom in to open it', kicker: 'Architecture',
+    this.arch = new NA.ArchView(this.archStage, { label: `Radar classifier architecture: ${NA.openHint('a part', { zoom: true })}`, kicker: 'Architecture',
       build: (size) => NA.archRadar.build(this, size), onFocus: (node, path) => { if (this.view === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     // the explanation starts open only when the panel is tall enough to leave the pictures room

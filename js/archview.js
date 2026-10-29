@@ -21,6 +21,7 @@
   const { el, clear, clamp, theme } = NA;
   const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
   const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const HOLD_MS = 480; // a finger held this long without moving shows what is under it
   let FONTS = null;
   const fonts = () => {
     if (!FONTS) { const cs = getComputedStyle(document.body); FONTS = { ui: cs.getPropertyValue('--font-ui') || 'sans-serif', mono: cs.getPropertyValue('--font-mono') || 'monospace' }; }
@@ -152,7 +153,7 @@
     constructor(stage, opts) {
       this.stage = stage; this.opts = opts; this.dirty = true;
       this.path = []; this.anim = null; this.selected = null;
-      this.canvas = el('canvas', { class: 'arch-canvas', tabindex: '0', 'aria-label': opts.label || 'Architecture diagram: click a part for details; double-click it to open it' });
+      this.canvas = el('canvas', { class: 'arch-canvas', tabindex: '0', 'aria-label': opts.label || `Architecture diagram: ${NA.openHint('a part')}` });
       this.back = el('button', { class: 'icon-btn arch-back', type: 'button', 'aria-label': 'Back out one level', title: 'Back out one level (Esc)', onclick: () => this.exit() }, '←');
       this.crumbs = el('nav', { class: 'arch-crumbs', 'aria-label': 'Where you are in the model' });
       this.merge = false; this.mergeDepth = 0; this.mergeForm = null; this.mergeHits = null;
@@ -170,8 +171,11 @@
         onUnderflow: () => { if (!this.locked()) this.exit(); },
       });
       this.canvas.addEventListener('click', (e) => this.click(e));
-      this.canvas.addEventListener('pointermove', (e) => this.hover(e));
-      const release = () => { if (this.zoom.ptrs.size === 0) this.gestureLock = false; };
+      this.canvas.addEventListener('pointermove', (e) => { this.pressMove(e); this.hover(e); });
+      // a finger held still on a part shows what it is (without the phone's own long-press menu)
+      this.canvas.addEventListener('pointerdown', (e) => this.pressStart(e));
+      this.canvas.addEventListener('contextmenu', (e) => { if (this.ptrType === 'touch') e.preventDefault(); });
+      const release = () => { this.pressEnd(); if (this.zoom.ptrs.size === 0) this.gestureLock = false; };
       this.canvas.addEventListener('pointerup', release); this.canvas.addEventListener('pointercancel', release);
       this.canvas.addEventListener('pointerleave', () => { this.hoverId = null; this.dirty = true; NA.tooltip.hide(); this.syncLinks(); });
       this.canvas.addEventListener('keydown', (e) => {
@@ -216,6 +220,7 @@
     canEnter(node) { return !!node && (node.shape !== 'op' || !!node.inner) && !!(node.inner || node.children); }
 
     frame(now) {
+      if (this.press) this.dirty = true; // the ring that fills while a finger is held still
       if (this.anim) { this.dirty = true; this.stepAnim(now); }
       else if (now - (this.lastMotion || 0) > 32 && (this.levelAnimates() || this.mergeAnim)) { this.lastMotion = now; this.dirty = true; }
       if (!this.dirty || !this.canvas.offsetParent) return;
@@ -265,6 +270,7 @@
         }
       }
       ctx.globalAlpha = 1;
+      this.drawPress(ctx);
       this.syncBar();
       this.syncTools();
     }
@@ -752,17 +758,27 @@
       // a level drawn as one picture (the network view) has its nodes inside its parts: they come first there
       return node.gridsFirst ? cells() || kids() : kids() || cells();
     }
-    /* A click selects a part: it is outlined and the panel says what it is (with an Open tool); a second click on
-       it straight after (a double-click or double-tap) opens it, as zooming in on it does. A part of a merged
-       level is keyed by its path from here ('~' + rel), since many of them share an id. */
+    /* With a mouse, a click selects a part: it is outlined and the panel says what it is (with an Open tool); a
+       second click on it straight after (a double-click) opens it, as zooming in on it does. On a touch screen a
+       tap opens it straight away (a part that does not open is shown instead), and a finger held still on a part
+       shows what it is (hold, below). A part of a merged level is keyed by its path from here ('~' + rel), since
+       many of them share an id. */
     click(e) {
       if (this.zoom.suppressClick || this.anim) return;
+      if (this.held) { this.held = false; return; } // the end of a hold, which showed the part already
       const b = this.canvas.getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top, f = this.pick(x, y);
       if (!f) { this.lastTap = null; this.select(null); return; }
       // the level can take the click itself (flipping a bit, say)
       const lvl = this.node();
       if (!f.rel && lvl.onPick && lvl.onPick(f.node, this)) { this.dirty = true; NA.tooltip.hide(); this.lastTap = null; return; }
       const key = f.rel ? '~' + f.rel.join('/') : f.node.id, now = performance.now(), t = this.lastTap;
+      if (this.ptrType === 'touch') {
+        this.lastTap = null;
+        if (f.rel) this.jump(f.rel);
+        else if (this.canEnter(f.node)) this.enter(f.node);
+        else { this.select(key); this.showInfo(); }
+        return;
+      }
       if (t && t.key === key && now - t.t < 450 && Math.hypot(x - t.x, y - t.y) < 26) {
         this.lastTap = null;
         if (f.rel) this.jump(f.rel); else if (this.canEnter(f.node)) this.enter(f.node);
@@ -772,6 +788,53 @@
       this.select(key);
     }
     select(key) { if (this.selected === key) return; this.selected = key; this.dirty = true; this.notify(); this.refreshTools(); }
+    // a touch screen: a finger held still for half a second on a part selects it and opens the explanation panel
+    pressStart(e) {
+      this.ptrType = e.pointerType; this.held = false;
+      this.pressEnd();
+      if (e.pointerType !== 'touch' || this.zoom.ptrs.size > 1 || this.anim) return;
+      const b = this.canvas.getBoundingClientRect();
+      this.press = { x: e.clientX - b.left, y: e.clientY - b.top, t: performance.now(), id: e.pointerId };
+      this.pressTimer = setTimeout(() => this.hold(), HOLD_MS);
+    }
+    pressMove(e) {
+      const p = this.press;
+      if (!p || e.pointerId !== p.id) { if (p && this.zoom.ptrs.size > 1) this.pressEnd(); return; }
+      const b = this.canvas.getBoundingClientRect();
+      if (Math.hypot(e.clientX - b.left - p.x, e.clientY - b.top - p.y) > 10) this.pressEnd(); // a pan, not a hold
+    }
+    pressEnd() { clearTimeout(this.pressTimer); if (this.press) { this.press = null; this.dirty = true; } }
+    hold() {
+      const p = this.press;
+      this.press = null; this.dirty = true;
+      if (!p || this.anim || this.zoom.ptrs.size > 1) return;
+      const f = this.pick(p.x, p.y);
+      this.held = true; this.lastTap = null;
+      this.select(f ? (f.rel ? '~' + f.rel.join('/') : f.node.id) : null);
+      this.showInfo();
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch (err) { /* not allowed here */ }
+    }
+    // open the explanation panel beside this view (labs, the neuron's insides) and bring it into sight
+    showInfo() {
+      const host = this.stage.parentElement, ip = host && host.querySelector('.info-panel');
+      if (!ip) return;
+      ip.dispatchEvent(new CustomEvent('na-open'));
+      const r = ip.getBoundingClientRect();
+      if (r.bottom > innerHeight || r.top < 0) ip.scrollIntoView({ block: 'nearest', behavior: NA.prefersReducedMotion && NA.prefersReducedMotion() ? 'auto' : 'smooth' });
+    }
+    // while a finger is held still: a ring around it fills up, so the hold can be seen to be coming
+    drawPress(ctx) {
+      const p = this.press;
+      if (!p) return;
+      const k = clamp((performance.now() - p.t - 120) / (HOLD_MS - 120), 0, 1);
+      if (k <= 0) return;
+      ctx.save();
+      ctx.lineWidth = 3; ctx.strokeStyle = theme.c('focus', 0.25);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 26, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = theme.c('focus'); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 26, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
     // the selected part's node: a part of this level (a child or a grid cell), or a merged part by its path
     selectedNode() {
       const key = this.selected;
@@ -794,7 +857,7 @@
       if (hid !== this.hoverId) { this.hoverId = hid; this.dirty = true; this.syncLinks(); }
       const lvl = this.node(), hint = f && !f.rel && lvl.pickHint ? lvl.pickHint(f.node, this) : null, opens = !!f && (!!f.rel || this.canEnter(f.node));
       this.canvas.style.cursor = f ? 'pointer' : 'default';
-      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: hint || (opens ? `${NA.tapWord()} for details, double-${NA.tapWord(true)} to open it` : `${NA.tapWord()} for the explanation and code`) })], e.clientX, e.clientY);
+      if (f) NA.tooltip.show([el('div', { class: 'tt-title', text: f.node.title }), f.group ? el('div', { class: 'tt-hint', text: `in ${f.group}` }) : null, f.node.sub ? el('div', { class: 'tt-hint', text: f.node.sub }) : null, el('div', { class: 'tt-hint', text: hint || (opens ? NA.openHint('it', { cap: true }) : NA.touchFirst() ? 'Hold it for the explanation and code' : 'Click for the explanation and code') })], e.clientX, e.clientY);
       else NA.tooltip.hide();
     }
     // zoomed far enough into the level: open the part nearest the middle of the view
@@ -1034,7 +1097,7 @@
       const items = node && node.tools && !this.tour ? node.tools(this).filter(Boolean) : []; // a walk drives the view itself
       // a selected part that opens: Open, for a touch screen, or anyone who would rather not double-click
       const sel = node && !this.tour ? this.selectedNode() : null;
-      if (sel && (this.selected[0] === '~' || this.canEnter(sel))) items.push(this.tool('Open ▸', () => this.openSelected(), { primary: true, title: `Open ${sel.title} (or double-click it)` }));
+      if (sel && (this.selected[0] === '~' || this.canEnter(sel))) items.push(this.tool('Open ▸', () => this.openSelected(), { primary: true, title: `Open ${sel.title} (or ${NA.touchFirst() ? 'tap' : 'double-click'} it)` }));
       this.toolsEl.append(...items);
       this.toolsEl.hidden = !items.length;
       // on a narrow stage the tools get their own row(s) under the title, and the level starts below them

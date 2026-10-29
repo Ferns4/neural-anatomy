@@ -868,7 +868,7 @@
     this.archBox = el('div', { class: 'bd-arch' });
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.archBox.append(this.archStage);
-    this.arch = new NA.ArchView(this.archStage, { label: 'Your model’s architecture: click a part for details; double-click it or zoom in to open it', kicker: 'Architecture',
+    this.arch = new NA.ArchView(this.archStage, { label: `Your model’s architecture: ${NA.openHint('a part', { zoom: true })}`, kicker: 'Architecture',
       build: (size) => NA.archBuilder.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     this.info = UI.infoPanel(this.archBox, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 760 });
     root.append(this.archBox);

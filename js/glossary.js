@@ -143,5 +143,6 @@
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
   }
+  G.terms = TERMS; // (the Guide lists them all)
   NA.glossary = G;
 })(window.NA);

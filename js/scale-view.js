@@ -81,7 +81,7 @@
     const net = {
       id: 'net', title: 'Your network', sub: `${fmtInt(m)} weights and biases`, tone: 's1', shape: 'ghost',
       inner: (ctx, c, S) => drawNet(ctx, c, S), portal: () => SV.close(),
-      about: ['Your network. Zoom in on it, or double-click it, to go back to it.'],
+      about: [`Your network. Zoom in on it, or ${NA.touchFirst() ? 'tap' : 'double-click'} it, to go back to it.`],
     };
     // the labs level: its parts are drawn by the level itself; the parts listed here only take the pointer
     const lay = labsLayout(size.w, size.h);

@@ -10,7 +10,7 @@
   const TOURS = {
     mlp: [
       { sel: '#modelPicker', title: 'Pick a model', text: 'Every model in the zoo opens already trained, with notes on what to look for and experiments to try. This one is a small network learning to tell two classes of points apart.' },
-      { sel: '#netStage', screen: 'network', title: 'The network', text: 'Columns are layers, squares are neurons and the curves are weighted connections; blue is positive, orange negative. Point at a neuron to see what it computes, or zoom in to go all the way down to the arithmetic.' },
+      { sel: '#netStage', screen: 'network', title: 'The network', text: `Columns are layers, squares are neurons and the curves are weighted connections; blue is positive, orange negative. ${NA.touchFirst && NA.touchFirst() ? 'Hold a finger on a neuron to see what it computes, or tap it to go inside, all the way down to the arithmetic.' : 'Point at a neuron to see what it computes, or zoom in to go all the way down to the arithmetic.'}` },
       { sel: '.lensbar', screen: 'network', title: 'Lenses', text: 'Lenses change what the colours mean: the weights, the signal for one input, or the gradient training follows. Overlays add maps, values and health checks.' },
       { sel: '#btnPlay', title: 'Train it', text: 'Train runs gradient descent, Step makes a single update so you can see what changes, and the settings button holds the learning rate, optimizer, regularization and dropout.' },
       { sel: '#dataPanel', screen: 'data', title: 'What it learned', text: 'The output over the whole input space, with the data on top. Hidden space shows how each layer rearranges the data; Loss landscape, the terrain training walked down.' },

@@ -92,6 +92,9 @@
     $('#helpBtn').addEventListener('click', () => CH.toggleHelp());
     $('#btnTour').addEventListener('click', () => NA.tour.start());
     $('#btnGlossary').addEventListener('click', () => NA.glossary.open());
+    $('#guideBtn').addEventListener('click', () => NA.guide.show());
+    $('#btnGuide').addEventListener('click', () => NA.guide.show());
+    $('#mnavGuide').addEventListener('click', () => NA.guide.show());
     $('#help').addEventListener('click', (e) => { if (e.target.id === 'help' || e.target.closest('[data-close]')) CH.toggleHelp(false); });
     buildZoo();
 
@@ -356,7 +359,7 @@
 
   // ------------------------------------------------------------------ keyboard
   function onKey(e) {
-    if (e.key === 'Escape') { if (!$('#zoo').hidden) CH.closeZoo(); if (!$('#help').hidden) CH.toggleHelp(false); return; }
+    if (e.key === 'Escape') { if (!$('#zoo').hidden) CH.closeZoo(); if (!$('#help').hidden) CH.toggleHelp(false); if (NA.guide && NA.guide.open) NA.guide.close(); return; }
     if ($('.modal:not([hidden])') || (NA.tour && NA.tour.isOpen())) return; // a dialog (share, challenges) or the tour has the keyboard
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -371,6 +374,7 @@
       else if (k === 'r' || k === 'R') lab.reset();
       else if ((k === 't' || k === 'T') && lab.runTest) lab.runTest();
       else if (k === '?') CH.toggleHelp();
+      else if (k === 'g' || k === 'G') NA.guide.show();
       else if (lab.key) lab.key(e);
       return;
     }
@@ -391,6 +395,7 @@
     else if (k === 'a' || k === 'A') App.setLens('acts', !App.lenses.acts);
     else if (k === 't' || k === 'T') CH.runTest();
     else if (k === '?') CH.toggleHelp();
+    else if (k === 'g' || k === 'G') NA.guide.show();
   }
 
   // ------------------------------------------------------------------ theme toggle (standalone site only;

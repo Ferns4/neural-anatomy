@@ -303,7 +303,7 @@
         }
       },
       grids: [{ id: 'sq', rect: QRECT, rows: M.H, cols: M.W, square: true, skip: (i, j) => !(M.cell[i * M.W + j] === '.' || M.cell[i * M.W + j] === 'S'), make: (i, j) => square(i * M.W + j) }],
-      about: [`Everything the agent knows: ${open * 4} numbers, four for each square it can stand on (up, right, down, left), drawn at the square's four sides. The largest of the four is the move it takes there. The square outlined is the one being looked at. ${NA.tapWord()} a square for details; double-${NA.tapWord(true)} it to open it.`,
+      about: [`Everything the agent knows: ${open * 4} numbers, four for each square it can stand on (up, right, down, left), drawn at the square's four sides. The largest of the four is the move it takes there. The square outlined is the one being looked at. ${NA.openHint('a square', { cap: true })}.`,
         'There is no neural network here: a table is enough when there are few situations, but it fits one maze only, since its rows are this maze’s squares. Switch the model to Network for one that sees what is around it and so finds its way through mazes it never met.'],
       code: NA.archRL.py.maze(L),
     };
@@ -368,7 +368,7 @@
       ]),
       children: [0, 1, 2, 3].map((a) => Object.assign(out(a), { rect: [OUT[0], OUT[1] + a * OUT[3] / 4 + 0.01, OUT[2], OUT[3] / 4 - 0.02] })),
       about: [`The network that chooses its moves, on square ${sqName(P.M, P.s)} of ${L.mazeName()}: left, its ${net.nIn} inputs (the 24 squares around it, each as a wall or the edge, a pit, the goal, or visited; and 8 for the goal’s direction); the dots, its ${H} hidden neurons; right, its 4 outputs, one Q-value per move. It moves ${DIR[P.a]}, the largest.`,
-        `It has no row for any square and has never seen this maze: the same weights decide in every maze, from what is around it. That is why it can carry over to new mazes, where a table cannot. ${NA.tapWord()} a part for details; double-${NA.tapWord(true)} it to open it, down to the transistors.`],
+        `It has no row for any square and has never seen this maze: the same weights decide in every maze, from what is around it. That is why it can carry over to new mazes, where a table cannot. ${NA.openHint('a part', { cap: true })}: every level opens, down to the transistors.`],
       code: NA.archRL.py.mazeNet(L),
     };
   }
@@ -452,7 +452,7 @@
       grids: [{ id: 'hid', rect: HID, rows: Math.ceil(H / HC), cols: HC, square: true, skip: (i, j) => i * HC + j >= H, make: (i, j) => (i * HC + j < H ? hidden(i * HC + j) : null) }],
       children: [Object.assign(out, { rect: OUT })],
       about: [`The network that judges ${g.name} positions, on the position after ${STONE[mover]}’s move at ${cellName(g, P.m)}, as ${STONE[mover]} sees it: the left squares are its ${nIn} inputs, the dots its ${H} hidden neurons (blue positive, orange negative), and the box its output, the chance to win: ${fmtPct(v, 1)}.`,
-        `To choose a move it runs this for every empty cell, on the position that move would make, and plays the highest. Self-play nudges every weight after each move, so patterns that led to wins (lines with room to grow, blocks) raise the output. ${NA.tapWord()} a neuron for details; double-${NA.tapWord(true)} it to open it, down to the transistors.`],
+        `To choose a move it runs this for every empty cell, on the position that move would make, and plays the highest. Self-play nudges every weight after each move, so patterns that led to wins (lines with room to grow, blocks) raise the output. ${NA.openHint('a neuron', { cap: true })}: it opens down to the transistors.`],
       code: g.id === 'three' ? NA.archRL.py.threeNet(L) : NA.archRL.py.four(L),
     };
   }
@@ -600,7 +600,7 @@
       },
       children: kids,
       about: [`A reinforcement learning agent is a loop. It sees the state, its ${what} scores the possible moves, it picks one, the ${S.id === 'maze' ? 'maze' : 'game'} answers with a reward and the next state, and it learns from that. Nothing else tells it what to do: no examples of good play, only rewards.`,
-        `Each box is computed for the state being looked at now (${S.id === 'maze' ? 'the square outlined on the maze, or the test’s current step' : 'the move outlined on the board, or the test’s current move'}). ${NA.tapWord()} a box for details; double-${NA.tapWord(true)} it to open it. The ${what} in the middle holds everything it has learned.`],
+        `Each box is computed for the state being looked at now (${S.id === 'maze' ? 'the square outlined on the maze, or the test’s current step' : 'the move outlined on the board, or the test’s current move'}). ${NA.openHint('a box', { cap: true })}. The ${what} in the middle holds everything it has learned.`],
       code: S.id === 'maze' ? `state = start\nwhile True:\n    q = model(state)                         # its ${what} scores the 4 moves\n    move = argmax(q) if random.random() > eps else random.randrange(4)\n    state2, reward, done = step(state, move) # the maze answers\n    learn(state, move, reward, state2, done) # and it learns from that\n    state = state2\n    if done:\n        break` : `board, me = [0] * (N * N), 1\nwhile True:\n    move = best_move(board, me)              # its ${what} judges each move\n    board[move] = me\n    learn(previous[me], board)               # the previous position moves toward this one\n    if wins(board, move) or not empties(board):\n        break                                # the result: the only reward\n    me = 3 - me`,
     };
   }

@@ -217,6 +217,48 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .dot-ring { border: 1.6px solid var(--ink-2); }
 .dot-probe { border: 2px solid var(--ink); width: 11px; height: 11px; }
 .key-line { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; }
+/* the Guide: chapters on the left and sections on the right; on a phone, full screen, the chapters in a row */
+.guide-btn { width: auto; display: inline-flex; gap: 6px; padding: 0 10px 0 8px; font-size: 12.5px; font-weight: 500; }
+[data-layout="mobile"] #guideBtn { display: none; }
+.gd-sheet { width: min(1120px, 100%); height: min(88vh, 940px); display: flex; flex-direction: column; padding-bottom: 0; }
+.gd-find { display: flex; align-items: center; gap: 12px; margin: 8px 0 10px; }
+.gd-search { flex: 1 1 auto; max-width: 420px; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-2); color: var(--ink); padding: 0 10px; font-size: 13.5px; }
+.gd-count { margin: 0; font-size: 12px; color: var(--muted); }
+.gd-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); border-top: 1px solid var(--line); }
+.gd-toc { display: flex; flex-direction: column; gap: 2px; padding: 10px 10px 16px 0; overflow: auto; border-right: 1px solid var(--line); }
+.gd-tab { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; color: var(--ink-2); font: 500 13px var(--font-ui); text-align: left; padding: 7px 10px; border-radius: 7px; }
+.gd-tab:hover { color: var(--ink); background: var(--panel-2); }
+.gd-tab[aria-current="true"] { color: var(--ink); background: var(--panel-2); box-shadow: inset 2px 0 0 var(--focus); }
+.gd-n { font-size: 11px; color: var(--muted); }
+.gd-main { overflow: auto; overscroll-behavior: contain; padding: 0 4px 48px 26px; }
+.gd-ch { padding-top: 16px; }
+.gd-ch-title { margin: 0 0 2px; font: 400 24px/1.15 var(--font-display); }
+.gd-secs, .gd-terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 28px; }
+.gd-sec { padding: 12px 0 12px; border-bottom: 1px solid var(--line); }
+.gd-kicker { margin: 0 0 2px; font: 600 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.gd-sec-title { margin: 0 0 2px; font: 650 14px var(--font-ui); color: var(--ink); }
+.gd-sec p { margin: 5px 0 0; font-size: 13px; line-height: 1.58; color: var(--ink-2); max-width: 70ch; }
+.gd-sec .gd-meta { font: 500 11.5px var(--font-mono); color: var(--muted); }
+.gd-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.gd-keys { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+.gd-keys dt { display: flex; flex-wrap: wrap; gap: 4px; }
+.gd-keys dd { margin: 0; }
+.gd-terms { margin: 4px 0 0; }
+.gd-terms dt { margin-top: 12px; font: 650 13.5px var(--font-ui); color: var(--ink); }
+.gd-terms dd { margin: 3px 0 0; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+.gd-none { padding: 20px 0; color: var(--ink-2); }
+[data-layout="mobile"] .modal.gd-modal .gd-sheet { height: 100%; max-height: none; overflow: hidden; display: flex; flex-direction: column; border-radius: 0; border: 0; padding-top: env(safe-area-inset-top, 0px); padding-bottom: 0; }
+[data-layout="mobile"] .gd-find { margin: 4px 0 8px; }
+[data-layout="mobile"] .gd-search { max-width: none; height: 42px; font-size: 16px; }
+[data-layout="mobile"] .gd-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); border-top: 0; }
+[data-layout="mobile"] .gd-toc { flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+[data-layout="mobile"] .gd-toc::-webkit-scrollbar { display: none; }
+[data-layout="mobile"] .gd-tab { flex: none; white-space: nowrap; min-height: 36px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 999px; font-size: 13.5px; }
+[data-layout="mobile"] .gd-tab[aria-current="true"] { box-shadow: none; border-color: var(--ink-2); }
+[data-layout="mobile"] .gd-main { padding: 0 2px calc(40px + env(safe-area-inset-bottom, 0px)); }
+[data-layout="mobile"] .gd-secs, [data-layout="mobile"] .gd-terms { grid-template-columns: minmax(0, 1fr); }
+[data-layout="mobile"] .gd-sec p, [data-layout="mobile"] .gd-terms dd { font-size: 14px; }
+[data-layout="mobile"] .gd-acts .btn { height: 40px; font-size: 13.5px; }
 .key-sq { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; opacity: 0.6; }
 /* the RL lab's bar above the board: maze and model, play and test, a test's step controls */
 .rl-bar { gap: 8px 10px; padding: 7px 12px; }
@@ -1101,7 +1143,7 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .tl-actions .btn { height: 40px; font-size: 13.5px; }
 [data-layout="mobile"] .tl-wrap { flex: 1 1 auto; flex-basis: auto; order: 0; }
 [data-layout="mobile"] button { touch-action: manipulation; }
-[data-layout="mobile"] .mnav { display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); background: var(--panel); border-top: 1px solid var(--line); }
+[data-layout="mobile"] .mnav { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); background: var(--panel); border-top: 1px solid var(--line); }
 .mnav button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: transparent; color: var(--muted); font: 600 11.5px var(--font-ui); }
 .mnav button[aria-current="page"] { color: var(--ink); }
 .mnav button[aria-current="page"]::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 2.5px; border-radius: 0 0 3px 3px; background: var(--ink); }
@@ -1459,6 +1501,9 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
       <button class="icon-btn" id="installBtn" type="button" aria-label="Install the app" title="Install the app" hidden>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7.2M5 6.9 8 9.9l3-3M3 11.2v1.3c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
+      <button class="icon-btn guide-btn" id="guideBtn" type="button" aria-label="Guide: everything on this site, and how to use it" title="Guide: everything this site shows, and how to use it (G)" aria-haspopup="dialog">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 4.2C6.6 3.2 4.6 2.8 2.5 3v9.2c2.1-.2 4.1.2 5.5 1.2 1.4-1 3.4-1.4 5.5-1.2V3c-2.1-.2-4.1.2-5.5 1.2Z"/><path d="M8 4.2v9.2"/></g></svg><span class="guide-label">Guide</span>
+      </button>
       <button class="icon-btn" id="shareBtn" type="button" aria-label="Copy a link to this model and its settings" title="Share: copy a link to this model and its settings">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.6 9.4 9.4 6.6"/><path d="M7.4 4.8 8.6 3.6a2.6 2.6 0 0 1 3.8 3.8l-1.2 1.2"/><path d="M8.6 11.2 7.4 12.4a2.6 2.6 0 0 1-3.8-3.8l1.2-1.2"/></g></svg>
       </button>
@@ -1611,6 +1656,10 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="9.5" cy="9.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.6 13.6 18 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M7 10.5l1.6-2 1.6 1.4 1.8-2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="mnav-insp">Inspect</span>
     </button>
+    <button type="button" id="mnavGuide" aria-haspopup="dialog" aria-label="Guide: everything on this site, and how to use it">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M11 6C9 4.6 6.3 4 3.5 4.3v12.4c2.8-.3 5.5.3 7.5 1.7 2-1.4 4.7-2 7.5-1.7V4.3C15.7 4 13 4.6 11 6Z"/><path d="M11 6v12.4"/></g></svg>
+      <span>Guide</span>
+    </button>
   </nav>
 </div>
 <div class="mscrim" id="mscrim" hidden></div>
@@ -1636,7 +1685,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
       <div>
         <h2 class="sheet-title" id="helpTitle">How to read the network</h2>
         <p class="sheet-sub">Columns are layers, squares are neurons and curves are weighted connections. Signals flow left to right; error signals flow right to left during training.</p>
-        <div class="help-actions"><button class="btn" id="btnTour" type="button">Take the tour</button><button class="btn" id="btnGlossary" type="button">Glossary</button></div>
+        <div class="help-actions"><button class="btn" id="btnGuide" type="button">Guide to everything</button><button class="btn" id="btnTour" type="button">Take the tour</button><button class="btn" id="btnGlossary" type="button">Glossary</button></div>
       </div>
       <button class="icon-btn" type="button" data-close aria-label="Close">×</button>
     </div>
@@ -1655,7 +1704,7 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
         <h3>Validation and test data</h3>
         <p>Training uses one part of the data. A second part, the validation set, is scored as it trains to show how well it generalizes. A third, the held-out test set, is only scored when you press Run held-out test, once you have finished tuning.</p>
         <h3>Zoom</h3>
-        <p>Zoom into any part of the network with the mouse wheel, a pinch or a double-tap, and drag to pan. On the output map and the hidden space, and in a window narrow enough for the page to scroll, hold Ctrl while you scroll. Labels stay readable and show full formulas once there is room. In a lab’s Architecture view, the mouse wheel or a pinch opens the part under it, and zooming back out returns a level.</p>
+        <p><span class="t-mouse">Click a neuron, or a part of any zoom view, to see what it is; double-click it to open it.</span><span class="t-touch">Tap a neuron, or a part of any zoom view, to open it; hold a finger on it to see what it is.</span> Zoom into any part of the network with the mouse wheel, a pinch or a double-tap, and drag to pan. On the output map and the hidden space, and in a window narrow enough for the page to scroll, hold Ctrl while you scroll. Labels stay readable and show full formulas once there is room. In a lab’s Architecture view, the mouse wheel or a pinch opens the part under it, and zooming back out returns a level.</p>
         <h3>All the way down</h3>
         <p>Zoom far into a neuron and it opens: its weighted sum, its PyTorch code, what each library call does inside, single float multiplications and additions bit by bit, the adders and logic gates doing them, a gate’s transistors, and finally the electrons moving through a transistor’s channel. In the Architecture views every heatmap cell and bar opens the same way. Stored weights lead down through their bits to the memory cell and the electrons holding the charge.</p>
         <div id="helpInstall" hidden>
@@ -1681,65 +1730,66 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=417859c94f"></script>
-<script src="js/engine.js?v=417859c94f"></script>
-<script src="js/data.js?v=417859c94f"></script>
-<script src="js/presets.js?v=417859c94f"></script>
-<script src="js/app.js?v=417859c94f"></script>
-<script src="js/ui.js?v=417859c94f"></script>
-<script src="js/network-view.js?v=417859c94f"></script>
-<script src="js/data-view.js?v=417859c94f"></script>
-<script src="js/hidden-space.js?v=417859c94f"></script>
-<script src="js/landscape.js?v=417859c94f"></script>
-<script src="js/charts.js?v=417859c94f"></script>
-<script src="js/insights.js?v=417859c94f"></script>
-<script src="js/inspector.js?v=417859c94f"></script>
-<script src="js/walkthrough.js?v=417859c94f"></script>
-<script src="js/lab.js?v=417859c94f"></script>
-<script src="js/archview.js?v=417859c94f"></script>
-<script src="js/arch-deep.js?v=417859c94f"></script>
-<script src="js/net-deep.js?v=417859c94f"></script>
-<script src="js/circuit.js?v=417859c94f"></script>
-<script src="js/scale-view.js?v=417859c94f"></script>
-<script src="js/lm-data.js?v=417859c94f"></script>
-<script src="js/transformer.js?v=417859c94f"></script>
-<script src="js/lm-weights.js?v=417859c94f"></script>
-<script src="js/arch-transformer.js?v=417859c94f"></script>
-<script src="js/lab-transformer.js?v=417859c94f"></script>
-<script src="js/pinn.js?v=417859c94f"></script>
-<script src="js/pinn-weights.js?v=417859c94f"></script>
-<script src="js/arch-pinn.js?v=417859c94f"></script>
-<script src="js/lab-pinn.js?v=417859c94f"></script>
-<script src="js/diffusion.js?v=417859c94f"></script>
-<script src="js/diffusion-weights.js?v=417859c94f"></script>
-<script src="js/arch-diffusion.js?v=417859c94f"></script>
-<script src="js/lab-diffusion.js?v=417859c94f"></script>
-<script src="js/yolo.js?v=417859c94f"></script>
-<script src="js/arch-yolo.js?v=417859c94f"></script>
-<script src="js/lab-yolo.js?v=417859c94f"></script>
-<script src="js/radar.js?v=417859c94f"></script>
-<script src="js/radar-weights.js?v=417859c94f"></script>
-<script src="js/arch-radar.js?v=417859c94f"></script>
-<script src="js/lab-radar.js?v=417859c94f"></script>
-<script src="js/rl.js?v=417859c94f"></script>
-<script src="js/rl-weights.js?v=417859c94f"></script>
-<script src="js/arch-rl.js?v=417859c94f"></script>
-<script src="js/lab-rl.js?v=417859c94f"></script>
-<script src="js/builder-engine.js?v=417859c94f"></script>
-<script src="js/classic-ml.js?v=417859c94f"></script>
-<script src="js/builder-tasks.js?v=417859c94f"></script>
-<script src="js/builder-challenges.js?v=417859c94f"></script>
-<script src="js/part-guide.js?v=417859c94f"></script>
-<script src="js/builder-insights.js?v=417859c94f"></script>
-<script src="js/builder-viz.js?v=417859c94f"></script>
-<script src="js/builder-py.js?v=417859c94f"></script>
-<script src="js/arch-builder.js?v=417859c94f"></script>
-<script src="js/lab-builder.js?v=417859c94f"></script>
-<script src="js/mobile.js?v=417859c94f"></script>
-<script src="js/share.js?v=417859c94f"></script>
-<script src="js/glossary.js?v=417859c94f"></script>
-<script src="js/tour.js?v=417859c94f"></script>
-<script src="js/chrome.js?v=417859c94f"></script>
-<script src="pwa.js?v=417859c94f"></script>
+<script src="js/core.js?v=bc7fb39071"></script>
+<script src="js/engine.js?v=bc7fb39071"></script>
+<script src="js/data.js?v=bc7fb39071"></script>
+<script src="js/presets.js?v=bc7fb39071"></script>
+<script src="js/app.js?v=bc7fb39071"></script>
+<script src="js/ui.js?v=bc7fb39071"></script>
+<script src="js/network-view.js?v=bc7fb39071"></script>
+<script src="js/data-view.js?v=bc7fb39071"></script>
+<script src="js/hidden-space.js?v=bc7fb39071"></script>
+<script src="js/landscape.js?v=bc7fb39071"></script>
+<script src="js/charts.js?v=bc7fb39071"></script>
+<script src="js/insights.js?v=bc7fb39071"></script>
+<script src="js/inspector.js?v=bc7fb39071"></script>
+<script src="js/walkthrough.js?v=bc7fb39071"></script>
+<script src="js/lab.js?v=bc7fb39071"></script>
+<script src="js/archview.js?v=bc7fb39071"></script>
+<script src="js/arch-deep.js?v=bc7fb39071"></script>
+<script src="js/net-deep.js?v=bc7fb39071"></script>
+<script src="js/circuit.js?v=bc7fb39071"></script>
+<script src="js/scale-view.js?v=bc7fb39071"></script>
+<script src="js/lm-data.js?v=bc7fb39071"></script>
+<script src="js/transformer.js?v=bc7fb39071"></script>
+<script src="js/lm-weights.js?v=bc7fb39071"></script>
+<script src="js/arch-transformer.js?v=bc7fb39071"></script>
+<script src="js/lab-transformer.js?v=bc7fb39071"></script>
+<script src="js/pinn.js?v=bc7fb39071"></script>
+<script src="js/pinn-weights.js?v=bc7fb39071"></script>
+<script src="js/arch-pinn.js?v=bc7fb39071"></script>
+<script src="js/lab-pinn.js?v=bc7fb39071"></script>
+<script src="js/diffusion.js?v=bc7fb39071"></script>
+<script src="js/diffusion-weights.js?v=bc7fb39071"></script>
+<script src="js/arch-diffusion.js?v=bc7fb39071"></script>
+<script src="js/lab-diffusion.js?v=bc7fb39071"></script>
+<script src="js/yolo.js?v=bc7fb39071"></script>
+<script src="js/arch-yolo.js?v=bc7fb39071"></script>
+<script src="js/lab-yolo.js?v=bc7fb39071"></script>
+<script src="js/radar.js?v=bc7fb39071"></script>
+<script src="js/radar-weights.js?v=bc7fb39071"></script>
+<script src="js/arch-radar.js?v=bc7fb39071"></script>
+<script src="js/lab-radar.js?v=bc7fb39071"></script>
+<script src="js/rl.js?v=bc7fb39071"></script>
+<script src="js/rl-weights.js?v=bc7fb39071"></script>
+<script src="js/arch-rl.js?v=bc7fb39071"></script>
+<script src="js/lab-rl.js?v=bc7fb39071"></script>
+<script src="js/builder-engine.js?v=bc7fb39071"></script>
+<script src="js/classic-ml.js?v=bc7fb39071"></script>
+<script src="js/builder-tasks.js?v=bc7fb39071"></script>
+<script src="js/builder-challenges.js?v=bc7fb39071"></script>
+<script src="js/part-guide.js?v=bc7fb39071"></script>
+<script src="js/builder-insights.js?v=bc7fb39071"></script>
+<script src="js/builder-viz.js?v=bc7fb39071"></script>
+<script src="js/builder-py.js?v=bc7fb39071"></script>
+<script src="js/arch-builder.js?v=bc7fb39071"></script>
+<script src="js/lab-builder.js?v=bc7fb39071"></script>
+<script src="js/mobile.js?v=bc7fb39071"></script>
+<script src="js/share.js?v=bc7fb39071"></script>
+<script src="js/glossary.js?v=bc7fb39071"></script>
+<script src="js/guide.js?v=bc7fb39071"></script>
+<script src="js/tour.js?v=bc7fb39071"></script>
+<script src="js/chrome.js?v=bc7fb39071"></script>
+<script src="pwa.js?v=bc7fb39071"></script>
 </body>
 </html>

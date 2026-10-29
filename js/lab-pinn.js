@@ -201,7 +201,7 @@
     this.canvas = el('canvas', { 'aria-label': 'Plots: the fitted curves against the exact solution, the equation residual, and the phase portrait' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
-    this.arch = new NA.ArchView(this.archStage, { label: 'PINN architecture: click a part for details; double-click it or zoom in to open it', build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
+    this.arch = new NA.ArchView(this.archStage, { label: `PINN architecture: ${NA.openHint('a part', { zoom: true })}`, build: (size) => NA.archPinn.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     // the PINN's entry and the collocation points follow the loss terms in use (renderFoot)

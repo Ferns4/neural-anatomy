@@ -293,6 +293,7 @@
     };
     P.toggle = toggle;
     toggle(P.open);
+    wrap.addEventListener('na-open', () => toggle(true)); // (holding a finger on a part of a zoom view shows it here)
     return P;
   };
 
