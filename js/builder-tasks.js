@@ -1,7 +1,8 @@
 /* builder-tasks.js — the problems the model builder can learn, and the data they make for the engine (js/builder-
    engine.js): points in a plane to classify (preset shapes, or ones you draw), a curve to fit (preset, or a formula
-   you type), handwritten digits, and sequences (reverse, sort or copy digits, the tiny language, or sentences you
-   write). Also the starting templates, a small safe formula parser and the helpers that decode a model's output. */
+   you type), handwritten digits, sequences (reverse, sort or copy digits, the tiny language, or sentences you
+   write), and worlds to act in, learning from rewards (js/rl-envs.js, trained by js/builder-rl.js). Also the
+   starting templates, a small safe formula parser and the helpers that decode a model's output. */
 (function (NA) {
   'use strict';
   const BT = {};
@@ -19,6 +20,8 @@
     sequence: { label: 'Write sequences', losses: ['xent'], metric: 'tokens', template: 'transformer', icon: '⋯' },
     // a table of your own: classes or a value, depending on the column it predicts (BT.lossesFor gives the losses)
     table: { label: 'Your data', losses: ['xent', 'mse', 'hinge', 'mae', 'huber'], metric: 'auto', template: 'mlp', icon: '▤' },
+    // no examples with answers: the model acts in a world and learns from the rewards (the method sets the loss)
+    control: { label: 'Learn from rewards', losses: ['huber'], metric: 'score', template: 'mlp', icon: '⚑' },
   };
   BT.PROBLEMS = [
     { id: 'spiral', family: 'plane', dataset: 'spiral', label: 'Two spirals', hint: 'Two arms wound around each other: needs curved, layered boundaries.' },
@@ -53,6 +56,10 @@
     { id: 'language', family: 'sequence', task: 'language', label: 'Tiny language', hint: 'Predict the next word of short stories, like the Tiny Transformer model.' },
     { id: 'sentences', family: 'sequence', task: 'sentences', custom: true, label: 'Your own sentences', hint: 'Type some text; the model learns to predict each next word.' },
     { id: 'csv', family: 'table', custom: true, label: 'Your table (CSV)', hint: 'A table of numbers from a CSV file, or a sample: the model learns to predict one column from the others.' },
+    { id: 'levers', family: 'control', task: 'levers', label: 'Levers (a bandit)', hint: 'A light shows a colour, and the lever of that colour usually pays: one pull per episode. No examples with answers, only rewards: the simplest problem where the best action depends on what you see.' },
+    { id: 'rlmaze', family: 'control', task: 'maze', label: 'Maze', hint: 'Find the goal and keep out of the pits. It can see the square it is on, the squares around it, or a picture of the whole maze, and train on one maze or a new random one every episode.' },
+    { id: 'pole', family: 'control', task: 'pole', label: 'Balance a pole', hint: 'Push a cart left or right to keep a pole upright, the classic control problem. It sees 4 numbers, or only the positions and angles of the last 4 steps.' },
+    { id: 'catch', family: 'control', task: 'catch', label: 'Catch', hint: 'Move a paddle to catch a falling, drifting ball. It sees 4 numbers, or pixels: two pictures of the board, now and a step ago.' },
   ];
   BT.byId = Object.fromEntries(BT.PROBLEMS.map((p) => [p.id, p]));
   // the kinds of data whose answer is a number, scored by R² (a table that predicts a number makes curve-like data)
@@ -69,6 +76,7 @@
     if (f === 'series') return { window: 16, n: 1200, noise: p.task === 'chaos' ? 0 : 0.04 };
     if (f === 'seqclass') return { n: p.task === 'sentiment' ? 2500 : 2000, embed: 16 };
     if (f === 'table') return { target: -1, kind: 'auto' };
+    if (f === 'control') return Object.assign(NA.brl.defaults(p.task), WORLD_DEFAULTS[p.task]);
     if (p.task === 'language') return { n: 1500, embed: 32 };
     if (p.task === 'sentences') return { window: 8, embed: 32, text: SAMPLE_TEXT };
     return { len: 4, n: 3000, embed: 32 };
@@ -78,6 +86,7 @@
   // training settings: the defaults, and what each kind of data starts with when you switch to it
   BT.DEFAULT_TRAIN = { opt: 'adam', lr: 0.01, batch: 32, wd: 0, sched: 'const', clip: 0, init: 'auto', seed: 1, steps: 3000 };
   BT.trainFor = (p) => {
+    if (p.family === 'control') return { lr: 0.003, batch: 32, steps: NA.brl.stepsFor(p.task, 'dqn'), clip: 1 };
     if (p.family === 'sequence') return { lr: 0.003, batch: p.task === 'language' ? 16 : 32, steps: p.task === 'language' ? 3000 : p.task === 'sentences' ? 1500 : 1000, clip: 1 };
     if (p.family === 'digits') return { lr: 0.003, batch: 32, steps: 1500, clip: 0 };
     if (p.family === 'table') return { lr: 0.01, batch: 32, steps: 2000, clip: 0 };
@@ -91,10 +100,12 @@
   const PB = (merge, ...branches) => ({ type: 'parallel', merge, branches }); // parallel branches
   BT.TEMPLATES = [
     { id: 'empty', label: 'Empty', hint: 'Just the embedding and the output: build the rest yourself.', families: ['sequence'], blocks: () => [] },
-    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [] },
-    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [D(16), D(16)] },
-    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
-    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [D(64)] },
+    { id: 'linear', label: 'Linear', hint: 'No hidden layer: one weighted sum per output, so only straight boundaries. Build up from here.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series', 'control'], blocks: () => [] },
+    { id: 'mlp', label: 'Small MLP', hint: 'Two hidden layers of 16 ReLU neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series', 'control'], blocks: () => [D(16), D(16)] },
+    { id: 'deep', label: 'Deep MLP', hint: 'Five hidden layers of 24 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'control'], blocks: () => [D(24), D(24), D(24), D(24), D(24)] },
+    { id: 'wide', label: 'One wide layer', hint: 'A single hidden layer of 64 neurons.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series', 'control'], blocks: () => [D(64)] },
+    { id: 'rlcnn', label: 'Small CNN', hint: 'A convolution finds the ball, the walls and you wherever they are, a pooling halves the picture, then a dense layer decides.', families: ['control'], kinds: ['image'], blocks: () => [{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'flatten' }, D(32)] },
+    { id: 'rlgru', label: 'GRU', hint: 'A GRU reads the readings one step at a time, oldest first: its memory can work out how fast things move.', families: ['control'], kinds: ['series'], blocks: () => [{ type: 'rnn', cell: 'gru', units: 16 }, { type: 'seqpool', mode: 'last' }, D(16)] },
     { id: 'cnn', label: 'Small CNN', hint: 'Two convolution + pooling stages, then a dense layer.', families: ['digits'], blocks: () => [{ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'conv', filters: 16, k: 3, stride: 1, act: 'relu' }, { type: 'pool', size: 2 }, { type: 'flatten' }, D(32)] },
     { id: 'transformer', label: 'Tiny transformer', hint: 'Two transformer blocks with two attention heads each.', families: ['sequence'], blocks: () => [{ type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'transformer', heads: 2, mlp: 4, causal: true }, { type: 'layernorm' }] },
     { id: 'attention', label: 'One attention layer', hint: 'A single attention layer and an MLP, the smallest model that can look back.', families: ['sequence'], blocks: () => [{ type: 'attention', heads: 1, causal: true, residual: true }, { type: 'dense', units: 32, act: 'relu', residual: false }] },
@@ -123,16 +134,18 @@
     { id: 'c-forest', label: 'Random forest', hint: 'Many deep trees, each on a random sample of the data and of the inputs, voting together.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'forest', trees: 50, depth: 8, features: 'sqrt', minLeaf: 1 }] },
     { id: 'c-boost', label: 'Gradient boosting (XGBoost)', hint: 'Small trees added one after another, each fixing what the others still get wrong: the winner on tables.', families: ['plane', 'curve', 'surface', 'digits', 'table', 'series'], blocks: () => [{ type: 'boost', rounds: 100, eta: 0.3, depth: 4, lambda: 1, gamma: 0, subsample: 1, colsample: 1 }] },
   ];
-  BT.templatesFor = (family) => BT.TEMPLATES.filter((t) => t.families.includes(family));
+  // the templates for a kind of data (with the data, only those that suit its input: a CNN for a picture of a world)
+  BT.templatesFor = (family, d) => BT.TEMPLATES.filter((t) => t.families.includes(family) && (!t.kinds || (d && d.input && t.kinds.includes(d.input.kind))));
   // the losses that suit a problem; a table's depend on whether its data is classes or a value
   BT.lossesFor = (p, d) => (p.family !== 'table' ? BT.FAMILIES[p.family].losses : d && d.output && d.output.kind === 'value' ? ['mse', 'mae', 'huber'] : ['xent', 'mse', 'hinge']);
   // a template's blocks for a kind of data: dense layers need a flat vector, so on pictures and series the plain
   // layer templates start with a Flatten (classic models read the rows of numbers as they are)
   const FLAT_TEMPLATES = new Set(['linear', 'mlp', 'deep', 'wide']);
-  BT.templateBlocks = (t, family) => {
+  BT.templateBlocks = (t, family, kind) => {
     const blocks = t.blocks();
-    // a window of a series read as one row of numbers, like the pixels of a picture (classic models read rows anyway)
-    if ((family === 'digits' || family === 'series') && FLAT_TEMPLATES.has(t.id)) blocks.unshift({ type: 'flatten' });
+    // a window of a series read as one row of numbers, like the pixels of a picture (classic models read rows anyway);
+    // a world seen as a picture or as readings likewise
+    if ((family === 'digits' || family === 'series' || kind === 'image' || kind === 'series') && FLAT_TEMPLATES.has(t.id)) blocks.unshift({ type: 'flatten' });
     return blocks;
   };
   // runs of consecutive blocks that make one copy of a part of your own (they carry the same grp): [{ grp, part, from, to }]
@@ -386,6 +399,32 @@
       Xtr: gather(X, P, tr, Float32Array), Ytr: Int32Array.from(tr.map((i) => Y[i])), nTr, Xva: gather(X, P, va, Float32Array), Yva: Int32Array.from(va.map((i) => Y[i])), nVa: va.length };
   }
 
+  // ------------------------------------------------------------------ worlds to act in
+  /* The settings of each world beside the learning ones (BRL.defaults): how the model sees it (view), and for the
+     maze which one, a bonus for getting closer, a new random maze every episode, a slippery floor; for the levers
+     how many. */
+  const WORLD_DEFAULTS = {
+    levers: { levers: 3 },
+    maze: { view: 'around', maze: 'pits', closer: true, random: false, slip: 0 },
+    pole: { view: 'state' },
+    catch: { view: 'numbers' },
+  };
+  BT.VIEWS = {
+    maze: [{ value: 'around', label: 'Around it', title: 'The 24 squares around it (walls, pits, the goal, where it has been) and which way the goal is: 104 inputs. What it learns can carry over to other mazes.' }, { value: 'square', label: 'Its square', title: 'Which square it is on, one input per square (48): like a table, it can learn this maze and no other.' }, { value: 'picture', label: 'Picture', title: 'The whole maze as a picture of 5 channels, 6 × 8: walls, pits, the goal, where it is, where it has been. For convolutions.' }],
+    pole: [{ value: 'state', label: '4 numbers', title: 'The cart’s position and speed, the pole’s angle and how fast it turns' }, { value: 'readings', label: 'Last 4 readings', title: 'Only the cart’s position and the pole’s angle, for the last 4 steps (a sequence of 4 × 2): the speeds have to be worked out from how they change' }],
+    catch: [{ value: 'numbers', label: '4 numbers', title: 'Where the ball is, which way it drifts, where the paddle is' }, { value: 'pixels', label: 'Pixels', title: 'Two pictures of the 8 × 5 board, now and a step ago (2 channels): which way the ball drifts is in the difference' }],
+  };
+  // the settings the world itself takes
+  BT.worldSettings = (p, s) => (p.task === 'levers' ? { levers: s.levers } : p.task === 'maze' ? { view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0 } : { view: s.view });
+  function controlData(p, s, seed) {
+    const E = NA.rlEnvs, BRL = NA.brl, ws = BT.worldSettings(p, s), world = E.make(p.task, ws), method = BRL.METHODS[s.method] ? s.method : 'dqn', K = BRL.outputs(method, world.nA);
+    // no examples with answers: observations from random play, so every view that shows an input has one to show
+    const n = 200, nTr = 160, X = E.samples(world, n, new NA.RNG(seed * 31 + 7)), F = world.obsSize;
+    const names = method === 'dqn' || method === 'ga' ? world.actions.map((a) => (method === 'dqn' ? `Q(${a})` : a)) : [...world.actions, ...(K > world.nA ? ['value'] : [])];
+    return { family: 'control', task: p.task, world: p.task, ws, method, s, input: world.input, output: { kind: 'value', k: K }, nA: world.nA, actions: world.actions.slice(), obsNames: world.obsNames, names,
+      Xtr: X.slice(0, nTr * F), Ytr: new Float32Array(nTr * K), nTr, Xva: X.slice(nTr * F), Yva: new Float32Array((n - nTr) * K), nVa: n - nTr };
+  }
+
   // ------------------------------------------------------------------ making data
   /* Returns { family, input, output, Xtr, Ytr, nTr, Xva, Yva, nVa, classes, names, vocab, ... }: inputs as
      Float32Array (vectors, images) or Int32Array (tokens), targets as Int32Array (classes, tokens; −1 = no
@@ -399,6 +438,7 @@
     if (fam === 'seqclass') return seqClassData(p, s, seed);
     if (fam === 'surface') return surfaceData(p, s, seed);
     if (fam === 'table') return tableData(custom.table, s, seed);
+    if (fam === 'control') return controlData(p, s, seed);
     if (p.task === 'language') return languageData(s, seed);
     if (p.task === 'sentences') return sentenceData(s, seed);
     return algoData(p.task, s, seed);

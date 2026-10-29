@@ -2,20 +2,23 @@
    Three examples share it. A maze, learned with a table of Q-values (one maze at a time) or with a Q-network that
    sees what is around it and so finds its way through mazes it never met (DQN). Three-line, a 4 × 4 board game it
    learns by playing against itself, with a table of positions or a small network. Four-line, a 5 × 5 board game
-   with far too many positions for a table, learned the same way with a network. Train it, watch it learn one move
-   at a time, test it slowly with what its model computes drawn beside the board at every step, and play against it. */
+   with far too many positions for a table, learned the same way with a network. Evolution, a small network that
+   balances a pole, bred by a genetic algorithm instead of trained (js/rl-evolve.js has its board and panels). Train
+   it, watch it learn one move at a time, test it slowly with what its model computes drawn beside the board at
+   every step, and play against it (or, with the pole, try it yourself). */
 (function (NA) {
   'use strict';
   const { el, clear, clamp, fmt, fmtPct, fmtInt, theme } = NA;
   const App = NA.app, H = NA.labHost, UI = NA.labUI, RL = NA.rl;
   const EVERY = { three: 250, four: 250 }; // self-play games between two checks of how well it plays
-  const WATCH_MS = { maze: 110, three: 420, four: 420 };
-  const TEST_MS = { maze: 750, three: 1300, four: 1300 }, SPEED = { slow: 1.8, normal: 1, fast: 0.35 }; // a test's pace
-  const NAMES = { maze: 'Maze', three: 'Three-line', four: 'Four-line' };
+  const WATCH_MS = { maze: 110, three: 420, four: 420, evolve: 1000 };
+  const TEST_MS = { maze: 750, three: 1300, four: 1300, evolve: 40 }, SPEED = { slow: 1.8, normal: 1, fast: 0.35 }; // a test's pace
+  const NAMES = { maze: 'Maze', three: 'Three-line', four: 'Four-line', evolve: 'Evolution' };
+  const EVO = NA.rlEvo;
   const STONE = ['', 'blue', 'orange'];
 
   const LAB = H.transport({ id: 'rl', screens: { network: 'Board', data: 'Agent', insp: 'Inspect' }, budget: 12, version: 0, st: {}, centerView: 'board',
-    show: { values: true, arrows: true, inside: true }, models: { maze: 'table', three: 'table', four: 'net' }, mazeId: 'pits', extra: [], speed: 'normal', test: null });
+    show: { values: true, arrows: true, inside: true }, models: { maze: 'table', three: 'table', four: 'net', evolve: 'ga' }, mazeId: 'pits', extra: [], speed: 'normal', test: null });
 
   // ------------------------------------------------------------------ the mazes
   LAB.mazeList = function () { return RL.MAZE_SET.concat(this.extra); };
@@ -40,10 +43,11 @@
      Q-network for all mazes, a table and a network for Three-line, a network for Four-line. */
   LAB.agentKey = function (ex = this.ex) {
     const m = this.models[ex];
-    return ex === 'maze' ? (m === 'net' ? 'maze/net' : `maze/table/${this.mazeId}`) : ex === 'three' ? `three/${m}` : 'four';
+    return ex === 'maze' ? (m === 'net' ? 'maze/net' : `maze/table/${this.mazeId}`) : ex === 'three' ? `three/${m}` : ex === 'evolve' ? 'evolve' : 'four';
   };
   LAB.state = function (key) {
     if (this.st[key]) return this.st[key];
+    if (key === 'evolve') return (this.st[key] = EVO.state(key));
     const ex = key.split('/')[0], model = ex === 'four' ? 'net' : key.split('/')[1];
     const S = { key, id: ex, model, n: 0, rng: RL.rand({ maze: 11, three: 22, four: 33 }[ex]), ev: RL.rand(99), history: [] };
     if (ex === 'maze') {
@@ -101,10 +105,15 @@
   // ------------------------------------------------------------------ training
   LAB.trainChunk = function (budget, maxSteps) {
     if (this.watch) return 0; // watching: one move at a time, in frame()
+    if (this.S.id === 'evolve') return EVO.trainChunk(this, budget, maxSteps);
     const S = this.S, t0 = performance.now();
     let k = 0;
     do {
-      if (S.id === 'maze') this.episodeDone(S.model === 'net' ? this.netEpisode() : RL.mazeEpisode(this.trainMaze(), S.Q, S.o, S.rng));
+      if (S.id === 'maze') {
+        const m = this.trainMaze(), e = S.model === 'net' ? this.netEpisode(m, true) : RL.mazeEpisode(m, S.Q, S.o, S.rng, true);
+        S.lastTrain = { maze: m, path: e.path, n: S.n + 1 };
+        this.episodeDone(e);
+      }
       else this.gameDone(RL.selfPlay(S.game, S.brain, S.o, S.rng));
       k++;
     } while (performance.now() - t0 < budget && k < maxSteps);
@@ -120,13 +129,27 @@
     m.slip = S.maze.slip;
     return m;
   };
-  LAB.netEpisode = function () {
+  LAB.netEpisode = function (m = this.trainMaze(), keep) {
     const S = this.S;
-    return RL.netEpisode(this.trainMaze(), S.agent, { eps: RL.netSchedule(S.n, S.o.eps).eps, lr: S.o.lr, gamma: S.o.gamma }, S.rng);
+    return RL.netEpisode(m, S.agent, { eps: RL.netSchedule(S.n, S.o.eps).eps, lr: S.o.lr, gamma: S.o.gamma }, S.rng, keep);
   };
-  // the maze on the board: the one chosen, or the random maze it is learning on while you watch
-  LAB.shownMaze = function () { const S = this.S, w = S.walk || (this.watch ? S.walkDone : null); return (w && w.maze) || S.maze; };
-  LAB.shownName = function () { return this.shownMaze() === this.S.maze ? this.mazeName() : 'A random training maze'; };
+  // what it trains on: the maze shown, or a new random maze every episode
+  LAB.setTrainOn = function (v) {
+    const S = this.S;
+    if (S.o.on === v) return;
+    S.o.on = v; this.trainShow = null;
+    this.buildAgain(); this.renderBar();
+    NA.ui.toast.show(v === 'maze' ? 'Every training episode is now the maze shown.'
+      : S.model === 'table' ? 'Every training episode is now a new random maze. A table cannot learn from that, since its rows are squares, not situations: watch New mazes stay near 0. The Q-network can.'
+        : 'Every training episode is now a new random maze: while it trains, the board shows them.');
+  };
+  /* The maze on the board: the one chosen; the random maze it is learning on while you watch; or, while it trains
+     on random mazes, the latest of them, a new one twice a second (when it stops, the chosen maze is back). */
+  LAB.shownMaze = function () { const S = this.S, w = S.walk || (this.watch ? S.walkDone : null); return (w && w.maze) || (this.trainShow && this.trainShow.maze) || S.maze; };
+  LAB.shownName = function () {
+    const M = this.shownMaze();
+    return M === this.S.maze ? this.mazeName() : this.trainShow && M === this.trainShow.maze ? `Training: random maze ${fmtInt(this.trainShow.n)}` : 'A random training maze';
+  };
   /* The maze: now and then, the average length and return of the episodes, and how its best moves do (no
      exploring) on the maze shown and on 100 random mazes it never trains on, the same 100 every time; the network
      also on the named mazes. Getting through the maze shown but not the new ones is overfitting. */
@@ -173,6 +196,7 @@
   // watching: it learns one move at a time, slowly enough to follow (the network on the maze shown)
   LAB.watchTick = function () {
     const S = this.S;
+    if (S.id === 'evolve') { EVO.watchTick(this); return; }
     if (S.id === 'maze') {
       const net = S.model === 'net';
       if (!S.walk) { const M0 = this.trainMaze(); S.walk = { maze: M0, s: M0.start, path: [M0.start], steps: 0, total: 0, seen: (() => { const u = new Uint8Array(M0.n); u[M0.start] = 1; return u; })() }; }
@@ -208,7 +232,7 @@
   LAB.onPause = function () { this.bump(); };
   LAB.stepOnce = function () {
     if (this.test) { this.testAuto(false); this.testGo(this.test.k + 1); return; }
-    if (this.training) this.pause(); if (this.S.play) this.S.play = null; this.watch ? this.watchTick() : this.trainChunk(0, 1);
+    if (this.training) this.pause(); if (this.S.play) { if (this.S.id === 'evolve') EVO.listen(this, false); this.S.play = null; } this.watch ? this.watchTick() : this.trainChunk(0, 1);
   };
   LAB.reset = function () { if (this.training) this.pause(); this.test = null; this.fresh(); this.buildAgain(); this.renderBar(); NA.ui.toast.show(`A new ${NAMES[this.ex]} agent that knows nothing yet. Press Train.`); };
   LAB.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true; };
@@ -225,7 +249,7 @@
     const S = this.S;
     if (this.training) this.pause();
     this.watch = false; if (this.watchChip) this.watchChip.setAttribute('aria-pressed', 'false');
-    if (S.play) S.play = null;
+    if (S.play) { if (S.id === 'evolve') EVO.listen(this, false); S.play = null; }
     const frames = this.makeFrames();
     this.test = { frames, k: 0, auto: true, at: performance.now() + this.testMs() * 0.6, me: frames.me };
     this.bump(); this.renderBar();
@@ -235,6 +259,7 @@
   LAB.testMs = function () { return TEST_MS[this.ex] * SPEED[this.speed]; };
   LAB.makeFrames = function () {
     const S = this.S;
+    if (S.id === 'evolve') return EVO.makeFrames(this);
     if (S.id === 'maze') {
       if (S.model === 'net') return RL.netRun(S.maze, S.net, S.rng, true, 60).frames;
       const frames = [];
@@ -279,11 +304,13 @@
   // how the test went, and where it is
   LAB.testResult = function () {
     const T = this.test, f = T.frames[T.frames.length - 1];
+    if (this.S.id === 'evolve') return EVO.testResult(this);
     if (this.S.id === 'maze') return f.r > 0 ? `reached the goal in ${T.frames.length} steps` : f.r === -1 ? `fell into a pit after ${T.frames.length} steps` : `did not get through in ${T.frames.length} steps`;
     return f.winner === T.me ? `it won as ${STONE[T.me]}` : f.winner ? 'the rule-follower won' : 'a draw';
   };
   LAB.testCount = function () {
     const T = this.test, n = T.frames.length, last = T.k >= n - 1;
+    if (this.S.id === 'evolve') return EVO.testCount(this);
     if (this.S.id === 'maze') return `Step ${T.k + 1} of ${n}${last ? `: ${this.testResult()}` : ''}`;
     return last ? `Game over: ${this.testResult()}` : `Move ${T.k + 1} of ${n - 1}`;
   };
@@ -298,6 +325,7 @@
   // ------------------------------------------------------------------ playing against it
   LAB.startPlay = function (human, quiet) {
     const S = this.S;
+    if (S.id === 'evolve') { EVO.startPlay(this); return; }
     if (this.training) this.pause();
     this.watch = false; if (this.watchChip) this.watchChip.setAttribute('aria-pressed', 'false');
     this.test = null;
@@ -306,7 +334,7 @@
     this.bump(); this.renderBar();
     if (!quiet) NA.ui.toast.show(human === 1 ? `You are ${STONE[1]} and move first: ${NA.tapWord(true)} a cell.` : `You are ${STONE[2]}: it moves first.`);
   };
-  LAB.stopPlay = function () { this.S.play = null; this.bump(); this.renderBar(); };
+  LAB.stopPlay = function () { if (this.S.id === 'evolve') EVO.listen(this, false); this.S.play = null; this.bump(); this.renderBar(); };
   LAB.place = function (i) {
     const S = this.S, P = S.play;
     P.b[i] = P.turn; P.order.push(i);
@@ -336,18 +364,20 @@
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
-    this.tabs = UI.tabs(ui.right, [{ id: 'overview', label: 'Overview' }, { id: 'train', label: 'Training' }, { id: 'inspect', label: ex === 'maze' ? 'Q-values' : 'Its view' }], (id, body) => this.buildTab(id, body));
+    this.tabs = UI.tabs(ui.right, [{ id: 'overview', label: 'Overview' }, { id: 'train', label: 'Training' }, { id: 'inspect', label: ex === 'maze' ? 'Q-values' : ex === 'evolve' ? 'Population' : 'Its view' }], (id, body) => this.buildTab(id, body));
     this.offTheme = theme.onChange(() => this.bump());
     this.bump();
   };
-  LAB.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); this.watch = false; this.test = null; };
+  LAB.deactivate = function () { if (this.offTheme) this.offTheme(); if (this.resizeObs) this.resizeObs.disconnect(); if (this.arch) this.arch.destroy(); EVO.listen(this, false); if (this.S && this.S.id === 'evolve') this.S.play = null; this.watch = false; this.test = null; };
   LAB.archText = function () {
     const S = this.S;
+    if (S.id === 'evolve') return EVO.archText(this);
     if (S.id === 'maze') return S.model === 'net' ? `Q-network ${S.net.nIn} → ${S.net.nH} ReLU → 4, learned on random mazes (DQN)` : `Q-table: ${S.maze.cell.filter((c) => c !== '#').length} squares × 4 moves`;
     return S.model === 'table' ? `value table: ${fmtInt(S.brain.size)} positions, learned by self-play` : `value network ${S.brain.nIn} → ${S.brain.nH} tanh → 1 sigmoid, learned by self-play`;
   };
   LAB.stateText = function () {
     const S = this.S;
+    if (S.id === 'evolve') return EVO.stateText(this);
     if (this.test) return 'Testing';
     if (S.play) return S.play.over ? 'Game over' : S.play.turn === S.play.human ? 'Your move' : 'Its move';
     return this.training ? (this.watch ? 'Watching it learn' : 'Training') : S.n === 0 ? 'Untrained' : 'Paused';
@@ -356,11 +386,16 @@
     const S = this.S, T = this.test;
     if (this.training && this.watch) { if (now >= (this.pauseUntil || 0) && now - (this.lastTick || 0) >= WATCH_MS[S.id]) { this.lastTick = now; this.watchTick(); } }
     else this.runFrame();
+    // training on random mazes: the board shows the mazes it learns on, the latest one twice a second
+    if (this.training && !this.watch && S.id === 'maze' && S.o.on === 'random' && S.lastTrain) { if (now - (this.trainShowAt || 0) > 450) { this.trainShowAt = now; this.trainShow = S.lastTrain; this.dirty = true; this.archStale = true; } }
+    else if (this.trainShow) { this.trainShow = null; this.dirty = true; this.archStale = true; }
     // a test plays back at its pace
     if (T && T.auto && now >= T.at) { if (T.k < T.frames.length - 1) this.testGo(T.k + 1); else { T.auto = false; this.updateBar(); } }
+    // the pole: the best network plays on the board, or you balance it
+    if (S.id === 'evolve') EVO.frame(this, now);
     // its move, a moment after yours
     const P = S.play;
-    if (P && !P.over && P.turn !== P.human && now >= this.agentAt) { this.agentAt = Infinity; this.place(RL.bestMove(S.game, S.brain, P.b, P.turn, S.rng).move); }
+    if (P && S.game && !P.over && P.turn !== P.human && now >= this.agentAt) { this.agentAt = Infinity; this.place(RL.bestMove(S.game, S.brain, P.b, P.turn, S.rng).move); }
     if (now - (this.lastRo || 0) > 150) { this.lastRo = now; this.readouts(); }
     if (this.dirty && this.canvas.offsetParent && (!this.training || this.watch || now - (this.lastDraw || 0) > 90)) { this.lastDraw = now; this.dirty = false; this.draw(); }
     if (this.centerView === 'arch') {
@@ -374,7 +409,7 @@
   LAB.buildReadouts = function () {
     const S = this.S, root = this.ui.readouts;
     clear(root);
-    this.ro = UI.readouts(root, S.id === 'maze'
+    this.ro = UI.readouts(root, S.id === 'evolve' ? EVO.readoutDefs() : S.id === 'maze'
       ? (S.model === 'net'
         ? [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'Its best move on every square, from S, on the maze shown' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }]
         : [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'How often its best route (no exploring) reaches the goal of the maze shown, over 20 tries' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }, { key: 'c', label: 'Route', title: 'Steps on its best route through the maze shown' }])
@@ -382,6 +417,7 @@
   };
   LAB.readouts = function () {
     const S = this.S, h = S.history[S.history.length - 1];
+    if (S.id === 'evolve') { EVO.readouts(this); return; }
     this.ro.set('n', fmtInt(S.n));
     if (S.id === 'maze' && S.model === 'net') { const r = this.here(); this.ro.set('a', r.end === 'goal' ? `${r.steps} steps` : r.end === 'pit' ? 'falls in a pit' : 'gets lost'); this.ro.set('b', h && h.fresh != null ? fmtPct(h.fresh, 0) : '—'); }
     else if (S.id === 'maze') { const fr = lastFresh(S.history); this.ro.set('a', h ? fmtPct(h.greedy, 0) : '—'); this.ro.set('b', fr != null ? fmtPct(fr, 0) : '—'); this.ro.set('c', h && h.greedy ? `${fmt(h.route, 1)} steps` : '—'); }
@@ -389,12 +425,13 @@
   };
 
   LAB.buildHyper = function (root) {
+    if (this.S.id === 'evolve') { EVO.buildHyper(this, root); return; }
     const S = this.S, maze = S.id === 'maze', net = S.model === 'net';
     root.append(
       UI.field('Exploration ε', UI.select([0, 0.05, 0.1, 0.2, 0.3].map((v) => ({ value: v, label: String(v) })), S.o.eps, (v) => { S.o.eps = +v; this.leftDirty = true; }), 'The share of moves it makes at random, to try things out'),
       !net ? UI.field('Learning rate α', UI.select([0.05, 0.1, 0.2, 0.5, 1].map((v) => ({ value: v, label: String(v) })), S.o.alpha, (v) => { S.o.alpha = +v; this.leftDirty = true; }))
         : UI.field('Learning rate', UI.select((maze ? [0.003, 0.01, 0.03] : [0.01, 0.02, 0.05, 0.1]).map((v) => ({ value: v, label: String(v) })), S.o.lr, (v) => { S.o.lr = +v; this.leftDirty = true; })),
-      maze ? UI.field('Train on', UI.select([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'A new random maze each episode' }], S.o.on, (v) => { S.o.on = v; this.buildAgain(); }), 'The maze of each training episode') : null,
+      maze ? UI.field('Train on', UI.select([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'A new random maze each episode' }], S.o.on, (v) => this.setTrainOn(v)), 'The maze of each training episode') : null,
       el('div', { class: 'sheet-actions' },
         el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.watch = false; this.test = null; this.fastForward(maze ? (net ? 5000 : 500) : 2000); } }, maze ? (net ? 'Train 5,000 mazes' : 'Train 500 episodes') : 'Train 2,000 games'),
         el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.reset(); } }, 'Start from nothing')));
@@ -402,6 +439,7 @@
 
   // ------------------------------------------------------------------ left: the task, how it learns
   LAB.buildLeft = function (root) {
+    if (this.S.id === 'evolve') { EVO.buildLeft(this, root); return; }
     const S = this.S, maze = S.id === 'maze', net = S.model === 'net', body = UI.panel(root, maze ? 'The maze' : NAMES[S.id]);
     this.leftParts = {};
     const P = this.leftParts, set = (key) => (v) => { S.o[key] = v; this.leftDirty = true; };
@@ -417,7 +455,7 @@
       P.slip = UI.slider({ label: 'Slippery floor (moves that go sideways)', min: 0, max: 0.3, step: 0.01, value: S.maze.slip, format: (v) => fmtPct(v, 0), onInput: (v) => { S.maze.slip = v; this.bump(); } });
       learn.push(P.gamma);
       P.onNote = UI.note(ON_NOTE(S));
-      P.on = el('div', { class: 'field rl-on' }, el('span', { text: 'Train on' }), UI.seg([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'Random mazes', title: 'A new random maze every episode' }], S.o.on, (v) => { S.o.on = v; P.onNote.textContent = ON_NOTE(S); clear(this.ui.hyper); this.buildHyper(this.ui.hyper); this.bump(); }, 'Train on'));
+      P.on = el('div', { class: 'field rl-on' }, el('span', { text: 'Train on' }), UI.seg([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'Random mazes', title: 'A new random maze every episode' }], S.o.on, (v) => this.setTrainOn(v), 'Train on'));
       body.append(
         UI.section('The task', UI.note(`Get from S to the green goal (+1). Falling into a red pit ends the run at −1, and every step costs 0.02, so shorter is better. The agent is told nothing else: it learns only from these rewards. Choose the maze above the board${net ? '' : '; each maze gets a table of its own'}.`), P.slip),
         net ? UI.section('How it learns: a Q-network (DQN)', UI.note('A table has a row per square of one maze. This network has none: it sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, and outputs a Q-value for each move. It learned on random mazes, easy ones first, as DQN did on Atari games: a replay memory of past moves and a target network. The same weights then work in mazes it never met.'), ...learn)
@@ -442,24 +480,26 @@
 
   // ------------------------------------------------------------------ centre: the board, its bar, the picture beside it
   LAB.buildCenter = function (root) {
-    const maze = this.ex === 'maze';
-    this.exSeg = UI.seg([{ value: 'maze', label: 'Maze' }, { value: 'three', label: 'Three-line' }, { value: 'four', label: 'Four-line' }], this.ex, (v) => { if (v !== this.ex) App.loadPreset(`rl-${v}`); }, 'Example');
-    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : 'Board' }, { value: 'arch', label: 'Architecture', title: `The agent and its model, part by part: ${NA.openHint('a part', { zoom: true })}` }], this.centerView, (v) => this.setCenterView(v), 'View');
+    const maze = this.ex === 'maze', evo = this.ex === 'evolve';
+    this.exSeg = UI.seg([{ value: 'maze', label: 'Maze' }, { value: 'three', label: 'Three-line' }, { value: 'four', label: 'Four-line' }, { value: 'evolve', label: 'Evolution', title: 'A network bred by a genetic algorithm to balance a pole' }], this.ex, (v) => { if (v !== this.ex) App.loadPreset(v === 'maze' ? 'rl-mazes' : `rl-${v}`); }, 'Example');
+    this.viewSeg = UI.seg([{ value: 'board', label: maze ? 'Maze' : evo ? 'Pole' : 'Board' }, { value: 'arch', label: 'Architecture', title: `The agent and its model, part by part: ${NA.openHint('a part', { zoom: true })}` }], this.centerView, (v) => this.setCenterView(v), 'View');
     this.boardTools = el('span', { class: 'lab-tools' }, el('span', { class: 'lens-label', text: 'Show' }),
-      UI.chip(maze ? 'Values' : 'Its view of each move', this.show.values, (on) => { this.show.values = on; this.dirty = true; }, maze ? 'Colour each square by the value of its best move' : 'In each empty cell, the chance to win it gives the player to move'),
+      UI.chip(maze ? 'Values' : evo ? 'Population' : 'Its view of each move', this.show.values, (on) => { this.show.values = on; this.dirty = true; }, maze ? 'Colour each square by the value of its best move' : evo ? 'Under the cart, the last generation: one bar per network, fittest first' : 'In each empty cell, the chance to win it gives the player to move'),
       maze ? UI.chip('Best moves', this.show.arrows, (on) => { this.show.arrows = on; this.dirty = true; }, 'An arrow for the move it rates best on each square') : null,
       UI.chip('Inside its model', this.show.inside, (on) => { this.show.inside = on; this.stage.classList.toggle('rl-tall', on); this.dirty = true; }, 'Beside the board: what its model computes for the state being looked at'));
     root.append(el('div', { class: 'lab-toolbar' }, this.exSeg, this.viewSeg, this.boardTools));
     this.bar = el('div', { class: 'lab-toolbar rl-bar' });
     root.append(this.bar);
     this.stage = el('div', { class: 'lab-stage rl-stage' + (this.show.inside ? ' rl-tall' : '') });
-    this.canvas = el('canvas', { 'aria-label': maze ? 'The maze, with what the agent has learned about each square, and beside it what its model computes' : 'The board, and beside it what its model computes' });
+    this.canvas = el('canvas', { 'aria-label': maze ? 'The maze, with what the agent has learned about each square, and beside it what its model computes' : evo ? 'The cart and its pole, balanced by the best network so far, the last generation of networks, and beside it what the network computes' : 'The board, and beside it what its model computes' });
     this.stage.append(this.canvas);
     this.archStage = el('div', { class: 'lab-stage arch-stage' });
     this.arch = new NA.ArchView(this.archStage, { label: `The agent and its model: ${NA.openHint('a part', { zoom: true })}`, kicker: 'Architecture', build: (size) => NA.archRL.build(this, size), onFocus: (node, path) => { if (this.centerView === 'arch') this.info.set(this.arch.infoFor(node, path)); } });
     root.append(this.stage, this.archStage);
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 });
-    root.append(this.foot = el('div', { class: 'lab-foot' }, ...(maze
+    root.append(this.foot = el('div', { class: 'lab-foot' }, ...(evo
+      ? [key('s2', 'the best, carried on'), key('s1', 'children'), el('span', { class: 'lg-item', text: `bar: steps the pole stayed up (${fmtInt(NA.rlEvo.MAXT)} at most) · arrow: the way it pushes` })]
+      : maze
       ? [key('pos', 'goal +1'), key('neg', 'pit −1'), el('span', { class: 'lg-item', text: 'each step −0.02 · arrow: its best move · colour: the value of that move' })]
       : [el('span', { class: 'lg-item' }, el('i', { class: 'dot dot-filled', style: { background: 'var(--s1)', borderColor: 'var(--s1)' } }), `${STONE[1]} moves first`), el('span', { class: 'lg-item' }, el('i', { class: 'dot', style: { border: '2px solid var(--s2)', boxSizing: 'border-box' } }), STONE[2]), el('span', { class: 'lg-item', text: 'numbers: its chance to win after each move, for the player to move' })])));
     this.canvas.addEventListener('click', (e) => this.clickBoard(e));
@@ -471,7 +511,7 @@
     this.setCenterView(this.centerView);
   };
   const ON_NOTE = (S) => (S.model === 'net'
-    ? (S.o.on === 'random' ? 'Every episode is a new random maze, easy ones first, so what it learns has to hold in mazes in general. It never trains on the maze shown: New mazes says how well it generalizes.'
+    ? (S.o.on === 'random' ? 'Every episode is a new random maze, easy ones first, so what it learns has to hold in mazes in general; while it trains, the board shows them, the latest twice a second. It never trains on the maze you chose: New mazes says how well it generalizes.'
       : 'Every episode is the maze shown. It learns this one maze and forgets the rest: within a few hundred episodes New mazes falls from about 85% to around 20%. That is overfitting.')
     : (S.o.on === 'random' ? 'Every episode is a new random maze. A table cannot learn from that: its rows are squares, and square (3, 2) is a wall in one maze and the goal in the next, so each entry averages over all of them and fits none. It gets through almost no maze, this one included.'
       : 'Every episode is this maze, so it learns this maze square by square, and nothing it learns holds anywhere else: it gets through about 1 new maze in 100. To learn mazes in general, use the Q-network.'));
@@ -483,6 +523,8 @@
     clear(bar);
     const T = this.test, maze = S.id === 'maze', btn = (label, on, cls = 'btn', title) => el('button', { class: cls, type: 'button', title: title || null, onclick: on }, label);
     if (maze && !T) bar.append(UI.field('Maze', UI.select(this.mazeList().map((m) => ({ value: m.id, label: m.name })).concat([{ value: '__new', label: 'New random maze…' }]), this.mazeId, (v) => (v === '__new' ? this.newMaze() : this.setMaze(v)), { 'aria-label': 'Maze' })));
+    if (maze && !T) bar.append(el('div', { class: 'field rl-on' }, el('span', { text: 'Train on' }), UI.seg([{ value: 'maze', label: 'This maze', title: 'Every training episode on the maze shown' }, { value: 'random', label: 'Random mazes', title: 'A new random maze every training episode' }], S.o.on, (v) => this.setTrainOn(v), 'Train on')));
+    const evo = S.id === 'evolve';
     if ((maze || S.id === 'three') && !T) bar.append(UI.seg(maze ? [{ value: 'table', label: 'Q-table', title: 'One maze: a row of 4 values for each square' }, { value: 'net', label: 'Q-network', title: 'Any maze: a network that sees what is around it' }] : [{ value: 'table', label: 'Value table', title: 'A value for every position it has met' }, { value: 'net', label: 'Value network', title: 'A small network that judges any position' }], S.model, (v) => this.setModel(v), 'Model'));
     this.cnt = null; this.autoBtn = null;
     if (T) {
@@ -491,14 +533,16 @@
       bar.append(el('span', { class: 'rl-test' }, ic('⏮', 'Back to the start', () => { this.testAuto(false); this.testGo(0); }), ic('◀', 'One step back', () => { this.testAuto(false); this.testGo(this.test.k - 1); }), this.autoBtn, ic('▶▏', 'One step on', () => { this.testAuto(false); this.testGo(this.test.k + 1); })),
         this.cnt = el('span', { class: 'rl-count', text: this.testCount() }),
         UI.field('Speed', UI.select([{ value: 'slow', label: 'Slow' }, { value: 'normal', label: 'Normal' }, { value: 'fast', label: 'Fast' }], this.speed, (v) => { this.speed = v; }, { 'aria-label': 'Speed' })),
-        ic('↻', maze ? 'A new run' : 'A new game', () => this.startTest()), btn('End test', () => this.endTest(), 'btn btn-quiet'));
-    } else if (S.play) {
+        ic('↻', maze || evo ? 'A new run' : 'A new game', () => this.startTest()), btn('End test', () => this.endTest(), 'btn btn-quiet'));
+    } else if (S.play && evo) EVO.playBar(this, bar, btn);
+    else if (S.play) {
       const pl = S.play;
       bar.append(el('span', { class: 'rl-status', text: pl.over ? (pl.winner === pl.human ? 'You won.' : pl.winner ? 'It won.' : 'A draw.') : pl.turn === pl.human ? `You are ${STONE[pl.human]}: your move` : 'It is thinking…' }),
         btn('New game', () => this.startPlay(pl.human), pl.over ? 'btn btn-primary' : 'btn'), btn(`Play ${STONE[3 - pl.human]} instead`, () => this.startPlay(3 - pl.human), 'btn btn-quiet'), btn('Stop', () => this.stopPlay(), 'btn btn-quiet'));
     } else {
-      bar.append(btn(maze ? '▶ Test run' : '▶ Watch it play', () => this.startTest(), 'btn btn-primary', maze ? 'Its best move on every square, slowly, with what its model computes at each step' : 'It plays the rule-follower, one move at a time, with what its model computes at each move'));
-      if (!maze) bar.append(btn(`Play ${STONE[1]} (first)`, () => this.startPlay(1)), btn(`Play ${STONE[2]} (second)`, () => this.startPlay(2)));
+      bar.append(btn(maze || evo ? '▶ Test run' : '▶ Watch it play', () => this.startTest(), 'btn btn-primary', maze ? 'Its best move on every square, slowly, with what its model computes at each step' : evo ? 'The best network on a new start, slowly, with what it computes at every step' : 'It plays the rule-follower, one move at a time, with what its model computes at each move'));
+      if (evo) bar.append(btn('Try it yourself', () => this.startPlay(), 'btn', 'Balance the pole yourself: hold ← or → (or press either half of the board)'));
+      else if (!maze) bar.append(btn(`Play ${STONE[1]} (first)`, () => this.startPlay(1)), btn(`Play ${STONE[2]} (second)`, () => this.startPlay(2)));
     }
   };
   LAB.updateBar = function () {
@@ -531,6 +575,7 @@
     return { x: Math.round(B.x + (B.w - cs * cols) / 2), y: Math.round(B.y + (B.h - cs * rows) / 2 + 8), cs, cols, rows, W: Lo.W, H: Lo.H, inside: Lo.inside };
   };
   LAB.cellAt = function (e) {
+    if (this.S.id === 'evolve') return -1;
     const b = this.canvas.getBoundingClientRect(), G = this.grid(), c = Math.floor((e.clientX - b.left - G.x) / G.cs), r = Math.floor((e.clientY - b.top - G.y) / G.cs);
     return c < 0 || r < 0 || c >= G.cols || r >= G.rows ? -1 : r * G.cols + c;
   };
@@ -562,6 +607,7 @@
   LAB.valuesShown = function (pos) { return this.show.values && !!pos.toMove && !(pos.play && pos.play.turn === pos.play.human); };
 
   LAB.draw = function () {
+    if (this.S.id === 'evolve') { EVO.draw(this); return; }
     const G = this.grid(), ctx = NA.fitCanvas(this.canvas, G.W, G.H);
     ctx.clearRect(0, 0, G.W, G.H);
     if (this.S.maze) this.drawMaze(ctx, G); else this.drawBoard(ctx, G);
@@ -605,13 +651,14 @@
       if (i === this.hoverCell && c !== '#' && !T) { ctx.strokeStyle = theme.c('focus', 0.6); ctx.lineWidth = 1.5; ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2); }
     }
     // the path: the test so far, the episode being watched, or the route it would take now (greedy, from the start)
-    const walk = S.walk || (this.watch ? S.walkDone : null);
+    const walk = S.walk || (this.watch ? S.walkDone : null), tr = !T && !walk && this.trainShow && M === this.trainShow.maze ? this.trainShow : null;
     let path, here = null, move = null;
     if (T) { const f = T.frames[T.k]; path = T.frames.slice(0, T.k + 1).map((q) => q.s); here = f.s; move = f.a; if (T.k === T.frames.length - 1 && !T.auto) { path.push(f.s2); } }
     else if (walk) { path = walk.path; here = walk.path[walk.path.length - 1]; }
+    else if (tr) { path = tr.path; here = tr.path[tr.path.length - 1]; }
     else path = this.greedyRoute();
     if (path && path.length > 1) {
-      ctx.strokeStyle = T || walk ? theme.c('s7', 0.85) : theme.c('ink', 0.55); ctx.lineWidth = Math.max(2, cs * 0.06); ctx.setLineDash(T || walk ? [] : [cs * 0.12, cs * 0.1]); ctx.lineJoin = 'round';
+      ctx.strokeStyle = T || walk || tr ? theme.c('s7', 0.85) : theme.c('ink', 0.55); ctx.lineWidth = Math.max(2, cs * 0.06); ctx.setLineDash(T || walk || tr ? [] : [cs * 0.12, cs * 0.1]); ctx.lineJoin = 'round';
       ctx.beginPath(); path.forEach((s, k) => { const p = at(s); k ? ctx.lineTo(p.x + cs / 2, p.y + cs / 2) : ctx.moveTo(p.x + cs / 2, p.y + cs / 2); }); ctx.stroke(); ctx.setLineDash([]);
     }
     if (here !== null) {
@@ -686,8 +733,10 @@
     } else if (id === 'train') {
       const mk = (title, opts, legend, note) => { const c = el('canvas'), chart = new NA.charts.LineChart(c, opts); body.append(UI.section(title, el('div', { class: 'chart-box' }, c), legend, note ? UI.note(note) : null)); return chart; };
       const lg = (items) => el('div', { class: 'mini-legend' }, ...items.map(([n, tok]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: `var(--${tok})` } }), n)));
-      P.tiles = el('div', { class: 'tiles' }); body.append(P.tiles);
-      if (maze && net) {
+      if (S.id === 'evolve') EVO.buildTrain(this, body, mk, lg);
+      else { P.tiles = el('div', { class: 'tiles' }); body.append(P.tiles); }
+      if (S.id === 'evolve') { /* its charts are made */ }
+      else if (maze && net) {
         P.a = mk('Mazes it gets through', { height: 150, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['100 new mazes', 's1'], ['the 5 named mazes', 's7'], ['the maze shown', 'ink-2']]), 'Its best moves from S, no exploring. Trained on random mazes it never trains on any of these: they only test it. Networks trained this way wobble: a maze it got through can be lost again for a while. Trained on the maze shown only, it overfits: that maze is fine and the new ones fall.');
         P.b = mk('Steps per episode while learning', { height: 120, format: (v) => fmt(v, 1) }, null, 'On the random mazes it learns from, exploring. Its first mazes are easy, so this rises before it falls.');
       } else if (maze) {
@@ -709,7 +758,8 @@
     if (!P) return;
     if (id === 'overview') clear(P.findings).append(...FINDINGS(this).map(([lvl, t, x]) => el('div', { class: 'diag diag-' + lvl }, el('div', { class: 'diag-head' }, UI.pill(lvl, { good: 'Good', info: 'Note', warn: 'Watch', critical: 'Problem' }[lvl]), el('h4', { class: 'diag-title', text: t })), el('p', { class: 'diag-body', text: x }))));
     else if (id === 'train') {
-      if (S.maze && S.model === 'net') {
+      if (S.id === 'evolve') EVO.updateTrain(this, P);
+      else if (S.maze && S.model === 'net') {
         clear(P.tiles).append(UI.tile('Episodes', fmtInt(S.n), S.pretrained ? 'mostly trained offline' : null), UI.tile('Named mazes', last && last.named != null ? `${Math.round(last.named * 5)} of 5` : '—'), UI.tile('New mazes', last && last.fresh != null ? fmtPct(last.fresh, 0) : '—', 'of 100 it never trained on'));
         P.a.frame(); P.a.set({ series: [{ name: 'new mazes', color: theme.c('s1'), points: h.filter((q) => q.fresh != null).map((q) => [q.n, q.fresh]) }, { name: 'named mazes', color: theme.c('s7'), points: h.filter((q) => q.named != null).map((q) => [q.n, q.named]) }, { name: 'the maze shown', color: theme.c('ink-2'), points: h.filter((q) => q.greedy != null).map((q) => [q.n, q.greedy]) }] });
         P.b.frame(); P.b.set({ series: [{ name: 'steps', color: theme.c('ink-2'), points: h.filter((q) => q.steps != null).map((q) => [q.n, q.steps]) }] });
@@ -725,7 +775,7 @@
         P.a.frame(); P.a.set({ series: ser('rnd') });
         P.b.frame(); P.b.set({ series: ser('rules') });
       }
-    } else if (id === 'inspect') clear(P.box).append(...(S.maze ? this.inspectMaze() : this.inspectGame()));
+    } else if (id === 'inspect') clear(P.box).append(...(S.id === 'evolve' ? EVO.inspect(this) : S.maze ? this.inspectMaze() : this.inspectGame()));
   };
   const kv = (k, v, note) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }), note ? el('span', { class: 'kv-note', text: note }) : null);
   LAB.inspectMaze = function () {
@@ -760,6 +810,7 @@
   // ------------------------------------------------------------------ explanations
   const FINDINGS = (L) => {
     const S = L.S, h = S.history, last = h[h.length - 1], out = [];
+    if (S.id === 'evolve') return EVO.findings(L);
     if (!S.n) return [['info', 'Not trained yet', 'Press Train. It starts knowing nothing: every value is 0 (the maze) or a coin flip (the games).']];
     if (S.maze && S.model === 'net') {
       const r = L.here(), d = RL.shortest(S.maze);
@@ -785,9 +836,10 @@
   };
   const BOARD_INFO = (L) => {
     const S = L.S;
+    if (S.id === 'evolve') return EVO.boardInfo(L);
     if (S.maze && S.model === 'net') return { kicker: 'Maze', title: 'One network for every maze', about: [
       `The colours and arrows show what its network says on every square of ${L.mazeName()}, as if it stood there: blue where it expects reward, orange where it expects to lose. It has never trained on this maze, nor on any of the named ones: it learned on ${fmtInt(S.n)} random mazes, easy ones first.`,
-      'A table cannot do that: it has a row for each square of one maze. The network has none. It sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, so the same surroundings get the same answer in any maze. Every training episode is a new random maze (Train on, in the panel); pick New random maze to give it one nobody has seen.',
+      'A table cannot do that: it has a row for each square of one maze. The network has none. It sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, so the same surroundings get the same answer in any maze. Every training episode is a new random maze (Train on, above the maze): while it trains, the board shows them, the latest twice a second, and when it stops your maze is back. Pick New random maze to give it one nobody has seen.',
       'Test run walks its route slowly, with the 5 × 5 squares it sees outlined, and draws its network beside the maze at every step: the inputs, the 64 hidden neurons that fire, and the four Q-values. This is DQN (2013–15), the method that learned Atari games from the screen, here on mazes.'], code: NA.archRL.py.mazeNet(L) };
     if (S.maze) return { kicker: 'Maze', title: 'Q-learning: values from rewards', about: [
       'Each square is coloured by the value of its best move (blue: it expects reward from here, orange: it expects to lose), and the arrow is that move. At first every value is 0. The first time it stumbles into the goal, the square next to it learns that one move pays; on later visits that value is copied, a little discounted, to the squares before it. The values spread back from the goal like a scent, and the arrows line up into a route.',
@@ -805,6 +857,12 @@
 
   // ------------------------------------------------------------------ experiments, and the gallery's picture
   LAB.runTry = function (t) {
+    if (this.S.id === 'evolve') {
+      EVO.runTry(this, t);
+      if (this.tabs.current !== this.tabId) this.tabs.select(this.tabId); else this.updateTab();
+      if (t.predict) return new Promise((res) => { const wait = () => (this.training ? setTimeout(wait, 200) : res(this.measured())); wait(); });
+      return null;
+    }
     const S = this.S, retrain = (msg) => { this.test = null; this.fresh(); this.watch = false; this.buildAgain(); this.renderBar(); this.fastForward(t.n || (S.maze ? 1000 : 3000)); if (msg) NA.ui.toast.show(msg); };
     if (t.action === 'watch') {
       // the maze table starts over, so you see it from nothing; the rest keep what they know
@@ -844,6 +902,7 @@
     return null;
   };
   LAB.measured = function () {
+    if (this.S.id === 'evolve') return EVO.measured(this);
     const S = this.S, h = S.history, last = h[h.length - 1];
     if (!last) return '';
     if (S.maze && S.model === 'net') return `Measured: it gets through ${last.named != null ? `${Math.round(last.named * 5)} of the 5 named mazes and ` : ''}${fmtPct(last.fresh, 0)} of 100 new ones${S.o.on === 'maze' && S.freshBefore != null ? ` (${fmtPct(S.freshBefore, 0)} before it trained on this maze only)` : ''}.`;
@@ -855,6 +914,7 @@
   LAB.buildAgain = function () { clear(this.ui.left); this.buildLeft(this.ui.left); clear(this.ui.hyper); this.buildHyper(this.ui.hyper); this.bump(); };
   LAB.glyph = function (ctx, W, Hh, presetId) {
     const ex = (presetId || 'rl-maze').slice(3);
+    if (ex === 'evolve') { EVO.glyph(ctx, W, Hh); return; }
     const maze = (rows, x0, y0, cs) => new RL.Maze(rows).cell.forEach((c, i) => { ctx.fillStyle = c === '#' ? theme.c('line-2') : c === 'G' ? theme.c('pos', 0.7) : c === 'X' ? theme.c('neg', 0.6) : theme.c('line', 0.5); ctx.fillRect(x0 + (i % 8) * cs + 0.5, y0 + Math.floor(i / 8) * cs + 0.5, cs - 1, cs - 1); });
     if (ex === 'maze') { const cs = Math.min((W - 8) / 8, (Hh - 8) / 6); maze(RL.MAZE, (W - cs * 8) / 2, (Hh - cs * 6) / 2, cs); return; }
     if (ex === 'mazes') {

@@ -1,7 +1,9 @@
 /* builder-py.js — what you built in the model builder, written out as one PyTorch script you can run: the data
    (the same generators as the page, in Python), the model, the loss, the optimizer and its schedule, and the
    training loop with the same measures the page shows. Only torch is needed. A classic model (linear, k-NN,
-   trees, a forest, boosting) is written with scikit-learn, or XGBoost for boosting, on the same data. */
+   trees, a forest, boosting) is written with scikit-learn, or XGBoost for boosting, on the same data. Learning
+   from rewards writes the world in Python and the method's own loop: DQN, REINFORCE, actor-critic, PPO or a
+   genetic algorithm. */
 (function (NA) {
   'use strict';
   const BT = NA.builderTasks;
@@ -804,11 +806,157 @@ def story():
       '', '# ---------------------------------------------------------------- inside it, for the first validation example', 'x = Xva_[:1]',
       cls ? `print("probabilities:", ${M.proba}.round(3), "true class:", yva_[0])` : 'print("answer:", predict(x), "target:", yva_[0])', classicLook(b, d));
   }
+  // ------------------------------------------------------------------ learning from rewards
+  // seeded randomness for a score, so every measure plays the same starts (and training carries on where it was)
+  const SEEDED = (seed, body) => ['state = random.getstate()', `random.seed(${seed})`, ...body, 'random.setstate(state)'];
+  const PLAY = (pre) => [`${pre}o, done = self.reset(), False`, `${pre}while not done:`, `${pre}    o, _, done = self.step(policy(o))`];
+  function worldPy(d) {
+    const w = d.world, ws = d.ws;
+    if (w === 'levers') {
+      const k = ws.levers || 3;
+      return ['class World:', `    """A light shows one of ${k} colours. The lever of that colour pays 1 four times in five, any other one time`, '    in five. One pull per episode."""',
+        `    actions = [${d.actions.map((a) => JSON.stringify(a)).join(', ')}]`, '',
+        '    def reset(self):', `        self.light = random.randrange(${k})`, '        return self.obs()', '',
+        '    def obs(self):                                # one input per colour: 1 for the light that is on', `        return F.one_hot(torch.tensor(self.light), ${k}).float()`, '',
+        '    def step(self, a):                            # -> (observation, reward, done)', '        paid = random.random() < (0.8 if a == self.light else 0.2)', '        return self.obs(), float(paid), True', '',
+        '    def score(self, policy):', '        """The share of lights for which its best lever is the right one."""', '        right = 0', `        for light in range(${k}):`, '            self.light = light', '            right += policy(self.obs()) == light', `        return right / ${k}`];
+    }
+    if (w === 'pole') {
+      const rd = ws.view === 'readings';
+      return ['class World:', '    """A pole hinged on a cart that can be pushed left or right (Barto, Sutton and Anderson, 1983). It falls when it',
+        '    leans more than 12 degrees or the cart runs off its track; +1 for every step it stays up, up to 200."""', '    actions = ["push left", "push right"]', '    max_steps = 200', '',
+        '    def reset(self):', '        self.x, self.v, self.th, self.w = (random.uniform(-0.05, 0.05) for _ in range(4))', '        self.t = 0',
+        rd ? '        self.hist = [(self.x / 2.4, self.th / 0.2095)] * 3     # the readings before this one' : null, '        return self.obs()', '',
+        rd ? '    def obs(self):                                # (4, 2): position and angle, the last 4 steps, oldest first; no speeds' : '    def obs(self):                                # position, speed, angle, turning speed, scaled to about ±1',
+        rd ? '        return torch.tensor(self.hist + [(self.x / 2.4, self.th / 0.2095)])' : '        return torch.tensor([self.x / 2.4, self.v / 3, self.th / 0.2095, self.w / 3.5])', '',
+        '    def step(self, a):                            # one 0.02 s step: gravity 9.8, cart 1 kg, pole 0.1 kg and 1 m, a push of 10 N',
+        '        force = 10.0 if a == 1 else -10.0', '        ct, st = math.cos(self.th), math.sin(self.th)', '        tmp = (force + 0.05 * self.w * self.w * st) / 1.1',
+        '        acc = (9.8 * st - ct * tmp) / (0.5 * (4 / 3 - 0.1 * ct * ct / 1.1))', '        xacc = tmp - 0.05 * acc * ct / 1.1',
+        rd ? '        self.hist = self.hist[1:] + [(self.x / 2.4, self.th / 0.2095)]' : null,
+        '        self.x, self.v, self.th, self.w = self.x + 0.02 * self.v, self.v + 0.02 * xacc, self.th + 0.02 * self.w, self.w + 0.02 * acc', '        self.t += 1',
+        '        fell = abs(self.x) > 2.4 or abs(self.th) > 0.2095', '        return self.obs(), 1.0, fell or self.t >= self.max_steps', '',
+        '    def score(self, policy):', '        """How long its best moves keep the pole up, as a share of 200 steps, over 5 starts."""', '        total = 0',
+        ...SEEDED(4242, ['for _ in range(5):', ...PLAY('    '), '    total += self.t']).map((l) => '        ' + l), '        return total / (5 * self.max_steps)'].filter((l) => l !== null);
+    }
+    if (w === 'catch') {
+      const px = ws.view === 'pixels';
+      return ['class World:', '    """A ball falls down a 5 x 8 board, one row a step, drifting sideways and bouncing off the walls; a paddle on the',
+        '    bottom row moves left, stays or moves right. +1 if the ball lands on the paddle, -1 if it misses."""', '    actions = ["left", "stay", "right"]', '',
+        '    def reset(self):', '        self.bx, self.by, self.vx, self.px = random.randrange(5), 0, random.randrange(3) - 1, 2', '        self.prev, self.caught = None, None', '        return self.obs()', '',
+        ...(px ? ['    def picture(self, bx, by, px):', '        p = torch.zeros(8, 5)', '        p[by, bx] = 1.0                          # the ball', '        p[7, px] = 1.0                           # the paddle', '        return p', '',
+          '    def obs(self):                                # (2, 8, 5): the board now and a step ago', '        return torch.stack([self.picture(self.bx, self.by, self.px), self.picture(*(self.prev or (self.bx, self.by, self.px)))])']
+          : ['    def obs(self):                                # where the ball is, which way it drifts, where the paddle is', '        return torch.tensor([self.bx / 4, self.by / 7, float(self.vx), self.px / 4])']), '',
+        '    def step(self, a):', '        self.prev = (self.bx, self.by, self.px)', '        self.px = min(max(self.px + a - 1, 0), 4)', '        self.by, self.bx = self.by + 1, self.bx + self.vx',
+        '        if self.bx < 0:                           # a wall turns it back', '            self.bx, self.vx = 1, 1', '        elif self.bx > 4:', '            self.bx, self.vx = 3, -1',
+        '        if self.by >= 7:', '            self.caught = self.bx == self.px', '            return self.obs(), 1.0 if self.caught else -1.0, True', '        return self.obs(), 0.0, False', '',
+        '    def score(self, policy):', '        """The share of 40 balls its best moves catch (the same 40 every time)."""', '        caught = 0',
+        ...SEEDED(4242, ['for _ in range(40):', ...PLAY('    '), '    caught += self.caught']).map((l) => '        ' + l), '        return caught / 40'];
+    }
+    // the maze
+    const def = NA.rl.MAZE_SET.find((m) => m.id === ws.maze) || NA.rl.MAZE_SET[0], view = ws.view, rnd = ws.random, slip = ws.slip || 0;
+    const obs = view === 'square' ? ['    def obs(self):                                # which square it is on: one input per square', '        return F.one_hot(torch.tensor(self.s), len(self.maze.cell)).float()']
+      : view === 'picture' ? ['    def obs(self):                                # (5, 6, 8): walls, pits, the goal, where it is, where it has been', '        m = self.maze', '        p = torch.zeros(5, m.H, m.W)',
+        '        for i, c in enumerate(m.cell):', '            y, x = divmod(i, m.W)', '            if c in "#XG":', '                p["#XG".index(c), y, x] = 1.0', '            if i in self.seen:', '                p[4, y, x] = 1.0', '        p[3, self.s // m.W, self.s % m.W] = 1.0', '        return p']
+        : ['    def obs(self):', '        """The 24 squares around it, 2 in every direction (each: a wall or the edge, a pit, the goal, a square it has', '        been on), and which way the goal is: 104 inputs, each 0 or 1."""',
+          '        m, x0, y0 = self.maze, self.s % self.maze.W, self.s // self.maze.W', '        v, k = torch.zeros(104), 0', '        for dy in range(-2, 3):', '            for dx in range(-2, 3):', '                if dx == 0 and dy == 0:', '                    continue',
+          '                x, y = x0 + dx, y0 + dy', '                c = m.cell[y * m.W + x] if 0 <= x < m.W and 0 <= y < m.H else "#"', '                if c in "#XG":', '                    v["#XG".index(c) * 24 + k] = 1.0', '                elif y * m.W + x in self.seen:', '                    v[72 + k] = 1.0', '                k += 1',
+          '        gx, gy = m.goal % m.W - x0, m.goal // m.W - y0', '        if gx > 0:', '            v[96 + (gx > 2)] = 1.0', '        if gx < 0:', '            v[98 + (gx < -2)] = 1.0', '        if gy > 0:', '            v[100 + (gy > 2)] = 1.0', '        if gy < 0:', '            v[102 + (gy < -2)] = 1.0', '        return v'];
+    return [`MAZE = [${def.rows.map((r) => JSON.stringify(r)).join(', ')}]   # ${def.name}`, 'DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]               # up, right, down, left', '', '',
+      'class Maze:', '    def __init__(self, rows):', '        self.H, self.W, self.cell = len(rows), len(rows[0]), "".join(rows)', '        self.start, self.goal = self.cell.index("S"), self.cell.index("G")', '        self.dist = self.distances()', '',
+      '    def move(self, s, a):                         # where move a leads from square s (into a wall or off the board: nowhere)', '        x, y = s % self.W + DIRS[a][0], s // self.W + DIRS[a][1]',
+      '        if not (0 <= x < self.W and 0 <= y < self.H) or self.cell[y * self.W + x] == "#":', '            return s', '        return y * self.W + x', '',
+      '    def distances(self):                          # the fewest safe steps from every square to the goal (-1: none)', '        d, queue = [-1] * len(self.cell), [self.goal]', '        d[self.goal] = 0', '        while queue:', '            s = queue.pop(0)', '            for a in range(4):',
+      '                t = self.move(s, a)', '                if d[t] < 0 and self.cell[t] not in "X#":', '                    d[t] = d[s] + 1', '                    queue.append(t)', '        return d', '', '',
+      ...(rnd ? ['def random_maze(rng):', '    """An 8 x 6 maze: about one square in five a wall, 1 to 3 pits, S and G on two free squares, kept when the', '    shortest safe way through takes 8 steps or more."""', '    while True:',
+        '        g = [["#" if rng.random() < 0.22 else "." for _ in range(8)] for _ in range(6)]', '        for _ in range(1 + int(rng.random() * 3)):', '            g[int(rng.random() * 6)][int(rng.random() * 8)] = "X"',
+        '        free = [(x, y) for y in range(6) for x in range(8) if g[y][x] == "."]', '        s, t = free[int(rng.random() * len(free))], free[int(rng.random() * len(free))]', '        if s == t:', '            continue',
+        '        g[s[1]][s[0]], g[t[1]][t[0]] = "S", "G"', '        m = Maze(["".join(r) for r in g])', '        if m.dist[m.start] >= 8:', '            return m', '', ''] : []),
+      'class World:', `    """+1 at the goal, -1 in a pit, -0.02 a step, at most 80 steps${ws.closer ? '; and a bonus of 0.1 for every step that brings it' : '."""'}`,
+      ws.closer ? '    closer to the goal by the shortest safe way, as much off for every step away (reward shaping)."""' : null, '    actions = ["up", "right", "down", "left"]', '',
+      '    def __init__(self):', '        self.fixed = self.maze = Maze(MAZE)', rnd ? '        self.tests = [random_maze(random.Random(1234 + k)) for k in range(20)]   # 20 mazes it never trains on' : null, '',
+      '    def reset(self, maze=None):', `        self.maze = maze or ${rnd ? 'random_maze(random)                      # a new random maze every episode' : 'self.fixed'}`, '        self.s, self.t, self.end = self.maze.start, 0, None', '        self.seen = {self.s}', '        return self.obs()', '',
+      ...obs, '',
+      '    def step(self, a):', slip ? `        if random.random() < ${slip}:                 # a slippery floor: sideways instead` : null, slip ? '            a = (a + random.choice((1, 3))) % 4' : null,
+      '        m, s0 = self.maze, self.s', '        self.s = m.move(self.s, a)', '        self.t += 1', '        self.seen.add(self.s)', '        c = m.cell[self.s]', '        r = 1.0 if c == "G" else -1.0 if c == "X" else -0.02', '        done = c in "GX" or self.t >= 80',
+      '        if done:', '            self.end = "goal" if c == "G" else "pit" if c == "X" else "lost"',
+      ws.closer ? '        if c != "X" and m.dist[s0] >= 0 and m.dist[self.s] >= 0:' : null, ws.closer ? '            r += 0.1 * (m.dist[s0] - m.dist[self.s])' : null, '        return self.obs(), r, done', '',
+      '    def score(self, policy):', rnd ? '        """The share of 20 new mazes its best moves find the goal of."""' : slip ? '        """The share of 5 tries in which its best moves reach the goal."""' : '        """1 if its best moves reach the goal, 0 if not."""',
+      `        mazes, reached = ${rnd ? 'self.tests' : `[self.fixed] * ${slip ? 5 : 1}`}, 0`,
+      ...SEEDED(4242, ['for m in mazes:', '    o, done = self.reset(m), False', '    while not done:', '        o, _, done = self.step(policy(o))', '    reached += self.end == "goal"']).map((l) => '        ' + l), '        return reached / len(mazes)'].filter((l) => l !== null);
+  }
+  // the method's training loop
+  function methodPy(d, T, steps, every) {
+    const s = d.s, m = d.method, g = flt(s.gamma), B = T.batch;
+    const update = ['    opt.zero_grad()', '    loss.backward()', T.clip ? `    torch.nn.utils.clip_grad_norm_(model.parameters(), ${num(T.clip)})   # cap the size of the step` : null, '    opt.step()', T.sched !== 'const' ? '    sched.step()' : null];
+    const report = (what) => [`    if step % ${every} == 0:`, `        print(f"step {step:5d}  ${what}  score {judge.score(best_move):.3f}")`];
+    // moves in 8 copies of the world, sampled from the policy, the copies as one batch: actor-critic and PPO
+    const roll = (n) => [`    for t in range(${n}):                         # ${n} moves in each of 8 copies of the world, the copies as one batch`, '        out = outputs(torch.stack(obs))', '        dist = torch.distributions.Categorical(logits=out[:, :n_actions])', '        acts = dist.sample()',
+      '        X.append(torch.stack(obs)); A.append(acts); V.append(out[:, n_actions]); LP.append(dist.log_prob(acts))', '        rs, ds = [], []', '        for k, e in enumerate(envs):', '            o2, r, done = e.step(int(acts[k]))', '            obs[k] = e.reset() if done else o2', '            rs.append(r); ds.append(float(done))', '        R.append(torch.tensor(rs)); D.append(torch.tensor(ds))'];
+    if (m === 'dqn') return [`gamma, explore, batch = ${g}, ${s.explore}, ${B}`, 'target = copy.deepcopy(model).eval()             # the target network: a copy, refreshed every 500 updates', 'memory = collections.deque(maxlen=10_000)          # the replay memory: (observation, move, reward, next observation or None)',
+      'obs = env.reset()', `for step in range(${big(steps)}):`, '    eps = max(0.05, 1 - step / explore) if explore else 0.0   # the chance of a random move: from 1 down to 0.05',
+      '    a = random.randrange(n_actions) if random.random() < eps else best_move(obs)', '    obs2, r, done = env.step(a)', '    memory.append((obs, a, r, None if done else obs2))', '    obs = env.reset() if done else obs2', '    if len(memory) < 64:', '        continue',
+      '    sample = [memory[random.randrange(len(memory))] for _ in range(batch)]', '    X, A = torch.stack([q[0] for q in sample]), torch.tensor([q[1] for q in sample])',
+      '    R, alive = torch.tensor([q[2] for q in sample]), torch.tensor([float(q[3] is not None) for q in sample])', '    X2 = torch.stack([q[0] if q[3] is None else q[3] for q in sample])',
+      '    with torch.no_grad():                         # double DQN: the network picks the next move, the target network says what it is worth', '        nxt = outputs(X2)[:, :n_actions].argmax(1)', '        y = R + gamma * alive * target(X2).gather(1, nxt[:, None])[:, 0]',
+      '    q = model(X).gather(1, A[:, None])[:, 0]', '    loss = F.smooth_l1_loss(q, y)                  # Huber: squared near the target, absolute beyond 1', ...update,
+      '    if step % 500 == 499:', '        target.load_state_dict(model.state_dict())', ...report('loss {loss.item():.4f}')];
+    if (m === 'pg') return [`gamma = ${g}`, 'obs = env.reset()', `for step in range(${big(steps)}):`, '    batch_obs, batch_a, batch_G = [], [], []',
+      '    while len(batch_obs) < 64:                    # whole episodes until about 64 moves are in hand', '        rewards, done = [], False', '        while not done:', '            a = int(torch.multinomial(outputs(obs[None])[0, :n_actions].softmax(0), 1))   # a move sampled from the policy',
+      '            obs2, r, done = env.step(a)', '            batch_obs.append(obs); batch_a.append(a); rewards.append(r)', '            obs = env.reset() if done else obs2', '        G, returns = 0.0, []', '        for r in reversed(rewards):                # the discounted return after each move',
+      '            G = r + gamma * G', '            returns.append(G)', '        batch_G += returns[::-1]', '    G = torch.tensor(batch_G)', '    sd = G.std(unbiased=False)', '    adv = (G - G.mean()) / (sd if sd > 0 else 1)    # how much better than usual, in its spread',
+      '    logp = model(torch.stack(batch_obs))[:, :n_actions].log_softmax(1)', '    entropy = -(logp.exp() * logp).sum(1)', '    loss = -(adv * logp[torch.arange(len(adv)), torch.tensor(batch_a)]).mean() - 0.01 * entropy.mean()', ...update, ...report('loss {loss.item():.4f}')];
+    if (m === 'a2c') return [`gamma = ${g}`, 'envs = [World() for _ in range(8)]', 'obs = [e.reset() for e in envs]', `for step in range(${big(steps)}):`, '    X, A, R, V, LP, D = [], [], [], [], [], []', ...roll(8),
+      '    ret = outputs(torch.stack(obs))[:, n_actions]   # the critic\'s value of where each copy ended up', '    returns = []', '    for t in reversed(range(8)):                 # the returns, with that value standing in for what comes after', '        ret = R[t] + gamma * ret * (1 - D[t])', '        returns.insert(0, ret)',
+      '    returns, V = torch.stack(returns).flatten(), torch.stack(V).flatten()', '    adv = returns - V                              # the advantage: better or worse than the critic expected', '    adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)',
+      '    out = model(torch.cat(X))', '    logp = out[:, :n_actions].log_softmax(1)', '    entropy = -(logp.exp() * logp).sum(1)', '    chosen = logp[torch.arange(len(logp)), torch.cat(A)]',
+      '    loss = -(adv * chosen).mean() - 0.01 * entropy.mean() + 0.25 * ((out[:, n_actions] - returns) ** 2).mean()', ...update, ...report('loss {loss.item():.4f}')];
+    if (m === 'ppo') return [`gamma, lam, batch = ${g}, 0.95, ${B}`, 'envs = [World() for _ in range(8)]', 'obs = [e.reset() for e in envs]', 'queue = []', `for step in range(${big(steps)}):`, '    if not queue:', '        X, A, R, V, LP, D = [], [], [], [], [], []', ...roll(16).map((l) => '    ' + l),
+      '        nxt, gae, adv = outputs(torch.stack(obs))[:, n_actions], torch.zeros(8), []', '        for t in reversed(range(16)):            # advantages by GAE (λ = 0.95)', '            delta = R[t] + gamma * nxt * (1 - D[t]) - V[t]', '            gae = delta + gamma * lam * (1 - D[t]) * gae', '            adv.insert(0, gae)', '            nxt = V[t]',
+      '        adv = torch.stack(adv).flatten()', '        ret = adv + torch.stack(V).flatten()', '        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)', '        data = (torch.cat(X), torch.cat(A), torch.cat(LP), adv, ret)',
+      '        for _ in range(4):                       # 4 passes over the 128 moves, in shuffled minibatches', '            perm = torch.randperm(len(adv))', '            queue += [perm[i:i + batch] for i in range(0, len(perm), batch)]',
+      '    i = queue.pop(0)', '    x, a, old_logp, adv_i, ret_i = (q[i] for q in data)', '    out = model(x)', '    ratio = (out[:, :n_actions].log_softmax(1)[torch.arange(len(i)), a] - old_logp).exp()',
+      '    clipped = ratio.clamp(0.8, 1.2)                # no further than 20% from the policy that played', '    loss = -torch.min(ratio * adv_i, clipped * adv_i).mean() + 0.25 * ((out[:, n_actions] - ret_i) ** 2).mean()', ...update, ...report('loss {loss.item():.4f}')];
+    // a genetic algorithm
+    const eps = (NA.brl.WORLD[d.world] || NA.brl.WORLD.pole).gaEpisodes + (d.ws.random || d.ws.slip ? 2 : 0);
+    return ['from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, sigma, episodes = ${s.pop}, ${flt(s.sigma)}, ${eps}`, 'w0 = parameters_to_vector(model.parameters()).detach()',
+      'population = [w0.clone()] + [w0 + 0.5 * torch.randn_like(w0) for _ in range(pop_size - 1)]', '', '',
+      'def fitness(w, seed):', '    """The return of its best moves over a few episodes, from the same starts for everyone in a generation."""', '    vector_to_parameters(w, model.parameters())', '    total = 0.0',
+      ...SEEDED('seed', ['for _ in range(episodes):', '    o, done = env.reset(), False', '    while not done:', '        o, r, done = env.step(best_move(o))', '        total += r']).map((l) => '    ' + l), '    return total / episodes', '', '',
+      'def pick(fit):                                     # a tournament: the best of three at random', '    best = random.randrange(pop_size)', '    for _ in range(2):', '        c = random.randrange(pop_size)', '        if fit[c] > fit[best]:', '            best = c', '    return population[best]', '', '',
+      `for gen in range(${big(steps)}):`, '    fit = [fitness(w, 1000 + gen) for w in population]', '    order = sorted(range(pop_size), key=lambda k: -fit[k])', '    children = [population[order[0]].clone(), population[order[1]].clone()]   # the best two carry on unchanged',
+      '    while len(children) < pop_size:', '        a, b = pick(fit), pick(fit)', '        child = torch.where(torch.rand_like(a) < 0.5, a, b)              # half the weights from each parent', '        mutate = (torch.rand_like(child) < 0.1).float()                 # one weight in ten moves a little',
+      '        children.append(child + mutate * sigma * torch.randn_like(child))', '    population = children', '    vector_to_parameters(population[0], model.parameters())             # on show: the best of the generation',
+      `    if gen % ${every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  score {judge.score(best_move):.3f}")'];
+  }
+  function controlCode(setup, d, chk) {
+    const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || NA.brl.stepsFor(d.world, d.method), M = NA.brl.METHODS[d.method], ga = d.method === 'ga';
+    const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt], every = Math.max(1, Math.round(steps / 10));
+    return lines(
+      `# Built in Neural Anatomy's model builder: ${p.label}, learning from rewards.`,
+      `# Model:     ${summary(setup, d)}`,
+      ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
+      `# Learns by: ${M.label}${ga ? `, a population of ${d.s.pop}` : `, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}`}, ${steps.toLocaleString('en')} ${ga ? 'generations' : 'steps'}${T.steps ? '' : ' (the page trains until you pause)'}`,
+      '# Only torch is needed.', 'import math', 'import random', d.method === 'dqn' ? 'import collections' : null, d.method === 'dqn' ? 'import copy' : null, 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
+      `torch.manual_seed(${T.seed})`, `random.seed(${T.seed})`, '',
+      '# ---------------------------------------------------------------- the world', ...worldPy(d), '', '',
+      'env, judge = World(), World()                     # one to learn in, one to measure its best moves in', 'n_actions = len(World.actions)', '', '',
+      '# observations from random play (there are no examples with answers here): the architecture view\'s snippets', '# use the first as "the first validation example"', 'def random_observations(n):', '    w, out = World(), []', '    o = w.reset()', '    while len(out) < n:', '        out.append(o)', '        o, _, done = w.step(random.randrange(n_actions))', '        if done:', '            o = w.reset()', '    return torch.stack(out)', '', '', 'Xva = random_observations(40)', '', '',
+      modelCode(setup, d, chk), '', '',
+      'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '', '',
+      'def outputs(X):                                    # the outputs for a batch of observations, without learning', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', '    model.train()', '    return out', '', '',
+      'def best_move(obs):                                # its best move: the largest output', '    return int(outputs(obs[None])[0, :n_actions].argmax())', '', '',
+      ga ? null : ['# ---------------------------------------------------------------- the optimizer', ...optCode(T), '', ''],
+      `# ---------------------------------------------------------------- learning by ${M.label}`, ...methodPy(d, T, steps, every), '',
+      'print(f"done: its best moves score {judge.score(best_move):.3f}")', '',
+      '# ---------------------------------------------------------------- watch it play one episode with its best moves', 'o, done, total = env.reset(), False, 0.0', 'while not done:', '    a = best_move(o)', '    o, r, done = env.step(a)', '    total += r', '    print(World.actions[a], end="  ")', 'print(f"\\nreturn {total:.2f}")');
+  }
+
   // the scripts that use random (the stroke drawings, the stories, the chaotic series, the sequence classes)
   const needsRandom = (p, d) => d.family === 'digits' || p.task === 'language' || p.task === 'chaos' || d.family === 'seqclass';
   PY.code = function (setup, d) {
     const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || 3000;
     if (!d || d.error) return `# ${d && d.error ? d.error : 'Pick a problem first.'}`;
+    if (d.family === 'control' && NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) return '# A classic model learns from examples with answers, and here there are only rewards: use a network.';
     if (NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) {
       const cc = NA.cml.check(setup.blocks, d);
       if (!cc.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((cc.shapes.find((s) => s && s.problem) || {}).problem || { reason: 'See the block marked in red.' }).reason}`);
@@ -816,6 +964,7 @@ def story():
     }
     const chk = NA.bx ? NA.bx.check(setup.blocks, d.input, d.output) : { ok: false, shapes: [] };
     if (!chk.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((chk.problem || (chk.shapes.find((s) => s && s.problem) || {}).problem) || { reason: 'See the block marked in red.' }).reason}`);
+    if (d.family === 'control') return controlCode(setup, d, chk);
     const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, needsRandom(p, d) ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
     const lossName = NA.bx.LOSSES[setup.loss.id] ? NA.bx.LOSSES[setup.loss.id].label : setup.loss.id;
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt];

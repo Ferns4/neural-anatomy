@@ -91,8 +91,8 @@
   function probe(L) {
     const S = L.S;
     if (S.id === 'maze') {
-      const T = L.test, f = T && T.frames[T.k], w = !f && L.watch && S.walk ? S.walk : null, M = (w && w.maze) || S.maze;
-      const s = f ? f.s : w ? w.s : S.sel, why = f ? 'test' : w ? 'watch' : 'square';
+      const T = L.test, f = T && T.frames[T.k], w = !f && L.watch && S.walk ? S.walk : null, tr = !f && !w && L.trainShow ? L.trainShow : null, M = (w && w.maze) || (tr && tr.maze) || S.maze;
+      const s = f ? f.s : w ? w.s : tr ? M.start : S.sel, why = f ? 'test' : w ? 'watch' : tr ? 'training' : 'square';
       if (S.model === 'table') { const q = [0, 1, 2, 3].map((a) => S.Q.Q[s * 4 + a]); return { kind: 'mazeTable', M, s, q, a: f ? f.a : S.Q.best(s), why, f, T }; }
       let seen = f ? f.seen : w && w.seen ? w.seen : null;
       if (!seen) { seen = new Uint8Array(M.n); seen[s] = 1; }
@@ -127,6 +127,7 @@
       const at = `square ${sqName(P.M, P.s)}`;
       if (P.why === 'test') return `Step ${P.T.k + 1} of ${P.T.frames.length}: ${at}, it moves ${DIR[P.a]}`;
       if (P.why === 'watch') return `Learning, move by move: ${at}`;
+      if (P.why === 'training') return `Training on a new random maze: at its start, it moves ${DIR[P.a]}`;
       return `${at[0].toUpperCase() + at.slice(1)}: its best move is ${DIR[P.a]} (${NA.tapWord()} a square)`;
     }
     const where = cellName(P.g, P.m), who = STONE[P.mover];
@@ -962,5 +963,6 @@ print(len(V), 'positions in the table; beats a random player', against_random(40
     four: (L) => VALUE_NET_PY(5, 4, L.S.brain.nH, L.S.o, 1500, '                         # a minute or so; it beats a random player within a few hundred'),
   };
 
-  NA.archRL = { build: (L, size) => agentTree(L, size), probe, drawInside, py };
+  // Evolution has a loop of its own: a population, each network playing, selection and breeding (js/rl-evolve.js)
+  NA.archRL = { build: (L, size) => (L.S.id === 'evolve' ? NA.rlEvo.archTree(L, size) : agentTree(L, size)), probe, drawInside, py };
 })(window.NA);

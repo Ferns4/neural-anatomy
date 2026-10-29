@@ -158,14 +158,18 @@
 
   /* Readouts in the control bar: defs [{ key, label, keep }] → { set(key, text) } */
   UI.readouts = function (root, defs) {
-    const map = {};
+    const map = {}, names = {};
     for (const d of defs) {
-      const v = el('span', { class: 'ro-value', text: '—' });
-      root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null }, el('span', { class: 'ro-label', text: d.label }), v));
-      map[d.key] = v;
+      const v = el('span', { class: 'ro-value', text: '—' }), k = el('span', { class: 'ro-label', text: d.label });
+      root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null }, k, v));
+      map[d.key] = v; names[d.key] = k;
     }
     const count = (s) => (/^-?\d{1,3}(,\d{3})+$/.test(s) ? NA.fmtCount(+s.replace(/,/g, '')) : s);
-    return { set(key, text) { const n = map[key]; text = count(String(text)); if (n && n.textContent !== text) n.textContent = text; } };
+    return {
+      set(key, text) { const n = map[key]; text = count(String(text)); if (n && n.textContent !== text) n.textContent = text; },
+      // a readout that means something else for this setup (the builder's return, for learning from rewards)
+      label(key, text) { const n = names[key]; if (n && n.textContent !== text) n.textContent = text; },
+    };
   };
 
   // The preset's notes and one-click experiments, in the style of the MLP Insights tab.

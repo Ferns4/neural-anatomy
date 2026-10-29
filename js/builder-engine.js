@@ -1703,6 +1703,36 @@
       return { loss: r.loss, correct: r.correct, count: r.count, gradNorm };
     }
 
+    /* One update from a gradient of your own, for training methods whose loss is not one of the builder's (the
+       reinforcement learning methods: a temporal-difference error on one action, a policy gradient). grad(out,
+       dOut) reads the B outputs, writes the gradient of the loss for each of them into dOut and returns the loss;
+       then the usual backward pass, clipping and optimiser update. */
+    stepWith(X, B, grad, opt) {
+      opt = opt || {};
+      this.zeroGrad();
+      const out = this._forward(X, 0, B, true);
+      if (this._dB !== B) { this.dOut = this.mem.view('dOut', B * this.outSize); this._dB = B; }
+      this.dOut.fill(0);
+      const loss = grad(out, this.dOut);
+      this.backward();
+      let ss = 0;
+      for (const p of this.params) { const g = p.g; for (let i = 0; i < g.length; i++) ss += g[i] * g[i]; }
+      const gradNorm = Math.sqrt(ss);
+      if (isFinite(gradNorm)) this._update(opt, opt.clip > 0 && gradNorm > opt.clip ? opt.clip / gradNorm : 1);
+      return { loss, gradNorm };
+    }
+    // every weight and bias as one array, and back (a target network's copy, a genetic algorithm's population)
+    getWeights(into) {
+      const out = into || new Float32Array(this.paramCount);
+      let k = 0;
+      for (const p of this.params) { out.set(p.w, k); k += p.w.length; }
+      return out;
+    }
+    setWeights(w) {
+      let k = 0;
+      for (const p of this.params) { p.w.set(w.subarray(k, k + p.w.length)); k += p.w.length; }
+    }
+
     /* One optimiser update from the gradients in .g, scaled by cs for clipping. Weight decay is L2 added to the
        gradient for sgd, momentum and adam, and a decoupled shrink (w −= lr·wd·w) for adamw; either way only
        on parameters marked decay. Moments restart when the optimiser changes. */

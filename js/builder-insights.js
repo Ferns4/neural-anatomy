@@ -1,7 +1,8 @@
 /* builder-insights.js — what is going on in the model builder, in plain words. diagnose() reads the current run (its
    training and validation curves, the gradient sizes, the model's settings) and says whether the model is learning,
    has learned, is stuck, has blown up, memorises its examples (overfitting) or is too simple (underfitting), with the
-   numbers behind it and one-click changes to try. read() explains how to read the results picture for each kind of
+   numbers behind it and one-click changes to try; for learning from rewards, whether it ever finds the reward,
+   explores, looks ahead, or has got worse again. read() explains how to read the results picture for each kind of
    problem. Both are shown in the builder's results and its Training tab. */
 (function (NA) {
   'use strict';
@@ -17,6 +18,7 @@
     if (!d || d.error) return out;
     const chk = L.check || L.recheck();
     if (!chk.ok) { add('critical', 'The model does not fit together', 'A block marked in red cannot take what reaches it. Select it to see why: its card offers the part that fixes it.'); return out; }
+    if (d.family === 'control') { diagnoseControl(L, d, add, out); return out.sort((a, b) => ORDER[a.level] - ORDER[b.level]); }
     const run = L.run, classic = L.isClassicSetup(), T = L.setup.train, value = BT.isValue(d.family), metric = L.metricName();
     const sc = (v) => (value ? fmt(v, 3) : fmtPct(v, 1)), K = d.output && d.output.kind === 'classes' ? d.output.k : 0, chance = K ? 1 / K : 0;
     const newRun = { label: 'New run', run: () => { L.reset(); if (!L.training) L.play(); } };
@@ -97,6 +99,45 @@
     return out.sort((a, b) => ORDER[a.level] - ORDER[b.level]);
   }
 
+  // learning from rewards: what the run shows, with changes to try
+  function diagnoseControl(L, d, add, out) {
+    const run = L.run, s = L.ps(), M = NA.brl.METHODS[s.method], ga = s.method === 'ga', unit = ga ? 'generation' : 'step';
+    const again = (label, fn) => ({ label, run: () => { L.edit(fn); L.reset(); if (!L.training) L.play(); } }), setPs = (fn) => (S) => fn(S.ps[S.problem]);
+    if (!run) { add('info', 'Not trained yet', `Press Train: the network plays in the world, and ${ga ? 'each generation the best players are bred and the rest replaced' : `${M.short} turns what happens into steps on its weights`}. The picture plays it live, with its best moves.`); return; }
+    if (L.stale) { add('info', 'The setup has changed since the last run', 'The pictures show the last run. Train starts a new run with the setup as it is now; the Runs tab keeps the earlier runs to compare.'); return; }
+    if (run.status === 'diverged') { add('critical', 'The loss blew up', `At step ${fmtInt(run.step)} the weights ran off to infinity. Learning from rewards is touchy: a smaller learning rate, or clipping, usually cures it.`, [again(`Learning rate ${+(L.setup.train.lr / 10).toPrecision(2)}, new run`, (S) => { S.train.lr = +(S.train.lr / 10).toPrecision(2); })]); return; }
+    const c = run.curve.filter((p) => p.vm !== null && p.vm !== undefined), n = c.length, vm = run.last ? run.last.vm : null, best = run.bestVm, ret = run.last ? run.last.ret : null;
+    if (n < 2) { add('info', 'Learning', `${ga ? 'Generation' : 'Step'} ${fmtInt(run.step)}. The first scores are on their way.`); return; }
+    const low = vm !== null && vm < 0.9, w = d.world;
+    if (w === 'maze' && !s.closer && !best && run.step >= (ga ? 50 : 1000)) {
+      add('warn', 'It never finds the goal', `Its best moves have not reached the goal once. The only rewards come at the very end, and random moves almost never get there, so there is next to nothing to learn from: every episode looks equally bad. A bonus for each step closer to the goal (reward shaping) says which way is warmer from the first move.`,
+        [again('Closer bonus on, new run', setPs((q) => { q.closer = true; }))]);
+    }
+    if (s.method === 'dqn' && !s.explore && low && run.step >= 300) {
+      add('warn', 'It never tries anything new', `With no exploration it always plays the move that looks best so far. A move that paid once looks best from then on, and the others are never tried, so it never finds out they pay more. Random moves at first, fewer and fewer (ε-greedy), are how DQN explores.`,
+        [again('Explore for 1,500 moves, new run', setPs((q) => { q.explore = 1500; }))]);
+    }
+    if (!ga && w !== 'levers' && s.gamma === 0 && low && run.step >= 500) {
+      add('warn', 'It only cares about the next reward', `With a discount of 0, a reward that comes later is worth nothing now, so the moves that lead up to it learn nothing. Here the reward comes at the end of an episode: a discount near 1 carries it back to the moves that earned it.`,
+        [again('γ = 0.9, new run', setPs((q) => { q.gamma = 0.9; }))]);
+    }
+    if (d.input.kind === 'series' && L.setup.blocks[0] && L.setup.blocks[0].type === 'seqpool' && L.setup.blocks[0].mode === 'last' && low) {
+      add('warn', 'It sees only the latest reading', `The Sequence pool keeps the last reading and drops the rest, so the model gets a position and an angle but cannot tell which way they are moving, and a pole at the same angle can be falling or rising. Something that reads all 4 readings can work the speeds out: a Flatten, or a recurrent layer.`,
+        [again('Flatten instead, new run', (S) => { S.blocks[0] = { id: S.blocks[0].id, type: 'flatten' }; })]);
+    }
+    if (ga && L.check && L.check.params > 1500 && low && run.step >= 100) {
+      add('warn', 'A lot of weights to evolve', `A genetic algorithm searches blindly, by mutating weights and keeping what plays better. With ${fmtInt(L.check.params)} weights most mutations are noise, and progress is slow. A smaller network gives each mutation more say.`);
+    }
+    if (best !== null && best !== undefined && vm !== null && best - vm >= 0.3 && n >= 6) {
+      add('warn', 'It got worse again', `Its best moves scored ${fmtPct(best, 0)} at ${unit} ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Learning from rewards is unstable: the network makes its own data by playing, so a change for the worse also changes what it learns from next. A smaller learning rate steadies it${s.method === 'pg' || s.method === 'a2c' ? '; PPO is built to keep each change small' : ''}.`,
+        [ga ? null : again(`Learning rate ${+(L.setup.train.lr / 3).toPrecision(2)}, new run`, (S) => { S.train.lr = +(S.train.lr / 3).toPrecision(2); }), s.method === 'pg' || s.method === 'a2c' ? { label: 'Switch to PPO', run: () => L.setMethod('ppo') } : null]);
+    }
+    if (!out.some((q) => q.level === 'warn' || q.level === 'critical') && vm !== null && vm >= 0.95) {
+      add('good', 'Learned it', `Its best moves score ${fmtPct(vm, 0)}${d.ws.random ? ' on mazes it has never seen' : ''}. ${ga ? 'Evolution found weights that play well without a single gradient.' : 'From nothing but rewards, it has found what to do.'} Try another method on the same world, or another way of seeing it, and compare the runs.`);
+    }
+    if (!out.length) add('info', run.done ? 'Finished' : 'Learning', `${run.done ? `After ${fmtInt(run.step)} ${unit}s` : `At ${unit} ${fmtInt(run.step)}`}: its best moves score ${fmtPct(vm, 0)}${best > vm ? ` (best so far ${fmtPct(best, 0)})` : ''}${ret !== null && ret !== undefined ? `, and its episodes return ${fmt(ret, 2)} on average` : ''}.${run.done && low ? ' Press Continue to train it longer.' : ''}`);
+  }
+
   // how to read the results picture, for each kind of problem
   function read(d, live) {
     if (!d || d.error) return [];
@@ -111,6 +152,7 @@
       sequence: ['The inputs and, once trained, the model’s output at every position. With attention, the map shows which positions each one looks at: a bright square means a position takes most of its information from that one.', 'Look for the pattern the task needs: reversing looks at the mirror position, copying at the same one.'],
       table: d.kind === 'classes' ? ['The rows of your table on their first two columns, scaled to mean 0 and spread 1, coloured by class.', 'Once trained, a confusion matrix: rows are the true classes, columns the model’s answers; the diagonal is right.'] : ['The rows of your table: the true value across and, once trained, the model’s answer up. On the diagonal is right; the further a point sits from it, the bigger the miss.'],
     };
+    if (fam === 'control') return ['The world, played live: with its best moves once it has trained, at random before. A new episode starts when one ends; the line above says how the last one went.', 'Beside it, its outputs for what it sees right now, and in colour the move they pick: Q-values for DQN (what it expects to collect), probabilities for policy methods, plain scores for a genetic algorithm.', live ? 'Below: the return of its episodes while it learns, averaged over the latest. It counts its exploring moves too, so it can trail the score, which judges its best moves alone.' : null].filter(Boolean);
     return [...(P[d.table ? 'table' : fam] || []), loss].filter(Boolean);
   }
 

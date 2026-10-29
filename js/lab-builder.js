@@ -2,7 +2,9 @@
    write sentences), drag parts from the palette into a stack between the input and the output (or click them),
    set the loss and the training settings, and train. Each training run is recorded with what changed since the
    one before, so you can see what a change did. The engine is js/builder-engine.js; problems are in
-   js/builder-tasks.js, pictures of the results in js/builder-viz.js and the PyTorch version in js/builder-py.js. */
+   js/builder-tasks.js, pictures of the results in js/builder-viz.js and the PyTorch version in js/builder-py.js.
+   Learning from rewards has no examples with answers: the network acts in a world (js/rl-envs.js) and a method
+   from js/builder-rl.js (DQN, REINFORCE, actor-critic, PPO or a genetic algorithm) turns what happens into steps. */
 (function (NA) {
   'use strict';
   const { el, clear, clamp, fmt, fmtPct, fmtInt, theme } = NA;
@@ -266,7 +268,7 @@
     this.archStale = true;
     this.recheck();
     const T = this.setup.train;
-    if (this.hyperRoot && (this.isClassicSetup() ? 'classic' : JSON.stringify([T.opt, T.lr, T.batch, T.steps])) !== this._hyperKey) this.buildHyper();
+    if (this.hyperRoot && this.hyperKey() !== this._hyperKey) this.buildHyper();
     this.renderWorkbench(); this.renderLeft(); this.inspDirty = true; this.resultsDirty = true; this.pyDirty = true;
     if (!this.run || this.run.done) this.showDataOnly();
     this.syncUndo();
@@ -346,6 +348,7 @@
   BL.newRun = function () {
     const d = this.dataFor(), chk = this.recheck();
     if (d.error) { NA.ui.toast.show(d.error); return false; }
+    if (d.family === 'control' && this.isClassicSetup()) { NA.ui.toast.show('A classic model learns from examples with answers, and here there are only rewards: use a network (a template, or Dense parts).'); return false; }
     if (d.tooFew) { NA.ui.toast.show('Place at least 8 points of two or more classes first (click on the picture).'); return false; }
     if (!chk.ok) { const p = chk.problem || (chk.shapes.find((s) => s.problem) || {}).problem; NA.ui.toast.show(`The model does not fit together yet: ${p ? p.reason : 'see the red block'}`); return false; }
     const T = this.setup.train, cfg = JSON.parse(this.snapshot());
@@ -358,6 +361,9 @@
     this.runs.push(run);
     if (this.runs.length > 12) this.runs.splice(0, this.runs.length - 12);
     this.run = run; this.model = model; this.data = d; this.stale = false; this.step = 0;
+    // learning from rewards: the network plays in its world, and the method turns what happens into steps
+    this.agent = d.family === 'control' ? NA.brl.make({ world: d.world, ws: d.ws, net: model, makeNet: () => NA.bx.build(cfg.blocks, d.input, d.output, { seed: T.seed, init: T.init }), method: d.method, seed: T.seed * 977 + n, s: Object.assign({}, d.s, { batch: T.batch }) }) : null;
+    if (this.agent) { run.method = d.method; run.bestVm = null; this.demo = null; }
     this.order = null; this.epochPos = 0; this.rng = new NA.RNG(T.seed * 977 + n);
     if (this.seqView) this.seqView.cont = null; // written by the new model once it has trained a little
     this.vizVersion = (this.vizVersion || 0) + 1; this._region = null; this.confusion = null; this.lastEval = 0; this.evalMs = 0;
@@ -424,6 +430,9 @@
       if (this.model.classic) {
         if (this.model.done()) { this.finish('done'); break; }
         r = this.model.step();
+      } else if (this.agent) {
+        opt.lr = this.lrAt(run.step - (run.sched0 || 0));
+        r = this.agent.step(opt);
       } else {
         opt.lr = this.lrAt(run.step - (run.sched0 || 0));
         const [X, Y] = this.batch(B);
@@ -453,6 +462,7 @@
   BL.evaluate = function (full) {
     const run = this.run, d = this.data, m = this.model, t0 = performance.now();
     if (!run || !m) return;
+    if (this.agent && d.family === 'control') { this.evaluateControl(full, t0); return; }
     // fewer examples for long sequences, which cost more to run
     const per = d.input.kind === 'tokens' ? d.input.len : 1, loss = this.setup.loss;
     const nV = Math.min(d.nVa, Math.max(50, Math.round((full ? 3000 : 600) / per))), nT = Math.min(d.nTr, Math.max(50, Math.round((full ? 1500 : 300) / per)));
@@ -477,15 +487,55 @@
     if ((d.task === 'language' || d.task === 'sentences') && (full || this.lastEval - (this.lastWrite || 0) > 1000)) this.writeText();
     this.checkChallenge();
   };
+  // learning from rewards: the score of its best moves (0 to 1), the average return of its episodes, the best score so far
+  BL.evaluateControl = function (full, t0) {
+    // a genetic algorithm: its generation's best fitness in place of the return while exploring
+    const run = this.run, A = this.agent, sc = A.score(), pt = { step: run.step, train: run.ema, val: null, tm: null, vm: sc, ret: A.method === 'ga' ? (A.genBest === undefined ? null : A.genBest) : A.retEma };
+    const last = run.curve[run.curve.length - 1];
+    if (!last || last.step !== pt.step) run.curve.push(pt); else run.curve[run.curve.length - 1] = pt;
+    if (run.curve.length > 400) run.curve = run.curve.filter((q, i) => i % 2 === 0 || i === run.curve.length - 1);
+    if (run.bestVm === null || run.bestVm === undefined || sc > run.bestVm) { run.bestVm = sc; run.bestAt = run.step; }
+    run.last = pt; run.seconds = (performance.now() - run.started) / 1000;
+    this.vizVersion++; this.resultsDirty = true; this.inspDirty = true;
+    this.lastEval = performance.now(); if (!full) this.evalMs = this.lastEval - t0;
+    this.archStale = true;
+    this.checkChallenge();
+  };
+  /* The results picture plays episodes with the network's best moves, a move every 150 ms (random moves before it
+     has trained): what it sees, its outputs for it, the move they pick. A new episode starts when one ends. */
+  BL.demoTick = function (now) {
+    const d = this.data && this.data.family === 'control' ? this.data : this.dataFor();
+    if (d.family !== 'control' || d.error) { this.demo = null; return; }
+    const live = this.run && !this.stale && this.agent ? this.agent : null, key = JSON.stringify([d.world, d.ws, d.method, !!live]);
+    let D = this.demo;
+    if (!D || D.key !== key) D = this.demo = { key, world: NA.rlEnvs.make(d.world, d.ws), rng: new NA.RNG(99), ep: 0, at: 0 };
+    if (now - D.at < (D.end ? 1000 : 150)) return;
+    D.at = now;
+    if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; }
+    else {
+      const t = D.world.step(D.a, D.rng);
+      D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a: D.a, r: t.r };
+      if (t.done) D.end = d.world === 'maze' ? D.world.end : d.world === 'catch' ? (D.world.caught ? 'caught' : 'missed') : d.world === 'pole' ? (t.fell ? 'fell' : 'up') : 'pulled';
+    }
+    D.snap = D.world.snap();
+    D.out = live && !D.end ? live.outputs(D.obs) : null;
+    D.a = D.end ? null : D.out ? NA.brl.argmax(D.out, d.nA) : D.rng.int(d.nA);
+    this.resultsDirty = true;
+  };
   BL.confusionMatrix = function () {
     const d = this.data, n = Math.min(d.nVa, 600), K = d.classes, P = d.Xva.length / d.nVa, o = this.model.predict(d.Xva.subarray(0, n * P), n), M = NA.range(K).map(() => new Array(K).fill(0));
     for (let i = 0; i < n; i++) { let b = 0; for (let k = 1; k < K; k++) if (o[i * K + k] > o[i * K + b]) b = k; M[d.Yva[i]][b]++; }
     return M;
   };
-  BL.metricName = function (fam) { fam = fam || this.dataFor().family || this.family(); return BT.isValue(fam) ? 'R²' : fam === 'sequence' ? 'token accuracy' : 'accuracy'; };
+  BL.metricName = function (fam) { fam = fam || this.dataFor().family || this.family(); return BT.isValue(fam) ? 'R²' : fam === 'sequence' ? 'token accuracy' : fam === 'control' ? 'score' : 'accuracy'; };
   // whether the current problem predicts a value (scored by R²) rather than classes or tokens
   BL.valued = function () { return BT.isValue(this.dataFor().family); };
-  BL.metricText = function (run) { const v = run && run.last && run.last.vm; return v === null || v === undefined ? '—' : `validation ${this.metricName(run.family)} ${BT.isValue(run.family) ? fmt(v, 3) : fmtPct(v, 1)}`; };
+  BL.metricText = function (run) {
+    const v = run && run.last && run.last.vm;
+    if (v === null || v === undefined) return '—';
+    if (run.family === 'control') return `score ${fmtPct(v, 0)}${run.bestVm > v ? ` (best ${fmtPct(run.bestVm, 0)} at step ${fmtInt(run.bestAt)})` : ''}`;
+    return `validation ${this.metricName(run.family)} ${BT.isValue(run.family) ? fmt(v, 3) : fmtPct(v, 1)}`;
+  };
 
   // Whether two setups train the same model on the same data from the same start: they may differ only in how
   // training proceeds (learning rate, optimizer, batch, steps, schedule, weight decay, clipping).
@@ -500,7 +550,7 @@
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
       const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
-      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window' })[k] || k} ${pa[k]} → ${pb[k]}`);
+      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor' })[k] || k} ${pa[k]} → ${pb[k]}`);
       if (a.problem === 'draw' && JSON.stringify(a.custom.points) !== JSON.stringify(b.custom.points)) out.push(`points: ${a.custom.points.length} → ${b.custom.points.length}`);
     }
     // blocks: match by type in order (longest common subsequence), then compare settings
@@ -594,11 +644,16 @@
       const r = this.run, p = r && !this.stale && r.last;
       this.ro.set('run', r ? `${r.n}` : '—');
       this.ro.set('step', r ? fmtInt(r.step) + (r.limit && !this.stale && !(NA.mobile && NA.mobile.mobile) ? ` / ${fmtInt(r.limit)}` : '') : '0');
-      this.ro.set('loss', r && !this.stale && r.ema !== null ? fmt(r.ema, 4) : '—');
-      this.ro.set('val', p && p.val !== null ? fmt(p.val, 4) : '—');
+      const ctl = this.family() === 'control';
+      // a genetic algorithm has no loss: its step reports the population's average fitness (as a loss, negated)
+      const ga = ctl && r && r.method === 'ga';
+      this.ro.label('loss', ga ? 'Avg. fitness' : ctl ? 'Loss' : 'Train loss'); this.ro.label('val', ga ? 'Best fitness' : ctl ? 'Return' : 'Val. loss'); this.ro.label('metric', ctl ? 'Score' : 'Val. score');
+      this.ro.set('loss', r && !this.stale && r.ema !== null ? (ga ? fmt(-r.ema, 2) : fmt(r.ema, 4)) : '—');
+      this.ro.set('val', ctl ? (p && p.ret !== null && p.ret !== undefined ? fmt(p.ret, 2) : '—') : p && p.val !== null ? fmt(p.val, 4) : '—');
       this.ro.set('metric', p && p.vm !== null && p.vm !== undefined ? (BT.isValue(r.family) ? `R² ${fmt(p.vm, 3)}` : fmtPct(p.vm, 1)) : '—');
       this.ro.set('params', this.check && this.check.ok ? fmtInt(this.check.params) : '—');
     }
+    if (this.family() === 'control') this.demoTick(now);
     if (this.resultsDirty && this.resCanvas.offsetParent && (!this.training || now - (this.lastRes || 0) > (this.vizMs > 25 ? 700 : 280))) { this.lastRes = now; this.resultsDirty = false; this.drawResults(); }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 500)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
     if (this.training && now - (this.lastBench || 0) > 600) { this.lastBench = now; this.paintNeurons(); }
@@ -610,6 +665,7 @@
   };
 
   // the quick settings in the control bar (the phone's settings sheet), rebuilt whenever the setup changes them
+  BL.hyperKey = function () { const T = this.setup.train; return this.isClassicSetup() ? 'classic' : JSON.stringify([T.opt, T.lr, T.batch, T.steps, this.family() === 'control' ? this.ps().method : null]); };
   BL.buildHyper = function (root) {
     if (root) this.hyperRoot = root;
     const T = this.setup.train, rates = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1];
@@ -620,12 +676,15 @@
       return;
     }
     if (!rates.includes(T.lr)) { rates.push(T.lr); rates.sort((a, b) => a - b); } // a rate set on the slider
-    this._hyperKey = JSON.stringify([T.opt, T.lr, T.batch, T.steps]);
-    clear(this.hyperRoot).append(
-      UI.field('Optimizer', UI.select(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => this.edit((s) => { s.train.opt = v; }))),
-      UI.field('Learning rate', UI.select(rates.map((v) => ({ value: v, label: String(v) })), T.lr, (v) => this.edit((s) => { s.train.lr = +v; }))),
-      UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))),
-      UI.field('Steps', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => this.edit((s) => { s.train.steps = +v; })), 'How many steps each press of Train runs: ∞ trains until you pause'));
+    this._hyperKey = this.hyperKey();
+    // learning from rewards: the method first; a genetic algorithm takes no optimizer, learning rate or batch
+    const ctl = this.family() === 'control', method = ctl ? this.ps().method : null, ga = method === 'ga';
+    clear(this.hyperRoot).append(...[
+      ctl ? UI.field('Learns by', UI.select(NA.brl.ORDER.map((m) => ({ value: m, label: NA.brl.METHODS[m].short })), method, (v) => this.setMethod(v)), 'How the network learns from the rewards') : null,
+      ga ? null : UI.field('Optimizer', UI.select(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => this.edit((s) => { s.train.opt = v; }))),
+      ga ? null : UI.field('Learning rate', UI.select(rates.map((v) => ({ value: v, label: String(v) })), T.lr, (v) => this.edit((s) => { s.train.lr = +v; }))),
+      ga ? null : UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))),
+      UI.field(ga ? 'Generations' : 'Steps', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => this.edit((s) => { s.train.steps = +v; })), ga ? 'How many generations each press of Train runs: ∞ evolves until you pause' : 'How many steps each press of Train runs: ∞ trains until you pause')].filter(Boolean));
   };
 
   // ------------------------------------------------------------------ left: problem and parts
@@ -662,10 +721,10 @@
     const p = this.problem(), fam = p.family;
     this.problemSel.value = p.id;
     this.problemHint.textContent = p.hint;
-    clear(this.tplRow).append(...BT.templatesFor(fam).map((t) => el('button', { class: 'chip bd-tpl', type: 'button', title: t.hint, onclick: () => this.applyTemplate(t) }, t.label)));
+    clear(this.tplRow).append(...BT.templatesFor(fam, this.dataFor()).map((t) => el('button', { class: 'chip bd-tpl', type: 'button', title: t.hint, onclick: () => this.applyTemplate(t) }, t.label)));
     // which parts fit this problem's kind of data
-    const fits = FITS[fam] || FITS.plane;
-    const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' }[fam];
+    const fits = this.fits();
+    const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table', control: 'this world as it is seen' }[fam];
     this.renderMyParts();
     NA.$$('.bd-part:not(.bd-part-mine)', this.palette).forEach((t) => {
       const off = !fits.includes(t.dataset.type);
@@ -686,7 +745,36 @@
     digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'conv', 'pool', 'avgpool', 'patches', 'flatten', 'gap', 'parallel', 'attention', 'transformer', 'position', 'seqpool', ...CLASSIC_PARTS],
     series: [...SEQ_PARTS, ...CLASSIC_PARTS], seqclass: SEQ_PARTS, sequence: SEQ_PARTS.filter((t) => t !== 'seqpool' && t !== 'gap' && t !== 'flatten'),
   };
-  BL.fitsHere = function (type) { return (FITS[this.family()] || FITS.plane).includes(type); };
+  // a world: the parts for the way it is seen (numbers, a picture or readings); classic models need answers to learn from
+  BL.fits = function () {
+    const fam = this.family();
+    if (fam !== 'control') return FITS[fam] || FITS.plane;
+    const k = (this.dataFor().input || {}).kind;
+    return (k === 'image' ? FITS.digits : k === 'series' ? SEQ_PARTS : VECTOR_PARTS).filter((t) => !CLASSIC_PARTS.includes(t));
+  };
+  BL.fitsHere = function (type) { return this.fits().includes(type); };
+  // learning from rewards: another method, with the number of steps that suits it here
+  BL.setMethod = function (m) {
+    const p = this.problem(), s = this.ps();
+    if (p.family !== 'control' || s.method === m || !NA.brl.METHODS[m]) return;
+    const steps = NA.brl.stepsFor(p.task, m);
+    this.edit((S) => { S.ps[S.problem].method = m; S.train.steps = steps; });
+    NA.ui.toast.show(`Learns by ${NA.brl.METHODS[m].label} now: ${fmtInt(steps)} ${m === 'ga' ? 'generations' : 'steps'} a press of Train.`);
+  };
+  // another way to see the world: when the blocks no longer fit (dense layers on a picture), a Flatten goes in front
+  BL.setWorldView = function (v) {
+    let reset = false;
+    this.edit((S) => {
+      S.ps[S.problem].view = v;
+      const d = BT.make(BT.byId[S.problem], S.ps[S.problem], S.train.seed, S.custom);
+      if (d.error || NA.bx.check(S.blocks, d.input, d.output).ok) return;
+      const flat = [...withIds([{ type: 'flatten' }]), ...S.blocks];
+      if ((d.input.kind === 'image' || d.input.kind === 'series') && NA.bx.check(flat, d.input, d.output).ok) { S.blocks = flat; return; }
+      // blocks made for another kind of input (a convolution, with 4 numbers to see): the Small MLP again
+      S.blocks = withIds(BT.templateBlocks(BT.TEMPLATES.find((t) => t.id === 'mlp'), 'control', d.input.kind)); reset = true;
+    });
+    if (reset) NA.ui.toast.show('Your blocks need another kind of input, so the model is the Small MLP again for this view. Undo brings yours back.');
+  };
   BL.setProblem = function (id) {
     if (id === this.setup.problem) return;
     const fam0 = this.family(), fam1 = BT.byId[id].family;
@@ -698,6 +786,12 @@
       if (fam0 !== fam1) {
         s.blocks = withIds(BT.TEMPLATES.find((t) => t.id === fl.template).blocks());
         Object.assign(s.train, BT.trainFor(BT.byId[id]));
+      }
+      // another world: the steps that suit its method, and the Small MLP again if the model cannot take what it sees
+      if (fam1 === 'control') {
+        const p = BT.byId[id], ps = s.ps[id] || (s.ps[id] = BT.defaults(p)), d = BT.make(p, ps, s.train.seed, s.custom);
+        s.train.steps = NA.brl.stepsFor(p.task, ps.method);
+        if (!d.error && !NA.bx.check(s.blocks, d.input, d.output).ok) s.blocks = withIds(BT.templateBlocks(BT.TEMPLATES.find((t) => t.id === 'mlp'), fam1, d.input.kind));
       }
     }, { flip: true });
     this.seqView = {};
@@ -712,7 +806,7 @@
     if (id === 'draw' && !this.setup.custom.points.length) NA.ui.toast.show(`${Click()} on the picture to place points; pick the class first.`);
   };
   BL.applyTemplate = function (t) {
-    const blocks = BT.templateBlocks(t, this.family());
+    const blocks = BT.templateBlocks(t, this.family(), (this.dataFor().input || {}).kind);
     this.edit((s) => { s.blocks = withIds(blocks); }, { flip: true });
     this.selectBlock(null);
     NA.ui.toast.show(`${t.label} template. ${t.hint}`);
@@ -858,10 +952,16 @@
     this.resBox = el('div', { class: 'bd-res-box' }, this.resCanvas);
     this.lossCanvas = el('canvas');
     this.lossChart = new NA.charts.LineChart(this.lossCanvas, { height: 104, logY: true, format: (v) => fmt(v, 4), xLabel: 'Step' });
+    this.retCanvas = el('canvas');
+    this.retChart = new NA.charts.LineChart(this.retCanvas, { height: 104, format: (v) => fmt(v, 2), xLabel: 'Step' });
     this.resFoot = el('div', { class: 'bd-res-foot' });
     this.results = el('div', { class: 'bd-results' }, this.resHead, this.resBox, this.resFoot);
-    this.resFoot.append(el('div', { class: 'chart-box' }, this.lossCanvas), el('div', { class: 'mini-legend' },
-      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'training loss'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s2)' } }), 'validation loss')));
+    this.lossBox = el('div', { class: 'chart-box' }, this.lossCanvas); this.retBox = el('div', { class: 'chart-box', hidden: '' }, this.retCanvas);
+    this.lossKey = el('div', { class: 'mini-legend' },
+      el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'training loss'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s2)' } }), 'validation loss'));
+    this.retKeyText = el('span', { text: 'return per episode while it learns (average of the latest)' });
+    this.retKey = el('div', { class: 'mini-legend', hidden: '' }, el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), this.retKeyText));
+    this.resFoot.append(this.lossBox, this.retBox, this.lossKey, this.retKey);
     this.split = el('div', { class: 'bd-split' }, this.bench, this.results);
     root.append(this.split);
     // the architecture: your model as a zoomable diagram, from its blocks down to one multiplication's transistors
@@ -923,6 +1023,7 @@
   function residualFits(b, sh) { return b.type !== 'dense' || !sh.in || !sh.out || sh.in[sh.in.length - 1] === sh.out[sh.out.length - 1]; }
   function inputText(d) {
     const i = d.input;
+    if (d.family === 'control') return i.kind === 'image' ? `a picture, ${i.c} channel${i.c > 1 ? 's' : ''} of ${i.h} × ${i.w}` : i.kind === 'series' ? `the last ${i.len} readings of ${i.dim} numbers` : `${i.dim} number${i.dim > 1 ? 's' : ''}${i.dim <= 6 ? ` (${d.obsNames.join(', ')})` : ''}`;
     if (i.kind === 'vector' && d.table) return `${i.dim} number${i.dim > 1 ? 's' : ''} (${d.featNames.length > 3 ? d.featNames.slice(0, 3).join(', ') + ', …' : d.featNames.join(', ')})`;
     if (i.kind === 'vector') return i.dim === 2 ? '2 numbers (x, y)' : '1 number (x)';
     if (i.kind === 'image') return `${i.h} × ${i.w} picture`;
@@ -931,6 +1032,7 @@
   }
   function outputText(d, loss) {
     const o = d.output, L = NA.bx.LOSSES[loss.id];
+    if (d.family === 'control') return `${o.k} outputs (${d.names.join(', ')}) · ${NA.brl.METHODS[d.method].short}`;
     const what = o.kind === 'classes' ? `${o.k} class scores${loss.id === 'hinge' ? '' : ' (softmax)'}` : o.kind === 'value' ? '1 number' : `next-token scores over ${o.vocab} ${d.task === 'language' || d.task === 'sentences' ? 'words' : 'tokens'}`;
     return `${what} · ${L ? L.label : loss.id} loss`;
   }
@@ -1329,13 +1431,21 @@
     this.renderResHead(live); // first: the header's height decides the picture's
     const box = this.resBox, W = Math.max(200, box.clientWidth), Hh = Math.max(200, box.clientHeight), ctx = NA.fitCanvas(this.resCanvas, W, Hh);
     ctx.clearRect(0, 0, W, Hh);
-    const L = { data: live ? this.data : this.dataFor(), model: live ? this.model : null, vizVersion: this.vizVersion, _region: this._region, confusion: live ? this.confusion : null, seqView: this.seqView || (this.seqView = {}) };
+    const L = { data: live ? this.data : this.dataFor(), model: live ? this.model : null, vizVersion: this.vizVersion, _region: this._region, confusion: live ? this.confusion : null, seqView: this.seqView || (this.seqView = {}), demo: this.demo, run: live ? this.run : null };
     const t0 = performance.now();
     this.resRect = { x: 8, y: 8, w: W - 16, h: Hh - 16 };
     BV.draw(ctx, this.resRect, L);
     this.vizMs = performance.now() - t0; this._region = L._region;
     // the run's loss curves (a diverged run's huge values are capped so the scale stays readable)
-    const run = live ? this.run : null, cap = (v) => Math.min(v, 1e3);
+    const run = live ? this.run : null, cap = (v) => Math.min(v, 1e3), ctl = L.data.family === 'control';
+    this.lossBox.hidden = ctl; this.lossKey.hidden = ctl; this.retBox.hidden = !ctl; this.retKey.hidden = !ctl;
+    if (ctl) this.retKeyText.textContent = run && run.method === 'ga' ? 'the fittest of each generation: the return of its best moves' : 'return per episode while it learns (average of the latest)';
+    if (ctl) {
+      // learning from rewards: the average return of its episodes as it learns (the loss of a policy says little)
+      this.retChart.frame();
+      this.retChart.set({ series: run ? [{ name: run.method === 'ga' ? 'best fitness' : 'return per episode', color: theme.c('s1'), points: run.curve.filter((p) => p.ret !== null && p.ret !== undefined && Number.isFinite(p.ret)).map((p) => [p.step, p.ret]) }, { name: 'score', color: theme.c('s2'), points: [] }].filter((s) => s.points.length) : [] });
+      return;
+    }
     this.lossChart.frame();
     this.lossChart.set({ series: run ? [{ name: 'training loss', color: theme.c('s1'), points: run.curve.filter((p) => p.train !== null && Number.isFinite(p.train)).map((p) => [p.step, cap(p.train)]) }, { name: 'validation loss', color: theme.c('s2'), points: run.curve.filter((p) => p.val !== null && Number.isFinite(p.val)).map((p) => [p.step, cap(p.val)]) }] : [] });
   };
@@ -1347,7 +1457,7 @@
     const parts = [];
     const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (BT.isValue(d.family) ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
     if (d.error) parts.push(el('div', { class: 'bd-res-error', role: 'alert', text: d.error }));
-    parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · validation ${this.metricName()}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
+    parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · ${d.family === 'control' ? `score of its best moves${run.bestVm > (run.last ? run.last.vm : 0) ? ` (best ${fmtPct(run.bestVm, 0)})` : ''}` : `validation ${this.metricName()}`}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
     const lg = legendFor(d, live);
     if (lg) parts.push(lg);
     const ins = NA.builderInsights;
@@ -1407,7 +1517,8 @@
     if (!d || d.error) return null;
     const item = (cls, c, label) => el('span', null, el('i', { class: cls, style: c ? { '--c': `var(--${c})` } : null }), label);
     let items = [];
-    if (d.family === 'series') items = [item('bd-lg-line', 's1', 'the series'), live ? item('bd-lg-line', 's2', 'one step ahead (true values fed in)') : null, live ? item('bd-lg-dash', 's7', 'on its own (its predictions fed back)') : null];
+    if (d.family === 'control') items = [el('span', { text: live ? 'the network playing with its best moves, live; bars: its outputs for what it sees now, the move they pick in colour' : 'random moves for now: press Train and it learns from the rewards' })];
+    else if (d.family === 'series') items = [item('bd-lg-line', 's1', 'the series'), live ? item('bd-lg-line', 's2', 'one step ahead (true values fed in)') : null, live ? item('bd-lg-dash', 's7', 'on its own (its predictions fed back)') : null];
     else if (d.family === 'surface') items = [el('span', { text: 'blue high, orange low; the dots are the training points' }), live ? el('span', { text: 'error: darker where the model misses more' }) : null];
     else if (d.family === 'seqclass') items = [el('span', { text: live ? 'validation examples, with the model’s answer (✓ right, ✗ wrong)' : 'validation examples with their class' })];
     else if (d.table) {
@@ -1651,7 +1762,7 @@
     this.myParts.append(el('div', { class: 'bd-pal-title', text: 'Your parts' }), grid);
   };
   // the guide to a part, with a button that adds it, and one that switches to a problem it suits when this one does not
-  const KIND_TEXT = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table' };
+  const KIND_TEXT = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table', control: 'this world as it is seen' };
   BL.renderGuide = function (body, type) {
     if (String(type).startsWith('part:')) {
       const def = defOf(this.setup, type.slice(5));
@@ -1697,6 +1808,7 @@
     }
     if (fam === 'digits') ctl.push(UI.slider({ label: 'Examples', min: 300, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
     if (fam === 'table') ctl.push(...tableControls(this, s));
+    if (fam === 'control') ctl.push(...worldControls(this, p, s));
     if (fam === 'surface') ctl.push(UI.slider({ label: 'Noise', min: 0, max: 0.3, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }), UI.slider({ label: 'Examples', min: 200, max: 3000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
     if (fam === 'series') ctl.push(UI.slider({ label: 'Window (values the model sees)', min: 1, max: 48, step: 1, value: s.window, format: String, onChange: (v) => set((q) => { q.window = v; }) }),
       UI.slider({ label: 'Length of the series', min: 400, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
@@ -1717,11 +1829,28 @@
       ctl.push(UI.field('Embedding size', UI.seg([8, 16, 32, 64].map((v) => ({ value: v, label: String(v) })), s.embed, (v) => set((q) => { q.embed = +v; }), 'Embedding size')),
         UI.note('Each token becomes a learned vector of this many numbers, plus a learned vector for its position. Attention heads split it.'));
     }
-    if (ctl.length) sec.push(UI.section('Data', ...ctl));
+    if (ctl.length) sec.push(UI.section(fam === 'control' ? 'The world' : 'Data', ...ctl));
     const d = this.dataFor();
-    if (!d.error) sec.push(UI.section('What the model sees', el('div', { class: 'kv-grid' }, ...[['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Training examples', fmtInt(d.nTr)], ['Validation examples', fmtInt(d.nVa)]].map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
+    if (!d.error) sec.push(UI.section('What the model sees', el('div', { class: 'kv-grid' }, ...(fam === 'control' ? [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Actions', d.actions.join(', ')], ['Learns by', NA.brl.METHODS[d.method].label]] : [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Training examples', fmtInt(d.nTr)], ['Validation examples', fmtInt(d.nVa)]]).map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
     body.append(...sec);
   };
+  // A world's settings: how the model sees it, and for the maze which one, random mazes, a bonus for getting closer
+  // and a slippery floor; for the levers, how many.
+  function worldControls(L, p, s) {
+    const set = (fn) => L.edit((S) => fn(S.ps[S.problem])), out = [], views = BT.VIEWS[p.task];
+    if (p.task === 'levers') out.push(UI.field('Levers', UI.seg([3, 5].map((v) => ({ value: v, label: String(v) })), s.levers, (v) => set((q) => { q.levers = +v; }), 'Levers')), UI.note('The lever that matches the light pays 1 four times in five, any other one time in five. One pull per episode.'));
+    if (views) out.push(UI.field('It sees', UI.seg(views, s.view, (v) => L.setWorldView(v), 'What it sees')), UI.note(`${(views.find((q) => q.value === s.view) || views[0]).title}.`));
+    if (p.task === 'maze') {
+      out.push(UI.field('Maze', UI.select(NA.rl.MAZE_SET.map((m) => ({ value: m.id, label: m.name })), s.maze, (v) => set((q) => { q.maze = v; }))),
+        UI.field('Train on', UI.seg([{ value: false, label: 'This maze' }, { value: true, label: 'Random mazes', title: 'A new random maze every episode' }], !!s.random, (v) => set((q) => { q.random = v; }), 'Train on')),
+        UI.note(s.random ? 'A new random maze every episode. The score is the share of 20 new mazes it finds the goal of, none of them seen in training: does what it learned carry over?' : 'Every episode is the maze chosen; the score is 1 when its best moves reach the goal.'),
+        UI.field('Closer bonus', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], !!s.closer, (v) => set((q) => { q.closer = v; }), 'Bonus for getting closer')),
+        UI.note(s.closer ? '0.1 for every step that brings it closer to the goal by the shortest safe way, and as much off for every step away. Reward shaping: it cannot change which route is best, since every route’s bonuses add up to the same, but it says which way is warmer long before the goal is ever found.' : 'Rewards only at the end: +1 at the goal, −1 in a pit, and −0.02 a step. Random moves almost never find the goal of most mazes, so there is next to nothing to learn from.'),
+        UI.field('Floor', UI.seg([{ value: 0, label: 'Dry' }, { value: 0.1, label: 'Slippery' }], s.slip || 0, (v) => set((q) => { q.slip = v; }), 'Floor')),
+        UI.note('On a slippery floor one move in ten goes sideways: a safe route keeps away from the pits.'));
+    }
+    return out;
+  }
   // ------------------------------------------------------------------ your own table (CSV)
   // The file is read here in the browser; it is not sent anywhere.
   BL.loadTableFile = function (f) {
@@ -1776,8 +1905,26 @@
     for (let i = 0; i < 80; i++) { const a = rng.uniform(0, Math.PI * 2), r = rng.uniform(0.6, 0.9); pts.push({ x: +(r * Math.cos(a)).toFixed(3), y: +(r * Math.sin(a)).toFixed(3), c: 1 }); }
     return pts;
   }
+  // learning from rewards: the output block says what the outputs mean and how they learn
+  BL.renderControlOutput = function (body, d) {
+    const s = this.ps(), M = NA.brl.METHODS, set = (fn) => this.edit((S) => fn(S.ps[S.problem])), m = s.method;
+    const what = m === 'dqn' ? `${d.nA} Q-values, one per action: what it expects to collect from here on if it takes that action now. It plays the largest.`
+      : m === 'ga' ? `${d.nA} scores, one per action, and it plays the largest. Nothing says what they should be: the weights that play best are kept.`
+        : `${d.nA} scores that softmax turns into the probability of each action${d.output.k > d.nA ? ', and one more output: the critic’s value of the state, what it expects to collect from here on' : ''}. While it learns it samples its moves from the probabilities; its best moves take the likeliest.`;
+    body.append(...[el('div', { class: 'bd-insp-head', style: { '--bk': 'var(--s2)' } }, el('span', { class: 'bd-card-ico' }, icon('output')), el('div', null, el('h3', { class: 'bd-insp-title', text: 'Output and how it learns' }), el('div', { class: 'sec-note', text: d.error ? '' : outputText(d, this.setup.loss) }))),
+      UI.section('Learns by', UI.select(NA.brl.ORDER.map((k) => ({ value: k, label: M[k].label })), m, (v) => this.setMethod(v)), UI.note(M[m].hint)),
+      m === 'ga' ? UI.section('Evolution', UI.field('Population', UI.seg([12, 24, 48].map((v) => ({ value: v, label: String(v) })), s.pop, (v) => set((q) => { q.pop = v; }), 'Population')),
+        UI.field('Mutation', UI.seg([0.05, 0.2, 0.5].map((v) => ({ value: v, label: String(v) })), s.sigma, (v) => set((q) => { q.sigma = v; }), 'Mutation size')),
+        UI.note('Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')) : null,
+      m !== 'ga' && d.world !== 'levers' ? UI.section('Discount', UI.field('γ', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
+        UI.note('How much a reward one step later is worth: with 0.9, a reward ten steps away counts about a third. At 0 only the very next reward counts, so a move that pays off later is never learned.')) : null,
+      m === 'dqn' ? UI.section('Exploration', UI.field('Random moves for', UI.select([[0, 'none'], [300, '300 moves'], [1500, '1,500 moves'], [4000, '4,000 moves'], [10000, '10,000 moves']].map(([value, label]) => ({ value, label })), s.explore, (v) => set((q) => { q.explore = +v; }))),
+        UI.note('Its chance of a random move falls from 1 to 0.05 over this many moves. Without exploring it only ever tries what already looks best, and may never find out that something else pays more.')) : null,
+      UI.section('The output layer', UI.note(`${what} The added dense layer is built for you, sized to the world.`))].filter(Boolean));
+  };
   BL.renderLossSettings = function (body) {
     const fam = this.family(), L = this.setup.loss, d = this.dataFor(), set = (fn) => this.edit((s) => fn(s.loss));
+    if (fam === 'control' && !d.error) { this.renderControlOutput(body, d); return; }
     const ids = BT.lossesFor(this.problem(), d), value = d.output && d.output.kind === 'value';
     const EXPLAIN = {
       xent: 'Cross-entropy: −log of the probability given to the right answer. Confident mistakes cost a lot, and the error signal is simply probability − target. The standard choice for classes and tokens.',
@@ -1817,7 +1964,7 @@
         UI.section('Settings', UI.note('A classic model’s settings are on its block: select it in the model.')));
       return;
     }
-    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train));
+    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train)), ctl = this.family() === 'control', ga = ctl && this.ps().method === 'ga';
     clear(body);
     const lr = UI.slider({ label: 'Learning rate', min: -4, max: 0, step: 0.05, value: Math.log10(T.lr), format: (v) => fmtLr(Math.pow(10, v)), onChange: (v) => set((t) => { t.lr = +Math.pow(10, v).toPrecision(2); }) });
     const P = this.parts;
@@ -1825,12 +1972,14 @@
     P.grad = el('canvas');
     const story = this.insightsSection();
     if (story) body.append(story);
-    body.append(P.live,
-      UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
+    P.sweep = null;
+    body.append(...[P.live,
+      ga ? UI.section('No gradients', UI.note('A genetic algorithm needs no optimizer, learning rate or batches: each generation plays every member of the population and breeds the next from the best. Its settings (population and mutation) are on the Output block; Steps here are generations.')) : null,
+      ga ? null : UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
         UI.note({ sgd: 'Plain gradient descent: step downhill by learning rate × gradient.', momentum: 'Keeps a running velocity (0.9 of the last one plus the new gradient): faster along consistent directions, damped zig-zags.', adam: 'Adapts the step for every weight from running averages of its gradient and squared gradient. Usually the easiest to tune.', adamw: 'Adam with weight decay applied directly to the weights (decoupled), the usual choice for transformers.' }[T.opt]),
         lr, UI.note('How big each step is. Too small: slow. Too big: the loss jumps around or blows up (the run is marked diverged).')),
-      UI.section('Find a learning rate', P.sweep = el('div', { class: 'bd-sweep' })),
-      UI.section('Batches and schedule',
+      ctl ? null : UI.section('Find a learning rate', P.sweep = el('div', { class: 'bd-sweep' })),
+      ga ? null : UI.section('Batches and schedule',
         UI.field('Batch size', UI.seg([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => set((t) => { t.batch = +v; }), 'Batch size')),
         UI.field('Steps per press of Train', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => set((t) => { t.steps = +v; }))),
         UI.field('Learning-rate schedule', UI.select(Object.entries(SCHED_LABEL).map(([value, label]) => ({ value, label })), T.sched, (v) => set((t) => { t.sched = v; }))),
@@ -1843,7 +1992,7 @@
         UI.field('Initialisation', UI.select([['auto', 'automatic (He or Xavier)'], ['he', 'He'], ['xavier', 'Xavier'], ['small', 'tiny (N(0, 0.02))']].map(([value, label]) => ({ value, label })), T.init, (v) => set((t) => { t.init = v; }))),
         UI.field('Random seed', el('span', { class: 'bd-seed' }, el('span', { class: 'mono', text: String(T.seed) }), el('button', { class: 'btn btn-quiet', type: 'button', title: 'Another random start', onclick: () => set((t) => { t.seed = 1 + Math.floor(Math.random() * 9999); }) }, 'New seed'))),
         UI.note('The same setup with another seed gives different starting weights (and shuffles): train twice to see how much luck matters.')),
-      UI.section('Gradient size by layer', el('div', { class: 'chart-box' }, P.grad), UI.note('How strongly the last step changed each layer. Bars that shrink toward the input mean vanishing gradients; huge ones mean the steps are too big.')));
+      UI.section('Gradient size by layer', el('div', { class: 'chart-box' }, P.grad), UI.note(ga ? 'A genetic algorithm takes no gradient steps, so these stay empty.' : 'How strongly the last step changed each layer. Bars that shrink toward the input mean vanishing gradients; huge ones mean the steps are too big.'))].filter(Boolean));
     this.renderSweep();
     this.updateTrainLive();
   };
@@ -1853,7 +2002,9 @@
     if (!P || !P.live) return;
     const p = run && run.last;
     clear(P.live).append(UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'), UI.tile('Step', run ? fmtInt(run.step) : '0', run && run.limit && !this.stale ? `of ${fmtInt(run.limit)}` : this.setup.train.steps ? `${fmtInt(this.setup.train.steps)} a press` : 'until you pause'),
-      UI.tile('Learning rate now', fmtLr(this.lrAt(run ? run.step : 0))), UI.tile(`Val. ${this.metricName()}`, p && p.vm !== null && p.vm !== undefined ? (BT.isValue(run.family) ? fmt(p.vm, 3) : fmtPct(p.vm, 1)) : '—', p && p.tm !== null && p.tm !== undefined ? `training ${BT.isValue(run.family) ? fmt(p.tm, 3) : fmtPct(p.tm, 1)}` : null));
+      UI.tile('Learning rate now', fmtLr(this.lrAt(run ? run.step : 0))),
+      run && run.family === 'control' ? UI.tile('Score', p && p.vm !== null && p.vm !== undefined ? fmtPct(p.vm, 0) : '—', run.bestVm !== null && run.bestVm !== undefined ? `best ${fmtPct(run.bestVm, 0)} at step ${fmtInt(run.bestAt)}` : null)
+        : UI.tile(`Val. ${this.metricName()}`, p && p.vm !== null && p.vm !== undefined ? (BT.isValue(run.family) ? fmt(p.vm, 3) : fmtPct(p.vm, 1)) : '—', p && p.tm !== null && p.tm !== undefined ? `training ${BT.isValue(run.family) ? fmt(p.tm, 3) : fmtPct(p.tm, 1)}` : null));
     // gradient size of each layer, log scale
     const c = P.grad, W = Math.max(200, c.parentElement.clientWidth), Hh = 110, ctx = NA.fitCanvas(c, W, Hh);
     ctx.clearRect(0, 0, W, Hh);
@@ -1950,7 +2101,7 @@
     if (!root) return;
     const ch = this.challenge && BC.byId[this.challenge], done = doneSet();
     const fam = ch ? BC.family(ch) : null, here = ch && this.setup.problem === ch.problem;
-    const run = ch && this.run && this.run.cfg.problem === ch.problem ? this.run : null, vm = run && run.last ? run.last.vm : null;
+    const run = ch && this.run && this.run.cfg.problem === ch.problem ? this.run : null, vm = run ? (run.family === 'control' ? run.bestVm : run.last ? run.last.vm : null) : null;
     const params = this.check && this.check.ok ? this.check.params : null, ownData = !ch || BC.sameData(ch, this.setup);
     const key = JSON.stringify([ch && ch.id, [...done], run && run.n, vm, params, this.setup.train.opt, here, this._hint, ownData, ch && ch.goals.some((g) => g.steps !== undefined) && run ? run.step : 0, this.setup.blocks.map((b) => b.type).join()]);
     if (key === this._chKey) return;
@@ -1966,9 +2117,14 @@
     const goals = ch.goals.map((g) => {
       let label, now = '', ok = false;
       if (g.metric !== undefined) {
-        label = `Validation ${this.metricName(fam)} of at least ${scoreText(fam, g.metric)}`;
-        now = vm === null || vm === undefined ? 'not trained yet' : `last run: ${scoreText(fam, vm)}`;
+        label = fam === 'control' ? `A score of at least ${scoreText(fam, g.metric)} at some point in a run` : `Validation ${this.metricName(fam)} of at least ${scoreText(fam, g.metric)}`;
+        now = vm === null || vm === undefined ? 'not trained yet' : `last run: ${fam === 'control' ? 'best ' : ''}${scoreText(fam, vm)}`;
         ok = vm !== null && vm !== undefined && vm >= g.metric;
+      } else if (g.method !== undefined) {
+        const m = (this.setup.ps[ch.problem] || {}).method;
+        label = `Learn by ${NA.brl.METHODS[g.method].label}`;
+        now = m ? `now ${NA.brl.METHODS[m].short}` : '';
+        ok = m === g.method;
       } else if (g.params !== undefined) {
         label = `At most ${fmtInt(g.params)} parameters`;
         now = params === null ? '' : `now ${fmtInt(params)}`;
@@ -2037,7 +2193,7 @@
       }
       const fam = BC.family(ch), won = done.has(ch.id);
       const goals = ch.goals.map((g) => (g.metric !== undefined ? `${this.metricName(fam)} ≥ ${scoreText(fam, g.metric)}` : g.params !== undefined ? `≤ ${fmtInt(g.params)} parameters` : g.steps !== undefined ? `within ${fmtInt(g.steps)} steps`
-        : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `keep ${g.dense} dense layers` : `keep ${OPT_LABEL[g.opt]}`)).join(' · ');
+        : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `keep ${g.dense} dense layers` : g.method !== undefined ? `by ${NA.brl.METHODS[g.method].short}` : `keep ${OPT_LABEL[g.opt]}`)).join(' · ');
       this.chList.append(el('div', { class: 'bd-ch-item' + (won ? ' is-won' : '') + (ch.id === this.challenge ? ' is-active' : '') },
         el('div', { class: 'bd-ch-item-text' },
           el('div', { class: 'bd-ch-item-title' }, won ? el('span', { class: 'bd-ch-tick', text: '✓' }) : null, ch.title, el('span', { class: 'bd-ch-item-prob', text: `${ch.topic ? ch.topic + ' · ' : ''}${ch.table ? `${ch.table} table` : BT.byId[ch.problem].label}` })),
@@ -2197,14 +2353,20 @@
       return `${dv > 0 ? '+' : '−'}${f(Math.abs(dv))}${better ? (good ? ' better' : ' worse') : ''}`;
     };
     const vfam = BT.isValue(this.dataFor().family), score = (v) => (vfam ? fmt(v, 3) : fmtPct(v, 1)), scoreD = (v) => (vfam ? fmt(v, 3) : `${fmt(v * 100, 1)} pts`);
-    const rows = [
+    // learning from rewards: the score now and at its best, and the return of its episodes, in place of losses
+    const rows = fam === 'control' ? [
+      ['Score', L(a).vm, L(b).vm, score, scoreD, 'up', 5e-4],
+      ['Best score', a.bestVm, b.bestVm, score, scoreD, 'up', 5e-4],
+      ['Return per episode', L(a).ret, L(b).ret, (v) => fmt(v, 2), (v) => fmt(v, 2), 'up', 5e-3],
+    ] : [
       [`Validation ${this.metricName()}`, L(a).vm, L(b).vm, score, scoreD, 'up', 5e-4],
       ['Validation loss', L(a).val, L(b).val, (v) => fmt(v, 4), (v) => fmt(v, 4), 'down', 5e-5],
       ['Training loss', L(a).train, L(b).train, (v) => fmt(v, 4), (v) => fmt(v, 4), 'down', 5e-5],
+    ];
+    rows.push(
       ['Parameters', a.params, b.params, fmtInt, fmtInt, null, 0],
       ['Steps', a.step, b.step, fmtInt, fmtInt, null, 0],
-      ['Time', a.seconds, b.seconds, (v) => `${v.toFixed(1)} s`, (v) => `${v.toFixed(1)} s`, null, 0.05],
-    ];
+      ['Time', a.seconds, b.seconds, (v) => `${v.toFixed(1)} s`, (v) => `${v.toFixed(1)} s`, null, 0.05]);
     const changes = diffSetups(a.cfg, b.cfg);
     box.append(el('div', { class: 'bd-cmp-pick' }, pick(a, 'a'), el('span', { class: 'sec-note', text: 'against' }), pick(b, 'b')),
       el('table', { class: 'bd-cmp-table' },
@@ -2223,6 +2385,14 @@
     else if (t.action === 'lrHigh') { this.edit((s) => { s.train.lr = 1; s.train.opt = 'sgd'; }); this.play(); }
     else if (t.action === 'reverse') { this.setProblem('reverse'); this.play(); }
     else if (t.action === 'reverseNoAttn') { this.setProblem('reverse'); this.applyTemplate(BT.TEMPLATES.find((q) => q.id === 'noattn')); this.play(); }
+    else if (t.action === 'poleGA') { this.setProblem('pole'); this.edit((s) => { s.ps.pole.view = 'state'; }); this.applyTemplate(BT.TEMPLATES.find((q) => q.id === 'mlp')); this.setMethod('ga'); this.play(); }
+    else if (t.action === 'mazeShaping') {
+      this.setProblem('rlmaze'); this.applyTemplate(BT.TEMPLATES.find((q) => q.id === 'mlp'));
+      this.edit((s) => { Object.assign(s.ps.rlmaze, { view: 'around', maze: 'pits', random: false, closer: false, method: 'a2c' }); s.train.steps = 2000; });
+      this.play();
+      // when it stops: the bonus on, and a new run to compare
+      const off = NA.app.on('training', () => { if (this.training) return; off(); if (!this.run || this.run.status !== 'done' || this.setup.problem !== 'rlmaze') return; this.edit((s) => { s.ps.rlmaze.closer = true; }); NA.ui.toast.show('Now with the bonus for every step closer: run 2 starts. Compare the two in Runs.'); this.play(); });
+    }
     else if (t.action === 'draw') { this.setProblem('draw'); this.edit((s) => { s.custom.points = seedPoints(); }); this.selectBlock({ kind: 'input', id: 'input' }, true); this.centerView = NA.mobile && NA.mobile.mobile ? 'results' : this.centerView; this.layoutCenter(); }
     go();
     // with a prediction attached, the answer waits for the run: the promise gives the measured score

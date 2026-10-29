@@ -1,7 +1,8 @@
 /* builder-viz.js — what the model builder shows of a model's results, for each kind of problem: the regions it
    gives each class in the plane, the curve it fits, the digits it reads (with a confusion matrix), and for
-   sequences the answers it writes one token at a time and where its attention looks. Plus a small preview of
-   each problem's data for the picker. Everything is drawn on a canvas from the live model. */
+   sequences the answers it writes one token at a time and where its attention looks; a world it acts in, played
+   live with its best moves beside its outputs. Plus a small preview of each problem's data for the picker.
+   Everything is drawn on a canvas from the live model. */
 (function (NA) {
   'use strict';
   const { clamp, fmt, fmtPct, theme } = NA;
@@ -390,12 +391,56 @@
     if (side) drawConfusion(ctx, { x: r.x + lw + 18, y: r.y, w: cmW, h: r.h }, L.confusion, d.names, 'true class (rows) × the model’s answer (columns)');
   }
 
+  // ------------------------------------------------------------------ a world, played live
+  const END_TEXT = { goal: 'Reached the goal', pit: 'Fell into a pit', lost: 'Out of time', caught: 'Caught it', missed: 'Missed it', fell: 'The pole fell', up: 'Kept it up to the end', pulled: 'Pulled' };
+  /* L.demo (from the lab): the episode being played, its state (snap), the network's outputs for what it sees now
+     (out, or none before training) and the move they pick (a). The world on the left (on top when narrow), the
+     outputs as bars beside it. */
+  function drawControl(ctx, r, L) {
+    const d = L.data, D = L.demo;
+    if (!D || !D.snap) { drawWorldStill(ctx, r, d); return; }
+    const nA = d.nA, val = D.out && d.output.k > nA, rowH = 22, wide = r.w > 520;
+    const barsW = wide ? Math.min(270, r.w * 0.38) : r.w, barsH = 30 + (nA + (val ? 1 : 0)) * rowH;
+    const top = 22, wr = wide ? { x: r.x, y: r.y + top, w: r.w - barsW - 20, h: r.h - top } : { x: r.x, y: r.y + top, w: r.w, h: Math.max(80, r.h - top - barsH - 10) };
+    const br = wide ? { x: r.x + r.w - barsW, y: r.y + top + 6, w: barsW } : { x: r.x, y: wr.y + wr.h + 10, w: r.w };
+    const ret = D.ret || 0;
+    text(ctx, `Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(D.end === 'goal' || D.end === 'caught' || D.end === 'up' ? 'good' : D.end === 'pulled' ? 'ink-2' : 'critical') : theme.c('ink-2') });
+    NA.rlEnvs.draw(ctx, wr, d.world, D.snap, theme, { k: nA });
+    // the outputs: Q-values or scores (signed, around a zero line), or probabilities (0 to 1)
+    const M = d.method, probs = D.out && (M === 'pg' || M === 'a2c' || M === 'ppo') ? NA.brl.softmax(D.out, nA) : null;
+    text(ctx, !D.out ? (D.end ? 'Between episodes' : 'Random moves: not trained yet') : M === 'dqn' ? 'Q-values: the reward it expects for each move' : probs ? 'The probability of each move' : 'Its score for each move', br.x, br.y + 4, { size: 11, w: 650, color: theme.c('muted') });
+    const lab = Math.min(110, br.w * 0.38), bx = br.x + lab + 6, bw = br.w - lab - 6 - 52, y0 = br.y + 18;
+    let lo = 0, hi = 1;
+    if (D.out && !probs) { for (let k = 0; k < nA; k++) { lo = Math.min(lo, D.out[k]); hi = Math.max(hi, D.out[k]); } if (hi - lo < 1e-9) hi = lo + 1; }
+    const X = (v) => bx + ((v - lo) / (hi - lo)) * bw, z = X(0);
+    for (let k = 0; k < nA; k++) {
+      const y = y0 + k * rowH, v = D.out ? (probs ? probs[k] : D.out[k]) : null, pick = D.a === k;
+      text(ctx, fit(ctx, d.actions[k], lab, 11.5, pick ? 700 : 500), br.x, y + rowH / 2, { size: 11.5, w: pick ? 700 : 500, color: theme.c(pick ? 'ink' : 'ink-2') });
+      ctx.fillStyle = theme.c('line', 0.5); NA.rr(ctx, bx, y + 4, bw, rowH - 8, 3); ctx.fill();
+      if (v !== null) {
+        const x0 = Math.min(z, X(v)), w = Math.max(2, Math.abs(X(v) - z));
+        ctx.fillStyle = theme.c(pick ? 's2' : 's1', pick ? 0.95 : 0.55); NA.rr(ctx, x0, y + 4, w, rowH - 8, 3); ctx.fill();
+        text(ctx, probs ? fmtPct(v, 0) : fmt(v, 2), bx + bw + 6, y + rowH / 2, { size: 11, mono: true, color: theme.c(pick ? 'ink' : 'muted') });
+      } else if (pick) text(ctx, 'random', bx + bw + 6, y + rowH / 2, { size: 11, color: theme.c('muted') });
+    }
+    if (D.out && !probs && lo < 0) { ctx.strokeStyle = theme.c('ink-2', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(Math.round(z) + 0.5, y0 + 2); ctx.lineTo(Math.round(z) + 0.5, y0 + nA * rowH - 2); ctx.stroke(); }
+    if (val) text(ctx, `The critic’s value of this state: ${fmt(D.out[nA], 2)}`, br.x, y0 + nA * rowH + rowH / 2, { size: 11.5, color: theme.c('ink-2') });
+  }
+  // a world at the start of an episode, for the picker and before anything has played
+  function drawWorldStill(ctx, r, d) {
+    const w = NA.rlEnvs.make(d.world, d.ws);
+    w.reset(new NA.RNG(5));
+    if (d.world === 'pole') { w.th = 0.08; w.x = -0.3; }
+    NA.rlEnvs.draw(ctx, r, d.world, w.snap(), theme, { k: d.nA });
+  }
+
   // ------------------------------------------------------------------ entry points
   V.draw = function (ctx, r, L) {
     const d = L.data;
     if (!d) return;
     if (d.error) return; // the lab shows the problem's error as text above the picture
     if (d.table) return drawTable(ctx, r, L);
+    if (d.family === 'control') return drawControl(ctx, r, L);
     if (d.family === 'series') return drawSeries(ctx, r, L);
     if (d.family === 'surface') return drawSurface(ctx, r, L);
     if (d.family === 'seqclass') return drawSeqClass(ctx, r, L);
@@ -412,6 +457,7 @@
     ctx.clearRect(0, 0, W, Hh);
     if (!d || d.error) return;
     if (d.table) { drawTable(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }); return; }
+    if (d.family === 'control') { drawWorldStill(ctx, { x: 4, y: 4, w: W - 8, h: Hh - 8 }, d); return; }
     if (d.family === 'series') { drawSeries(ctx, { x: 0, y: 0, w: W, h: Hh + 14 }, { data: d, model: null }); return; }
     if (d.family === 'surface') { drawSurface(ctx, { x: 0, y: 0, w: W, h: Hh + 10 }, { data: d, model: null }); return; }
     if (d.family === 'seqclass') { drawSeqClass(ctx, { x: 0, y: -4, w: W, h: Hh }, { data: Object.assign({}, d, { nVa: 4 }), model: null }); return; }

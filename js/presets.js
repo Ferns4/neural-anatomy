@@ -305,7 +305,7 @@
   // The model builder: you choose the problem, the parts, the loss and the settings (lab-builder.js).
   PRESETS.push({
     id: 'builder', group: 'Build your own', lab: 'builder', name: 'Model Builder', tagline: 'Build a model from parts, train it and compare runs.',
-    meta: 'Dense · neurons · conv · attention · transformer · your own data',
+    meta: 'Dense · neurons · conv · attention · transformer · your own data · learning from rewards',
     about: 'Pick a problem, or make your own: place points, type a function or write some sentences. Then build a model for it by dragging parts between the input and the output: dense layers or single neurons, activations, dropout and layer norm, convolutions and pooling for pictures, attention and whole transformer blocks for sequences. Choose the loss, the optimizer, the learning rate and the rest, and train it right here. Each time you change something and train again, the new run is listed with what changed, so you can see what each change did.',
     look: [
       'The shapes between the blocks show how the data changes size on its way through. A block outlined in red does not fit; its button adds what is missing.',
@@ -313,6 +313,7 @@
       'Runs lists every run with what changed since the one before and its validation score; the chart overlays their curves.',
       'Architecture opens the model you built: a block, a neuron’s weighted sum on the example, and on down to the transistors, as in every other model.',
       'Python writes the whole setup (the data, the model, the loss and the training loop) as a PyTorch script.',
+      'Learn from rewards (in the problem list): a world instead of a dataset. The Input block chooses how the model sees it, the Output block how it learns (DQN, REINFORCE, actor-critic, PPO or a genetic algorithm), and the results play it live.',
     ],
     try: [
       { text: 'Train with no hidden layer on the two spirals.', label: 'Linear on spirals', action: 'spiralLinear',
@@ -323,6 +324,10 @@
       { text: 'Reverse a sequence with a tiny transformer: attention learns to look back at the mirrored position.', label: 'Reverse with attention', action: 'reverse' },
       { text: 'The same task with no attention: each position sees only itself, so the answers are guesses.', label: 'Reverse without attention', action: 'reverseNoAttn' },
       { text: 'Your own data: start from a disc inside a ring, then add or remove points and train again.', label: 'Draw your own', action: 'draw' },
+      { text: 'Balance a pole with no gradients at all: a genetic algorithm breeds the Small MLP.', label: 'Pole by evolution', action: 'poleGA' },
+      { text: 'The maze with rewards only at the goal, then with a bonus for every step closer.', label: 'Maze: shaping', action: 'mazeShaping',
+        predict: { q: 'With rewards only at the goal, how will actor-critic do on the Pits maze in 2,000 steps?', options: ['It finds the goal', 'It never finds the goal', 'It finds it half the time'], answer: 1,
+          why: 'Random moves almost never reach this goal, so every episode looks equally bad and there is nothing to learn from. A bonus for each step closer (reward shaping) gives it a direction from the first move: the next run finds the goal within a few hundred steps.' } },
     ],
   });
 
@@ -362,7 +367,7 @@
       meta: 'DQN · 104–64–4 Q-network · 6,980 parameters',
       about: 'A Q-table has a row for each square of one maze, so it learns that maze and no other. This agent uses a network instead, and is not told its square at all: it sees the 24 squares around it (walls, pits, the goal, where it has already been) and which way the goal lies, and outputs a Q-value for each move. It learned by Q-learning on random mazes, easy ones first, with the two tricks DQN used to learn Atari games from the screen: a replay memory and a target network. It never trained on any of the named mazes, yet it gets through all five, and through most random mazes nobody has seen.',
       look: [
-        'The maze: the colours and arrows are what the network says on each square, as if it stood there. Pick another maze above the board, or New random maze for one it has never seen.',
+        'The maze: the colours and arrows are what the network says on each square, as if it stood there. Pick another maze above the board, or New random maze for one it has never seen. While it trains, the board shows the random mazes it learns on, a new one every episode.',
         'Test run: it walks its route slowly, the 5 × 5 squares it sees outlined. Beside the maze, its network at that step: what it sees, which of its 64 hidden neurons fire, and the four Q-values. ◀ ▶ step through it.',
         'Architecture: the agent as a loop, with the network in the middle. Open a hidden neuron for its weighted sum of the 104 inputs, down to the transistors.',
         'Training tab: the share of the named mazes and of 100 new mazes it gets through, as it learned. Every training episode is a new random maze, so it never trains on any of them; Train on can switch it to the maze shown only, to watch it overfit.',
@@ -421,6 +426,33 @@
             why: 'Within about 250 games: lines are easy to learn to finish, and a random player never blocks. Against the rule-follower, which takes its wins and blocks, it needs tens of thousands of games.' } },
         { text: 'Bring back the network trained for 100,000 games.', label: 'Trained network', action: 'trained' },
         { text: 'Watch it play itself, one move at a time.', label: 'Watch self-play', action: 'watch' },
+      ],
+    },
+    {
+      id: 'rl-evolve', group: 'Reinforcement learning', lab: 'rl', example: 'evolve', name: 'Evolution', tagline: 'No gradients: a genetic algorithm breeds a network that balances a pole.',
+      meta: 'Genetic algorithm · 4–8–2 tanh network · 58 weights · 30 networks a generation',
+      about: 'A cart with a pole on it, and a small neural network that pushes the cart left or right: 4 inputs (where the cart is and how fast it moves, how far the pole leans and how fast it turns), 8 tanh neurons and 2 outputs. Its 58 weights are never trained. A population of 30 networks starts at random; each generation every network plays, and its fitness is how long the pole stayed up, out of 1,000 steps. The best two carry on unchanged, and every other place goes to a child of two fit parents, each weight taken from one parent or the other, a few of them mutated. This is neuroevolution: it needs only a score, no gradient and no reward for any single move.',
+      look: [
+        'Press Train and watch the bars under the cart: the last generation, one bar per network, fittest first. Orange: the best two, carried on unchanged.',
+        'The cart plays the best network so far, in real time. Beside it, that network’s computation at each step: the 4 numbers it sees, its 8 tanh neurons, and which way it pushes.',
+        'Training tab: the best, average and worst fitness of each generation. A network lasts the whole run within a few generations; the average takes dozens to follow.',
+        'Try it yourself: balance the pole with ← and →, then see how long the network lasts from the same start.',
+        'Architecture: the evolution loop. Open the network to see a neuron’s weighted sum, down to the transistors.',
+      ],
+      try: [
+        { text: 'Evolve 60 generations from random networks.', label: 'Evolve 60 generations', action: 'scratch', n: 60,
+          predict: { q: 'After 60 generations, how does the population compare with its best network?', options: ['Every network is as good as the best', 'The best lasts all 1,000 steps; the average is far below it', 'No network lasts 1,000 steps yet'], answer: 1,
+            why: 'One network lasts the whole run within a few generations, by luck as much as anything. Spreading what it has through the population takes much longer, and mutations keep pulling some children down: the average climbs over dozens of generations.' } },
+        { text: 'Watch it evolve, a generation a second, with each new best network on the cart.', label: 'Watch it evolve', action: 'watch' },
+        { text: 'Test the best network slowly, with its computation at every step.', label: 'Test run', action: 'test' },
+        { text: 'Balance the pole yourself with ← and →.', label: 'Try it yourself', action: 'play' },
+        { text: 'No mutation: children only mix their parents’ weights.', label: 'No mutation', action: 'noMutation', n: 60,
+          predict: { q: 'With no mutation, what happens to the population?', options: ['It never improves at all', 'It turns into copies of its best few networks, and then nothing changes', 'It keeps improving, faster than with mutation'], answer: 1,
+            why: 'Crossover only mixes weights that are already there. The fittest networks’ weights spread until the population is nearly all copies of them (the bars level out), and with nothing new coming in it cannot get better than the best mix of what it started with.' } },
+        { text: 'A population of only 6.', label: 'Tiny population', action: 'tinyPop', n: 60 },
+        { text: 'No elite: even the best network is replaced each generation.', label: 'No elite', action: 'noElite', n: 60 },
+        { text: 'Large mutations (σ = 1.5).', label: 'Large mutations', action: 'bigMutation', n: 60 },
+        { text: 'Back to the defaults, with a new population.', label: 'Defaults', action: 'default' },
       ],
     });
 

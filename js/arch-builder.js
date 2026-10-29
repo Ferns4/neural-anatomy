@@ -268,9 +268,12 @@
       if (q.kind === 'series') return `x(t−${q.len - 1 - (idx % q.len)})`;
       return q.dim === 1 ? 'x' : `x${NA.sub(idx + 1)}`;
     };
+    // learning from rewards: the move its outputs pick (the largest of the actions' outputs)
+    const ctlAct = () => { let a = 0; for (let k = 1; k < d.nA; k++) if (P.logits[k] > P.logits[a]) a = k; return a; };
     const exampleText = () => {
       if (!P) return '';
       const fam = d.family;
+      if (fam === 'control') return d.input.kind === 'vector' && d.input.dim <= 6 ? `what it sees at one moment of random play: ${d.obsNames.map((nm, j) => `${nm} ${fmt(P.x[j], 2)}`).join(', ')}` : 'what it sees at one moment of random play';
       if (d.table) {
         const raw = (j) => P.x[j] * d.stats.std[j] + d.stats.mean[j], show = d.featNames.slice(0, 3).map((nm, j) => `${nm} ${fmt(raw(j), 2)}`).join(', ');
         return `a row with ${show}${d.featNames.length > 3 ? ', …' : ''}, whose ${d.targetName} is ${d.kind === 'value' ? fmt(target[0] * d.stats.y.std + d.stats.y.mean, 2) : names[target[0]]}`;
@@ -286,6 +289,7 @@
     };
     const answerText = () => {
       if (!nums) return '';
+      if (d.family === 'control') return `its outputs pick “${d.actions[ctlAct()]}”`;
       if (out.kind === 'classes') return `the model says ${names[pred] || 'class ' + (pred + 1)} (${fmtPct(probs[pred], 0)})${pred === target[0] ? ', right' : `, wrong`}`;
       if (out.kind === 'value') return `the model says ${fmt(P.logits[0], 3)}`;
       return `its next-token guesses are right at ${tokRight} of ${tokCount} position${tokCount === 1 ? '' : 's'}`;
@@ -2301,7 +2305,7 @@ print(torch.allclose(out, glu(x)))                 # True`;
           summary: (ctx, r) => { const sq = Math.min(r.w, r.h); drawHeat(ctx, heatImg(cache, 'in', H, Wd, (i, j) => P.x[i * Wd + j], { ink: true }), { x: r.x + (r.w - sq) / 2, y: r.y, w: sq, h: sq }, H, Wd, true); },
           inner: (ctx, r, S) => {
             const u = S.u(r, 8, 13);
-            S.lines(ctx, [`${whose}:`, `${exampleText()}`, `${H} × ${Wd} pixels${C > 1 ? ` × ${C} channels` : ''}, 0 = paper, 1 = ink`, nums ? answerText() : ''].filter(Boolean), S.place(r, W2([0, 0, 0.46, 0.4], [0, 0, 1, 0.2])), { size: u * 0.95, strong: (k) => k === 1 });
+            S.lines(ctx, [`${whose}:`, `${exampleText()}`, `${H} × ${Wd} pixels${C > 1 ? ` × ${C} channels` : ''}, ${d.family === 'control' ? '1 where something is, 0 elsewhere' : '0 = paper, 1 = ink'}`, nums ? answerText() : ''].filter(Boolean), S.place(r, W2([0, 0, 0.46, 0.4], [0, 0, 1, 0.2])), { size: u * 0.95, strong: (k) => k === 1 });
             drawHeat(ctx, heatImg(cache, 'in', H, Wd, (i, j) => P.x[i * Wd + j], { ink: true }), S.place(r, pic), H, Wd, true);
           },
           grids: [{ id: 'px', rect: pic, rows: H, cols: Wd, square: true, make: (i, j) => Dp.stored(X, P.x[i * Wd + j], inputLabel(i * Wd + j), 'input') }],
@@ -2314,17 +2318,18 @@ print(torch.allclose(out, glu(x)))                 # True`;
           summary: (ctx, r, S) => S.bars(ctx, vals, r),
           inner: (ctx, r, S) => {
             const u = S.u(r, 8, 13), pr = S.place(r, plot), br = S.place(r, bars);
-            S.lines(ctx, [`${whose}:`, exampleText(), nums ? answerText() : '', `line: the window the model reads; circle: the value after it${nums ? '; dot: its forecast' : ''}`].filter(Boolean), S.place(r, W2([0, 0, 0.42, 0.5], [0, 0, 1, 0.22])), { size: u * 0.95, strong: (k) => k === 1 });
+            const ctl = d.family === 'control';
+            S.lines(ctx, [`${whose}:`, exampleText(), nums ? answerText() : '', ctl ? 'the readings, oldest first' : `line: the window the model reads; circle: the value after it${nums ? '; dot: its forecast' : ''}`].filter(Boolean), S.place(r, W2([0, 0, 0.42, 0.5], [0, 0, 1, 0.22])), { size: u * 0.95, strong: (k) => k === 1 });
             ctx.fillStyle = theme.c('panel-2'); ctx.fillRect(pr.x, pr.y, pr.w, pr.h); S.frame(ctx, pr);
-            let lo = Math.min(...vals, target[0], nums ? P.logits[0] : 0), hi = Math.max(...vals, target[0], nums ? P.logits[0] : 0);
+            let lo = Math.min(...vals, ctl ? 0 : target[0], nums && !ctl ? P.logits[0] : 0), hi = Math.max(...vals, ctl ? 0 : target[0], nums && !ctl ? P.logits[0] : 0);
             const sp = hi - lo || 1; lo -= sp * 0.12; hi += sp * 0.12;
             const X0 = (t) => pr.x + ((t + 0.5) / (n + 1)) * pr.w, Y0 = (v) => pr.y + pr.h - ((v - lo) / (hi - lo)) * pr.h;
             ctx.strokeStyle = theme.c('s3'); ctx.lineWidth = 2; ctx.beginPath();
             for (let t = 0; t < n; t++) { if (t) ctx.lineTo(X0(t), Y0(vals[t])); else ctx.moveTo(X0(t), Y0(vals[t])); }
             ctx.stroke(); ctx.fillStyle = theme.c('s3');
             for (let t = 0; t < n; t++) { ctx.beginPath(); ctx.arc(X0(t), Y0(vals[t]), 2.2, 0, Math.PI * 2); ctx.fill(); }
-            ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(X0(n), Y0(target[0]), 6, 0, Math.PI * 2); ctx.stroke();
-            if (nums) { ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(X0(n), Y0(P.logits[0]), 3.4, 0, Math.PI * 2); ctx.fill(); }
+            if (!ctl) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(X0(n), Y0(target[0]), 6, 0, Math.PI * 2); ctx.stroke(); }
+            if (nums && !ctl) { ctx.fillStyle = theme.c('ink'); ctx.beginPath(); ctx.arc(X0(n), Y0(P.logits[0]), 3.4, 0, Math.PI * 2); ctx.fill(); }
             S.caption(ctx, 'the window, value by value: zoom into one', br, { size: u * 0.8, minW: 150 }); S.bars(ctx, vals, br);
           },
           grids: [{ id: 'x', rect: bars, rows: 1, cols: n, make: (i, j) => Dp.stored(X, vals[j], inputLabel(j), 'input') }],
@@ -2454,6 +2459,23 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
           get about() { return [about0, `On this example ${answerText()}. The list shows, after each token, the token the model finds likeliest to come next. Zoom into a score for its weighted sum, or a probability for its softmax.`]; },
           code,
         });
+      }
+      if (d.family === 'control') {
+        const A = d.nA, act = ctlAct(), M = d.method, zs = Float32Array.from(P.logits.subarray(0, K)), pol = M === 'pg' || M === 'a2c' || M === 'ppo';
+        const pr = pol ? softmax(P.logits, 0, A) : null, LY = W2({ t: [0, 0, 1, 0.2], z: [0, 0.3, 0.6, 0.5], n: [0.68, 0.26, 0.32, 0.7] }, { t: [0, 0, 1, 0.2], z: [0, 0.26, 1, 0.3], n: [0, 0.64, 1, 0.34] });
+        const what = M === 'dqn' ? 'a Q-value per action: the reward it expects if it takes that action now' : pol ? 'a score per action, which softmax turns into the probability of playing it' : 'a score per action: whichever weights played best are kept';
+        const ctlAbout = `The output head is a dense layer without an activation: ${K} weighted sums of the ${Fn} numbers that reach it, ${what}${K > A ? ', and one more: the critic’s value of this state' : ''}. Its move is the action with the largest output. There is no target for one example: it learns from rewards (${NA.brl.METHODS[M].label}).`;
+        return Dp.lazy(Object.assign(base, {
+          summary: (ctx, r, S) => S.bars(ctx, zs, r, { color: (k) => theme.c(k === act ? 's2' : k >= A ? 's7' : 's1', k === act ? 1 : 0.55) }),
+          inner: (ctx, r, S) => {
+            const u = S.u(r, 8, 13), zr = S.place(r, LY.z);
+            S.lines(ctx, [`z = W·x + b  (${Fn} → ${K} outputs)`, `${answerText()}${pr ? ` (${fmtPct(pr[act], 0)})` : ''}${K > A ? `; the critic: ${fmt(zs[A], 3)}` : ''}`], S.place(r, LY.t), { mono: true, size: u * 0.92, strong: (k) => k === 1 });
+            S.caption(ctx, 'its outputs: zoom into one', zr, { size: u * 0.8, minW: 140 }); S.bars(ctx, zs, zr, { color: (k) => theme.c(k === act ? 's2' : k >= A ? 's7' : 's1', k === act ? 1 : 0.55) });
+            colLabels(ctx, S, d.names.map((nm, k) => `${nm} ${fmt(zs[k], 2)}`), zr, { size: u * 0.76, hi: act });
+          },
+          about: [ctlAbout, `For this observation ${answerText()}. Zoom into an output for its weighted sum.`],
+          code,
+        }), () => Array.from({ length: K }, (_, j) => Object.assign(denseNeuron(nb, 0, j), { id: 'n' + j, rect: [LY.n[0], LY.n[1] + (j * LY.n[3]) / K, LY.n[2], LY.n[3] / K - 0.02] })));
       }
       if (out.kind === 'value') {
         const LY = W2({ t: [0, 0, 1, 0.2], x: [0, 0.32, 0.55, 0.22], w: [0, 0.66, 0.55, 0.22], n: [0.64, 0.3, 0.36, 0.6] }, { t: [0, 0, 1, 0.2], x: [0, 0.28, 1, 0.12], w: [0, 0.48, 1, 0.12], n: [0, 0.68, 1, 0.3] });

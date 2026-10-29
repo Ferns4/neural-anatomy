@@ -1,10 +1,11 @@
 /* builder-challenges.js — guided challenges for the model builder: a problem, a starting model that falls short,
    and a goal to reach by changing it, from Beginner to Expert. Goals: a validation score (accuracy, R² or token
-   accuracy), at most so many parameters, an optimizer to keep, a number of training steps to do it in, a classic
-   model or a network, a number of dense layers to keep. A run counts only on the challenge's own data: its
-   problem settings may not change, except the ones a challenge leaves free. Every challenge has a known
-   solution, trained by tools/builder-challenges-check.js, which also checks that the starting model does not
-   already pass. */
+   accuracy; for learning from rewards, the best score of a run, since a policy can get worse again as it
+   learns), at most so many parameters, an optimizer or a way of learning from rewards to keep, a number of
+   training steps to do it in, a classic model or a network, a number of dense layers to keep. A run counts only
+   on the challenge's own data: its problem settings may not change, except the ones a challenge leaves free.
+   Every challenge has a known solution, trained by tools/builder-challenges-check.js, which also checks that the
+   starting model does not already pass. */
 (function (NA) {
   'use strict';
   const D = (units, act = 'relu') => ({ type: 'dense', units, act });
@@ -211,6 +212,65 @@
       solution: { ps: { embed: 8 }, blocks: [{ type: 'conv1d', filters: 8, k: 3, dilation: 1, causal: false, act: 'relu', residual: false }, { type: 'seqpool', mode: 'max' }] },
     },
   ];
+  // ---------------------------------------------------------------- learning from rewards
+  LIST.push(
+    {
+      id: 'explore', level: 'Beginner', topic: 'Rewards', title: 'Try the other levers', problem: 'levers', template: 'mlp', ps: { levers: 5, explore: 0 }, free: ['explore'],
+      brief: 'Five lights and five levers. DQN starts without exploring: it always pulls the lever that looks best so far, so a lever that paid once gets pulled for good, and the others are never tried.',
+      goals: [{ metric: 0.95 }],
+      hint: 'Select the Output block and let it explore: random moves for the first 300 moves or more, fewer and fewer as it learns.',
+      solution: { ps: { explore: 300 } },
+    },
+    {
+      id: 'warmer', level: 'Beginner', topic: 'Rewards', title: 'Warmer, colder', problem: 'rlmaze', template: 'mlp', ps: { closer: false, method: 'a2c' }, free: ['closer'],
+      brief: 'The Pits maze with rewards only at the end: +1 at the goal, −1 in a pit. Random moves almost never reach the goal, so the actor-critic never finds out there is one.',
+      goals: [{ metric: 0.95 }],
+      hint: 'Turn on the closer bonus in the Input block’s settings: a little reward for every step toward the goal, and as much off for every step away (reward shaping).',
+      solution: { ps: { closer: true } },
+    },
+    {
+      id: 'motion', level: 'Intermediate', topic: 'Rewards', title: 'Feel the motion', problem: 'pole', ps: { view: 'readings', method: 'pg' }, blocks: [{ type: 'seqpool', mode: 'last' }, D(16), D(16)],
+      brief: 'The pole seen as its last 4 readings of position and angle. The model starts with a Sequence pool that keeps only the latest reading, so it cannot tell a pole that is falling from one that is rising.',
+      goals: [{ metric: 0.95 }],
+      hint: 'Let the model see all 4 readings: replace the Sequence pool with a Flatten (or read them with a recurrent layer). How the readings change is the speed.',
+      solution: { blocks: [{ type: 'flatten' }, D(16), D(16)] },
+    },
+    {
+      id: 'farsight', level: 'Intermediate', topic: 'Rewards', title: 'Look further ahead', problem: 'catch', template: 'mlp', ps: { gamma: 0, method: 'a2c' }, free: ['gamma'], train: { steps: 5000 },
+      brief: 'Catch pays only when the ball lands. With a discount of 0 nothing that comes later counts, so the moves that bring the paddle under the ball never learn that they helped.',
+      goals: [{ metric: 0.9 }],
+      hint: 'Raise the discount γ on the Output block to 0.95: a reward a few steps away still counts now, and flows back to the moves that earned it.',
+      solution: { ps: { gamma: 0.95 } },
+    },
+    {
+      id: 'steady', level: 'Intermediate', topic: 'Rewards', title: 'Steady hands', problem: 'pole', template: 'mlp', ps: { method: 'a2c' }, train: { lr: 0.3 },
+      brief: 'Actor-critic on the pole with a learning rate of 0.3: every update throws the policy somewhere new, and it never settles. Learning from rewards is touchier than learning from answers.',
+      goals: [{ metric: 0.95 }],
+      hint: 'Take smaller steps: a learning rate of 0.003.',
+      solution: { train: { lr: 0.003 } },
+    },
+    {
+      id: 'evolve', level: 'Advanced', topic: 'Rewards', title: 'Evolve a balancer', problem: 'pole', template: 'mlp', ps: { method: 'ga' },
+      brief: 'Balance the pole by evolution alone, with at most 12 weights. The genetic algorithm starts with the Small MLP: 386 of them.',
+      goals: [{ metric: 0.95 }, { params: 12 }, { method: 'ga' }],
+      hint: 'A weighted sum of the 4 numbers can keep the pole up. Pick the Linear template (no hidden layer: 10 weights): with so few, every mutation counts.',
+      solution: { template: 'linear' },
+    },
+    {
+      id: 'pixels', level: 'Advanced', topic: 'Rewards', title: 'Catch from pixels', problem: 'catch', template: 'mlp', ps: { view: 'pixels', method: 'a2c' }, train: { steps: 5000 },
+      brief: 'Catch from two pictures of the board, now and a step ago, with at most 300 weights. The Small MLP needs 1,636 for the 80 pixels.',
+      goals: [{ metric: 0.95 }, { params: 300 }],
+      hint: 'A convolution shares a few weights across the whole picture: a Convolution of 4 filters with a stride of 2 (it moves 2 pixels at a time, so the picture it gives is half the size), then a Flatten.',
+      solution: { blocks: [{ type: 'conv', filters: 4, k: 3, stride: 2, act: 'relu' }, { type: 'flatten' }] },
+    },
+    {
+      id: 'anymaze', level: 'Expert', topic: 'Rewards', title: 'Any maze', problem: 'rlmaze', template: 'mlp', ps: { random: true, view: 'square', method: 'a2c' }, free: ['view'], train: { steps: 10000 },
+      brief: 'A new random maze every episode, judged on 20 mazes it has never seen. Seeing only which square it is on, it cannot know where the walls, the pits or the goal of a new maze are.',
+      goals: [{ metric: 0.85 }],
+      hint: 'Let it see what is around it: set It sees to Around it, in the Input block’s settings. Walls, pits and the way to the goal look the same in every maze, so what it learns carries over.',
+      solution: { ps: { view: 'around' } },
+    },
+  );
   const byId = Object.fromEntries(LIST.map((c) => [c.id, c]));
   const isClassic = (type) => !!(NA.cml && NA.cml.isClassic(type));
   const TABLE_NAMES = {};
@@ -230,7 +290,9 @@
   function progress(ch, run) {
     const cfg = run ? run.cfg : null, blocks = cfg ? cfg.blocks : [];
     const out = ch.goals.map((g) => {
-      if (g.metric !== undefined) { const v = run && run.last ? run.last.vm : null; return { goal: g, ok: v !== null && v !== undefined && v >= g.metric, now: v }; }
+      // learning from rewards: the best score of the run (a policy can get worse again as it learns)
+      if (g.metric !== undefined) { const v = run && run.bestVm !== undefined && run.bestVm !== null ? run.bestVm : run && run.last ? run.last.vm : null; return { goal: g, ok: v !== null && v !== undefined && v >= g.metric, now: v }; }
+      if (g.method !== undefined) { const v = cfg ? ((cfg.ps || {})[ch.problem] || {}).method : null; return { goal: g, ok: v === g.method, now: v }; }
       if (g.params !== undefined) { const v = run ? run.params : null; return { goal: g, ok: v !== null && v <= g.params, now: v }; }
       if (g.opt !== undefined) { const v = cfg ? cfg.train.opt : null; return { goal: g, ok: v === g.opt, now: v }; }
       if (g.steps !== undefined) { const v = run ? run.step : null; return { goal: g, ok: v !== null && v !== undefined && v <= g.steps, now: v }; }
@@ -243,21 +305,22 @@
   }
   const passed = (ch, run) => !!run && run.cfg.problem === ch.problem && progress(ch, run).every((p) => p.ok);
   // a goal in a few words, for tools and short lists
-  const describe = (g) => (g.metric !== undefined ? `score ≥ ${g.metric}` : g.params !== undefined ? `≤ ${g.params} params` : g.opt !== undefined ? `optimizer ${g.opt}` : g.steps !== undefined ? `within ${g.steps} steps`
+  const describe = (g) => (g.metric !== undefined ? `score ≥ ${g.metric}` : g.params !== undefined ? `≤ ${g.params} params` : g.opt !== undefined ? `optimizer ${g.opt}` : g.method !== undefined ? `learns by ${g.method}` : g.steps !== undefined ? `within ${g.steps} steps`
     : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `≥ ${g.dense} dense layers` : g.data ? 'its own data' : '?');
 
   // The setup a challenge starts from (blocks without ids), or with solved, its known solution.
   function setup(ch, solved) {
     const BT = NA.builderTasks, p = BT.byId[ch.problem], sol = solved ? ch.solution : {};
-    const tpl = (id) => BT.templateBlocks(BT.TEMPLATES.find((t) => t.id === id), p.family);
     const custom = { points: [] };
     if (ch.table) custom.table = BT.SAMPLES[ch.table].make();
     const ps = Object.assign(BT.defaults(p), ch.ps, sol.ps), d = ch.table ? BT.make(p, ps, 1, custom) : null;
+    // a world seen as a picture or as readings: the plain templates start with a Flatten
+    const kind = p.family === 'control' ? BT.make(p, ps, 1, custom).input.kind : null, tpl = (id) => BT.templateBlocks(BT.TEMPLATES.find((t) => t.id === id), p.family, kind);
     return {
       problem: ch.problem, ps: { [ch.problem]: ps },
       blocks: JSON.parse(JSON.stringify(sol.blocks || (sol.template ? tpl(sol.template) : ch.blocks || tpl(ch.template)))),
       loss: { id: BT.lossesFor(p, d)[0], smooth: 0, delta: 0.2 },
-      train: Object.assign({}, BT.DEFAULT_TRAIN, BT.trainFor(p), ch.train, sol.train),
+      train: Object.assign({}, BT.DEFAULT_TRAIN, BT.trainFor(p), p.family === 'control' ? { steps: NA.brl.stepsFor(p.task, ps.method) } : null, ch.train, sol.train),
       custom,
     };
   }
