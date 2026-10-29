@@ -164,7 +164,8 @@
       root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null }, el('span', { class: 'ro-label', text: d.label }), v));
       map[d.key] = v;
     }
-    return { set(key, text) { const n = map[key]; if (n && n.textContent !== text) n.textContent = text; } };
+    const count = (s) => (/^-?\d{1,3}(,\d{3})+$/.test(s) ? NA.fmtCount(+s.replace(/,/g, '')) : s);
+    return { set(key, text) { const n = map[key]; text = count(String(text)); if (n && n.textContent !== text) n.textContent = text; } };
   };
 
   // The preset's notes and one-click experiments, in the style of the MLP Insights tab.

@@ -91,7 +91,7 @@
   function probe(L) {
     const S = L.S;
     if (S.id === 'maze') {
-      const M = S.maze, T = L.test, f = T && T.frames[T.k], w = !f && L.watch && S.walk ? S.walk : null;
+      const T = L.test, f = T && T.frames[T.k], w = !f && L.watch && S.walk ? S.walk : null, M = (w && w.maze) || S.maze;
       const s = f ? f.s : w ? w.s : S.sel, why = f ? 'test' : w ? 'watch' : 'square';
       if (S.model === 'table') { const q = [0, 1, 2, 3].map((a) => S.Q.Q[s * 4 + a]); return { kind: 'mazeTable', M, s, q, a: f ? f.a : S.Q.best(s), why, f, T }; }
       let seen = f ? f.seen : w && w.seen ? w.seen : null;
@@ -367,7 +367,7 @@
         { id: 'hid', rect: HID, rows: 8, cols: 8, square: true, make: (i, j) => hidden(i * 8 + j) },
       ]),
       children: [0, 1, 2, 3].map((a) => Object.assign(out(a), { rect: [OUT[0], OUT[1] + a * OUT[3] / 4 + 0.01, OUT[2], OUT[3] / 4 - 0.02] })),
-      about: [`The network that chooses its moves, on square ${sqName(P.M, P.s)} of ${L.mazeName()}: left, its ${net.nIn} inputs (the 24 squares around it, each as a wall or the edge, a pit, the goal, or visited; and 8 for the goal’s direction); the dots, its ${H} hidden neurons; right, its 4 outputs, one Q-value per move. It moves ${DIR[P.a]}, the largest.`,
+      about: [`The network that chooses its moves, on square ${sqName(P.M, P.s)} of ${P.M === L.S.maze ? L.mazeName() : 'a random training maze'}: left, its ${net.nIn} inputs (the 24 squares around it, each as a wall or the edge, a pit, the goal, or visited; and 8 for the goal’s direction); the dots, its ${H} hidden neurons; right, its 4 outputs, one Q-value per move. It moves ${DIR[P.a]}, the largest.`,
         `It has no row for any square and has never seen this maze: the same weights decide in every maze, from what is around it. That is why it can carry over to new mazes, where a table cannot. ${NA.openHint('a part', { cap: true })}: every level opens, down to the transistors.`],
       code: NA.archRL.py.mazeNet(L),
     };
@@ -520,7 +520,7 @@
     if (P.kind === 'mazeNet' || P.kind === 'mazeTable') {
       const M = P.M;
       return {
-        title: L.mazeName(), sub: '+1 goal · −1 pit · −0.02 a step', tone: 's2',
+        title: P.M === S.maze ? L.mazeName() : 'A random training maze', sub: '+1 goal · −1 pit · −0.02 a step', tone: 's2',
         summary: (ctx, r) => { miniMaze(ctx, M, r, { agent: P.s, move: P.a }); },
         inner: (ctx, c, Sk) => { miniMaze(ctx, M, Sk.place(c, [0, 0.04, 0.58, 0.8]), { agent: P.s, move: P.a, seen: P.seen }); Sk.lines(ctx, ['the goal: +1, the run ends', 'a pit: −1, the run ends', 'any other step: −0.02', 'a wall: it stays put', M.slip ? `slippery: ${fmtPct(M.slip, 0)} of moves go sideways` : 'the floor is not slippery', `shortest way through: ${RL.shortest(M)} steps`], Sk.place(c, [0.62, 0.06, 0.38, 0.7]), { size: Sk.u(c, 9, 13) }); },
         about: ['The world answers each move with a reward and the next square. The goal gives +1 and a pit −1, both ending the run; every other step costs 0.02, so a shorter way is worth more. Nothing tells the agent where the goal is or how to get there: it learns only from these numbers.', M.slip ? `The floor is slippery: ${fmtPct(M.slip, 0)} of moves go sideways instead, so routes near pits are risky.` : 'The floor is not slippery: every move goes where it is meant to.'],

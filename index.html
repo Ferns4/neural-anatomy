@@ -1105,9 +1105,11 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .pl-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 [data-layout="mobile"] .ff-progress { left: 46px; right: 46px; }
 [data-layout="mobile"] #btnFF { display: none; }
-[data-layout="mobile"] .readouts { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; justify-content: flex-end; gap: 12px; }
+[data-layout="mobile"] .readouts { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; justify-content: flex-end; gap: 10px; }
 [data-layout="mobile"] .readouts > :not(.ro-keep) { display: none; }
-[data-layout="mobile"] .readout { min-width: 0; }
+[data-layout="mobile"] .readout { min-width: auto; flex: 1 1 auto; overflow: hidden; }
+[data-layout="mobile"] .readout .ro-label { width: 0; min-width: 100%; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.03em; }
+[data-layout="mobile"] .ro-value { white-space: nowrap; }
 [data-layout="mobile"] .ro-value { font-size: 13px; }
 [data-layout="mobile"] #btnSettings { display: inline-grid; flex: none; }
 [data-layout="mobile"] .hyper { display: none; }
@@ -1730,66 +1732,66 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=bc7fb39071"></script>
-<script src="js/engine.js?v=bc7fb39071"></script>
-<script src="js/data.js?v=bc7fb39071"></script>
-<script src="js/presets.js?v=bc7fb39071"></script>
-<script src="js/app.js?v=bc7fb39071"></script>
-<script src="js/ui.js?v=bc7fb39071"></script>
-<script src="js/network-view.js?v=bc7fb39071"></script>
-<script src="js/data-view.js?v=bc7fb39071"></script>
-<script src="js/hidden-space.js?v=bc7fb39071"></script>
-<script src="js/landscape.js?v=bc7fb39071"></script>
-<script src="js/charts.js?v=bc7fb39071"></script>
-<script src="js/insights.js?v=bc7fb39071"></script>
-<script src="js/inspector.js?v=bc7fb39071"></script>
-<script src="js/walkthrough.js?v=bc7fb39071"></script>
-<script src="js/lab.js?v=bc7fb39071"></script>
-<script src="js/archview.js?v=bc7fb39071"></script>
-<script src="js/arch-deep.js?v=bc7fb39071"></script>
-<script src="js/net-deep.js?v=bc7fb39071"></script>
-<script src="js/circuit.js?v=bc7fb39071"></script>
-<script src="js/scale-view.js?v=bc7fb39071"></script>
-<script src="js/lm-data.js?v=bc7fb39071"></script>
-<script src="js/transformer.js?v=bc7fb39071"></script>
-<script src="js/lm-weights.js?v=bc7fb39071"></script>
-<script src="js/arch-transformer.js?v=bc7fb39071"></script>
-<script src="js/lab-transformer.js?v=bc7fb39071"></script>
-<script src="js/pinn.js?v=bc7fb39071"></script>
-<script src="js/pinn-weights.js?v=bc7fb39071"></script>
-<script src="js/arch-pinn.js?v=bc7fb39071"></script>
-<script src="js/lab-pinn.js?v=bc7fb39071"></script>
-<script src="js/diffusion.js?v=bc7fb39071"></script>
-<script src="js/diffusion-weights.js?v=bc7fb39071"></script>
-<script src="js/arch-diffusion.js?v=bc7fb39071"></script>
-<script src="js/lab-diffusion.js?v=bc7fb39071"></script>
-<script src="js/yolo.js?v=bc7fb39071"></script>
-<script src="js/arch-yolo.js?v=bc7fb39071"></script>
-<script src="js/lab-yolo.js?v=bc7fb39071"></script>
-<script src="js/radar.js?v=bc7fb39071"></script>
-<script src="js/radar-weights.js?v=bc7fb39071"></script>
-<script src="js/arch-radar.js?v=bc7fb39071"></script>
-<script src="js/lab-radar.js?v=bc7fb39071"></script>
-<script src="js/rl.js?v=bc7fb39071"></script>
-<script src="js/rl-weights.js?v=bc7fb39071"></script>
-<script src="js/arch-rl.js?v=bc7fb39071"></script>
-<script src="js/lab-rl.js?v=bc7fb39071"></script>
-<script src="js/builder-engine.js?v=bc7fb39071"></script>
-<script src="js/classic-ml.js?v=bc7fb39071"></script>
-<script src="js/builder-tasks.js?v=bc7fb39071"></script>
-<script src="js/builder-challenges.js?v=bc7fb39071"></script>
-<script src="js/part-guide.js?v=bc7fb39071"></script>
-<script src="js/builder-insights.js?v=bc7fb39071"></script>
-<script src="js/builder-viz.js?v=bc7fb39071"></script>
-<script src="js/builder-py.js?v=bc7fb39071"></script>
-<script src="js/arch-builder.js?v=bc7fb39071"></script>
-<script src="js/lab-builder.js?v=bc7fb39071"></script>
-<script src="js/mobile.js?v=bc7fb39071"></script>
-<script src="js/share.js?v=bc7fb39071"></script>
-<script src="js/glossary.js?v=bc7fb39071"></script>
-<script src="js/guide.js?v=bc7fb39071"></script>
-<script src="js/tour.js?v=bc7fb39071"></script>
-<script src="js/chrome.js?v=bc7fb39071"></script>
-<script src="pwa.js?v=bc7fb39071"></script>
+<script src="js/core.js?v=6cc69351c5"></script>
+<script src="js/engine.js?v=6cc69351c5"></script>
+<script src="js/data.js?v=6cc69351c5"></script>
+<script src="js/presets.js?v=6cc69351c5"></script>
+<script src="js/app.js?v=6cc69351c5"></script>
+<script src="js/ui.js?v=6cc69351c5"></script>
+<script src="js/network-view.js?v=6cc69351c5"></script>
+<script src="js/data-view.js?v=6cc69351c5"></script>
+<script src="js/hidden-space.js?v=6cc69351c5"></script>
+<script src="js/landscape.js?v=6cc69351c5"></script>
+<script src="js/charts.js?v=6cc69351c5"></script>
+<script src="js/insights.js?v=6cc69351c5"></script>
+<script src="js/inspector.js?v=6cc69351c5"></script>
+<script src="js/walkthrough.js?v=6cc69351c5"></script>
+<script src="js/lab.js?v=6cc69351c5"></script>
+<script src="js/archview.js?v=6cc69351c5"></script>
+<script src="js/arch-deep.js?v=6cc69351c5"></script>
+<script src="js/net-deep.js?v=6cc69351c5"></script>
+<script src="js/circuit.js?v=6cc69351c5"></script>
+<script src="js/scale-view.js?v=6cc69351c5"></script>
+<script src="js/lm-data.js?v=6cc69351c5"></script>
+<script src="js/transformer.js?v=6cc69351c5"></script>
+<script src="js/lm-weights.js?v=6cc69351c5"></script>
+<script src="js/arch-transformer.js?v=6cc69351c5"></script>
+<script src="js/lab-transformer.js?v=6cc69351c5"></script>
+<script src="js/pinn.js?v=6cc69351c5"></script>
+<script src="js/pinn-weights.js?v=6cc69351c5"></script>
+<script src="js/arch-pinn.js?v=6cc69351c5"></script>
+<script src="js/lab-pinn.js?v=6cc69351c5"></script>
+<script src="js/diffusion.js?v=6cc69351c5"></script>
+<script src="js/diffusion-weights.js?v=6cc69351c5"></script>
+<script src="js/arch-diffusion.js?v=6cc69351c5"></script>
+<script src="js/lab-diffusion.js?v=6cc69351c5"></script>
+<script src="js/yolo.js?v=6cc69351c5"></script>
+<script src="js/arch-yolo.js?v=6cc69351c5"></script>
+<script src="js/lab-yolo.js?v=6cc69351c5"></script>
+<script src="js/radar.js?v=6cc69351c5"></script>
+<script src="js/radar-weights.js?v=6cc69351c5"></script>
+<script src="js/arch-radar.js?v=6cc69351c5"></script>
+<script src="js/lab-radar.js?v=6cc69351c5"></script>
+<script src="js/rl.js?v=6cc69351c5"></script>
+<script src="js/rl-weights.js?v=6cc69351c5"></script>
+<script src="js/arch-rl.js?v=6cc69351c5"></script>
+<script src="js/lab-rl.js?v=6cc69351c5"></script>
+<script src="js/builder-engine.js?v=6cc69351c5"></script>
+<script src="js/classic-ml.js?v=6cc69351c5"></script>
+<script src="js/builder-tasks.js?v=6cc69351c5"></script>
+<script src="js/builder-challenges.js?v=6cc69351c5"></script>
+<script src="js/part-guide.js?v=6cc69351c5"></script>
+<script src="js/builder-insights.js?v=6cc69351c5"></script>
+<script src="js/builder-viz.js?v=6cc69351c5"></script>
+<script src="js/builder-py.js?v=6cc69351c5"></script>
+<script src="js/arch-builder.js?v=6cc69351c5"></script>
+<script src="js/lab-builder.js?v=6cc69351c5"></script>
+<script src="js/mobile.js?v=6cc69351c5"></script>
+<script src="js/share.js?v=6cc69351c5"></script>
+<script src="js/glossary.js?v=6cc69351c5"></script>
+<script src="js/guide.js?v=6cc69351c5"></script>
+<script src="js/tour.js?v=6cc69351c5"></script>
+<script src="js/chrome.js?v=6cc69351c5"></script>
+<script src="pwa.js?v=6cc69351c5"></script>
 </body>
 </html>

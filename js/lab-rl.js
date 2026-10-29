@@ -48,8 +48,10 @@
     const S = { key, id: ex, model, n: 0, rng: RL.rand({ maze: 11, three: 22, four: 33 }[ex]), ev: RL.rand(99), history: [] };
     if (ex === 'maze') {
       S.mazeId = this.mazeId; S.maze = new RL.Maze(this.mazeDef().rows); S.sel = S.maze.start;
-      if (model === 'table') { S.Q = new RL.QTable(S.maze.n, 4); S.o = { eps: 0.1, alpha: 0.5, gamma: 0.95 }; }
-      else { S.net = new RL.MazeNet(64, 7); S.agent = new RL.DQN(S.net); S.gen = RL.rand(5); S.o = { eps: 0.05, lr: 0.01, gamma: 0.97 }; }
+      // on: the maze shown ('maze') or a new random maze every episode ('random')
+      S.gen = RL.rand(5);
+      if (model === 'table') { S.Q = new RL.QTable(S.maze.n, 4); S.o = { eps: 0.1, alpha: 0.5, gamma: 0.95, on: 'maze' }; }
+      else { S.net = new RL.MazeNet(64, 7); S.agent = new RL.DQN(S.net); S.o = { eps: 0.05, lr: 0.01, gamma: 0.97, on: 'random' }; }
     } else {
       S.game = RL.games[ex];
       S.o = model === 'table' ? { eps: 0.1, alpha: 0.2 } : { eps: 0.1, lr: 0.05 };
@@ -102,32 +104,53 @@
     const S = this.S, t0 = performance.now();
     let k = 0;
     do {
-      if (S.id === 'maze') this.episodeDone(S.model === 'net' ? this.netEpisode() : RL.mazeEpisode(S.maze, S.Q, S.o, S.rng));
+      if (S.id === 'maze') this.episodeDone(S.model === 'net' ? this.netEpisode() : RL.mazeEpisode(this.trainMaze(), S.Q, S.o, S.rng));
       else this.gameDone(RL.selfPlay(S.game, S.brain, S.o, S.rng));
       k++;
     } while (performance.now() - t0 < budget && k < maxSteps);
     this.step = S.n; this.bump();
     return k;
   };
-  // the network learns on random mazes, easy ones first (none of the named mazes)
-  LAB.netEpisode = function () {
-    const S = this.S, m = RL.curriculumMaze(S.n, S.gen);
+  /* The maze of its next episode: the maze shown, or a new random maze (for the network, easy ones first: its
+     curriculum). None of the named mazes is ever a random one. */
+  LAB.trainMaze = function () {
+    const S = this.S;
+    if (S.o.on !== 'random') return S.maze;
+    const m = S.model === 'net' ? RL.curriculumMaze(S.n, S.gen) : new RL.Maze(RL.randomMaze(S.gen));
     m.slip = S.maze.slip;
-    return RL.netEpisode(m, S.agent, { eps: RL.netSchedule(S.n, S.o.eps).eps, lr: S.o.lr, gamma: S.o.gamma }, S.rng);
+    return m;
   };
-  // the maze: now and then, the average length and return of the episodes, and how its best moves do (no exploring):
-  // on this maze (a table), or on the named mazes and 100 new ones (the network)
+  LAB.netEpisode = function () {
+    const S = this.S;
+    return RL.netEpisode(this.trainMaze(), S.agent, { eps: RL.netSchedule(S.n, S.o.eps).eps, lr: S.o.lr, gamma: S.o.gamma }, S.rng);
+  };
+  // the maze on the board: the one chosen, or the random maze it is learning on while you watch
+  LAB.shownMaze = function () { const S = this.S, w = S.walk || (this.watch ? S.walkDone : null); return (w && w.maze) || S.maze; };
+  LAB.shownName = function () { return this.shownMaze() === this.S.maze ? this.mazeName() : 'A random training maze'; };
+  /* The maze: now and then, the average length and return of the episodes, and how its best moves do (no
+     exploring) on the maze shown and on 100 random mazes it never trains on, the same 100 every time; the network
+     also on the named mazes. Getting through the maze shown but not the new ones is overfitting. */
   LAB.episodeDone = function (e) {
     const S = this.S, net = S.model === 'net', a = S.acc || (S.acc = { n: 0, steps: 0, ret: 0, goal: 0 });
     S.n++; S.lastEp = e;
     a.n++; a.steps += e.steps; a.ret += e.total; a.goal += e.end === 'goal' ? 1 : 0;
     if (a.n >= (net ? 500 : 20)) {
       const q = { n: S.n, steps: a.steps / a.n, ret: a.ret / a.n, goal: a.goal / a.n };
-      if (net) { const nm = RL.netEval(namedMazes(), S.net, S.ev), fr = RL.netEval(RL.testMazes(), S.net, S.ev); Object.assign(q, { named: nm.success, fresh: fr.success, freshRoute: fr.steps }); }
-      else { const g = RL.mazeEval(S.maze, S.Q, S.ev, 20); Object.assign(q, { greedy: g.success, route: g.steps }); }
+      if (net) {
+        const nm = RL.netEval(namedMazes(), S.net, S.ev), fr = RL.netEval(RL.testMazes(), S.net, S.ev), here = RL.netRun(S.maze, S.net, S.ev);
+        Object.assign(q, { named: nm.success, fresh: fr.success, freshRoute: fr.steps, greedy: here.end === 'goal' ? 1 : 0, route: here.steps });
+      } else {
+        const g = RL.mazeEval(S.maze, S.Q, S.ev, 20);
+        Object.assign(q, { greedy: g.success, route: g.steps });
+        // the 100 new mazes less often: a table trains thousands of episodes a second
+        if (S.freshAt === undefined || S.n - S.freshAt >= 200) { S.freshAt = S.n; q.fresh = tableFresh(S); }
+      }
       S.history.push(q); S.acc = null; thin(S.history);
     }
   };
+  // the table's best moves on the 100 test mazes, one run each: the share it gets through
+  const tableFresh = (S) => { let ok = 0; for (const m of RL.testMazes()) if (RL.mazeEpisode(m, S.Q, { eps: 0, learn: false }, S.ev).end === 'goal') ok++; return ok / 100; };
+  const lastFresh = (h) => { for (let i = h.length - 1; i >= 0; i--) if (h[i].fresh != null) return h[i].fresh; return null; };
   // a board game: every few hundred games, how it does against a random player and against the rule-follower
   LAB.gameDone = function (M) {
     const S = this.S;
@@ -151,8 +174,9 @@
   LAB.watchTick = function () {
     const S = this.S;
     if (S.id === 'maze') {
-      const M = S.maze, net = S.model === 'net';
-      const w = S.walk || (S.walk = { s: M.start, path: [M.start], steps: 0, total: 0, seen: (() => { const u = new Uint8Array(M.n); u[M.start] = 1; return u; })() });
+      const net = S.model === 'net';
+      if (!S.walk) { const M0 = this.trainMaze(); S.walk = { maze: M0, s: M0.start, path: [M0.start], steps: 0, total: 0, seen: (() => { const u = new Uint8Array(M0.n); u[M0.start] = 1; return u; })() }; }
+      const w = S.walk, M = w.maze;
       if (net) {
         const x = RL.MazeNet.inputs(M, w.s, w.seen), q = Float64Array.from(S.net.forward(x)), explore = S.rng() < RL.netSchedule(S.n, S.o.eps).eps;
         const intended = explore ? Math.floor(S.rng() * 4) : RL.argmax4(q), t = M.step(w.s, intended, S.rng);
@@ -353,14 +377,14 @@
     this.ro = UI.readouts(root, S.id === 'maze'
       ? (S.model === 'net'
         ? [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'Its best move on every square, from S, on the maze shown' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }]
-        : [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'Reaches the goal', keep: true, title: 'Greedy route (no exploring) from the start, over 20 tries' }, { key: 'b', label: 'Route', title: 'Steps on the greedy route' }])
+        : [{ key: 'n', label: 'Episodes', keep: true }, { key: 'a', label: 'This maze', keep: true, title: 'How often its best route (no exploring) reaches the goal of the maze shown, over 20 tries' }, { key: 'b', label: 'New mazes', title: 'The share of 100 random mazes it never trained on that its best moves get through' }, { key: 'c', label: 'Route', title: 'Steps on its best route through the maze shown' }])
       : [{ key: 'n', label: 'Games', keep: true }, { key: 'a', label: 'Beats random', keep: true, title: 'Share of games it wins against a player who moves at random' }, { key: 'b', label: 'Beats rules', title: 'Share it wins against a rule-follower: win if it can, block if it must' }, { key: 'c', label: S.model === 'table' ? 'Positions' : 'Parameters' }]);
   };
   LAB.readouts = function () {
     const S = this.S, h = S.history[S.history.length - 1];
     this.ro.set('n', fmtInt(S.n));
     if (S.id === 'maze' && S.model === 'net') { const r = this.here(); this.ro.set('a', r.end === 'goal' ? `${r.steps} steps` : r.end === 'pit' ? 'falls in a pit' : 'gets lost'); this.ro.set('b', h && h.fresh != null ? fmtPct(h.fresh, 0) : '—'); }
-    else if (S.id === 'maze') { this.ro.set('a', h ? fmtPct(h.greedy, 0) : '—'); this.ro.set('b', h && h.greedy ? `${fmt(h.route, 1)} steps` : '—'); }
+    else if (S.id === 'maze') { const fr = lastFresh(S.history); this.ro.set('a', h ? fmtPct(h.greedy, 0) : '—'); this.ro.set('b', fr != null ? fmtPct(fr, 0) : '—'); this.ro.set('c', h && h.greedy ? `${fmt(h.route, 1)} steps` : '—'); }
     else { this.ro.set('a', h ? fmtPct(h.rnd.win, 0) : '—'); this.ro.set('b', h ? fmtPct(h.rules.win, 0) : '—'); this.ro.set('c', S.model === 'table' ? fmtInt(S.brain.size) : fmtInt(S.brain.paramCount)); }
   };
 
@@ -370,6 +394,7 @@
       UI.field('Exploration ε', UI.select([0, 0.05, 0.1, 0.2, 0.3].map((v) => ({ value: v, label: String(v) })), S.o.eps, (v) => { S.o.eps = +v; this.leftDirty = true; }), 'The share of moves it makes at random, to try things out'),
       !net ? UI.field('Learning rate α', UI.select([0.05, 0.1, 0.2, 0.5, 1].map((v) => ({ value: v, label: String(v) })), S.o.alpha, (v) => { S.o.alpha = +v; this.leftDirty = true; }))
         : UI.field('Learning rate', UI.select((maze ? [0.003, 0.01, 0.03] : [0.01, 0.02, 0.05, 0.1]).map((v) => ({ value: v, label: String(v) })), S.o.lr, (v) => { S.o.lr = +v; this.leftDirty = true; })),
+      maze ? UI.field('Train on', UI.select([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'A new random maze each episode' }], S.o.on, (v) => { S.o.on = v; this.buildAgain(); }), 'The maze of each training episode') : null,
       el('div', { class: 'sheet-actions' },
         el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.watch = false; this.test = null; this.fastForward(maze ? (net ? 5000 : 500) : 2000); } }, maze ? (net ? 'Train 5,000 mazes' : 'Train 500 episodes') : 'Train 2,000 games'),
         el('button', { class: 'btn', type: 'button', onclick: () => { NA.mobile && NA.mobile.sheet(false); this.reset(); } }, 'Start from nothing')));
@@ -391,11 +416,14 @@
       P.gamma = UI.slider({ label: 'Discount γ (how much later rewards count)', min: 0.5, max: 0.99, step: 0.01, value: S.o.gamma, format: (v) => v.toFixed(2), onInput: set('gamma') });
       P.slip = UI.slider({ label: 'Slippery floor (moves that go sideways)', min: 0, max: 0.3, step: 0.01, value: S.maze.slip, format: (v) => fmtPct(v, 0), onInput: (v) => { S.maze.slip = v; this.bump(); } });
       learn.push(P.gamma);
+      P.onNote = UI.note(ON_NOTE(S));
+      P.on = el('div', { class: 'field rl-on' }, el('span', { text: 'Train on' }), UI.seg([{ value: 'maze', label: 'This maze' }, { value: 'random', label: 'Random mazes', title: 'A new random maze every episode' }], S.o.on, (v) => { S.o.on = v; P.onNote.textContent = ON_NOTE(S); clear(this.ui.hyper); this.buildHyper(this.ui.hyper); this.bump(); }, 'Train on'));
       body.append(
         UI.section('The task', UI.note(`Get from S to the green goal (+1). Falling into a red pit ends the run at −1, and every step costs 0.02, so shorter is better. The agent is told nothing else: it learns only from these rewards. Choose the maze above the board${net ? '' : '; each maze gets a table of its own'}.`), P.slip),
         net ? UI.section('How it learns: a Q-network (DQN)', UI.note('A table has a row per square of one maze. This network has none: it sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, and outputs a Q-value for each move. It learned on random mazes, easy ones first, as DQN did on Atari games: a replay memory of past moves and a target network. The same weights then work in mazes it never met.'), ...learn)
           : UI.section('How it learns: Q-learning', UI.note('It keeps a table Q(square, move): how much reward it expects from that square if it makes that move and then plays its best. After every move it nudges that entry toward the reward it got plus γ times the best value of where it landed.'), ...learn),
-        UI.section('Watch and test', UI.note(net ? 'Watch slows learning down to one move at a time, on the maze shown.' : 'Train runs thousands of episodes a second. Watch slows it down to one move at a time, so you can see it wander, find the goal, and the values spread back from it.'), this.watchChip, testNote));
+        UI.section('What it trains on', P.on, P.onNote),
+        UI.section('Watch and test', UI.note(net ? 'Watch slows learning down to one move at a time, on the mazes it is training on.' : 'Train runs thousands of episodes a second. Watch slows it down to one move at a time, so you can see it wander, find the goal, and the values spread back from it.'), this.watchChip, testNote));
       if (net) body.append(UI.section('The trained network', UI.note(`It opened with a network trained offline with this same code on ${fmtInt((NA.rlWeights && NA.rlWeights.mazeEpisodes) || 0)} random mazes, none of the named ones. Start from nothing to watch one learn: it takes a minute or two to get through most mazes.`),
         el('div', { class: 'sheet-actions' }, el('button', { class: 'btn', type: 'button', onclick: () => this.runTry({ action: 'trained' }) }, 'Load the trained network'), el('button', { class: 'btn', type: 'button', onclick: () => this.reset() }, 'Start from nothing'))));
     } else {
@@ -442,6 +470,11 @@
     this.renderBar();
     this.setCenterView(this.centerView);
   };
+  const ON_NOTE = (S) => (S.model === 'net'
+    ? (S.o.on === 'random' ? 'Every episode is a new random maze, easy ones first, so what it learns has to hold in mazes in general. It never trains on the maze shown: New mazes says how well it generalizes.'
+      : 'Every episode is the maze shown. It learns this one maze and forgets the rest: within a few hundred episodes New mazes falls from about 85% to around 20%. That is overfitting.')
+    : (S.o.on === 'random' ? 'Every episode is a new random maze. A table cannot learn from that: its rows are squares, and square (3, 2) is a wall in one maze and the goal in the next, so each entry averages over all of them and fits none. It gets through almost no maze, this one included.'
+      : 'Every episode is this maze, so it learns this maze square by square, and nothing it learns holds anywhere else: it gets through about 1 new maze in 100. To learn mazes in general, use the Q-network.'));
   const key = (tok, text) => el('span', { class: 'lg-item' }, el('i', { class: 'key-sq', style: { background: `var(--${tok})` } }), text);
   // the bar above the board: which maze and model; play, test, and the test's controls
   LAB.renderBar = function () {
@@ -506,6 +539,7 @@
     if (i < 0) return;
     if (S.maze) {
       if (this.test) { NA.ui.toast.show('A test is on: End test to look at other squares.'); return; }
+      if (this.shownMaze() !== S.maze) return; // a random maze it is learning on, shown while you watch
       if (S.maze.open(i)) { S.sel = i; this.bump(); if (this.tabs.current !== 'inspect' && !(NA.mobile && NA.mobile.mobile)) this.tabs.select('inspect'); }
       return;
     }
@@ -536,18 +570,18 @@
   // the value of its best move, and that move, on every square: the table's entries, or the network asked as if it
   // stood there (having been nowhere else)
   LAB.field = function () {
-    const S = this.S, M = S.maze;
+    const S = this.S, M = this.shownMaze();
     if (S.model === 'table') return { v: (i) => S.Q.max(i), best: (i) => S.Q.best(i), known: (i) => S.Q.seen[i] > 0, q: (i, a) => S.Q.Q[i * 4 + a] };
-    if (!this.fieldC || this.fieldC.v !== this.version || this.fieldC.S !== S) {
+    if (!this.fieldC || this.fieldC.v !== this.version || this.fieldC.S !== S || this.fieldC.M !== M) {
       const Q = new Float64Array(M.n * 4), seen = new Uint8Array(M.n);
       for (let i = 0; i < M.n; i++) { if (M.cell[i] === '#' || M.cell[i] === 'G' || M.cell[i] === 'X') continue; seen.fill(0); seen[i] = 1; Q.set(S.net.forward(RL.MazeNet.inputs(M, i, seen)), i * 4); }
-      this.fieldC = { v: this.version, S, Q };
+      this.fieldC = { v: this.version, S, M, Q };
     }
     const Q = this.fieldC.Q, q = (i, a) => Q[i * 4 + a];
     return { v: (i) => Math.max(q(i, 0), q(i, 1), q(i, 2), q(i, 3)), best: (i) => { let a = 0; for (let b = 1; b < 4; b++) if (q(i, b) > q(i, a)) a = b; return a; }, known: () => true, q };
   };
   LAB.drawMaze = function (ctx, G) {
-    const S = this.S, M = S.maze, F = this.field(), T = this.test, cs = G.cs, at = (i) => ({ x: G.x + (i % M.W) * cs, y: G.y + Math.floor(i / M.W) * cs });
+    const S = this.S, M = this.shownMaze(), F = this.field(), T = this.test, cs = G.cs, at = (i) => ({ x: G.x + (i % M.W) * cs, y: G.y + Math.floor(i / M.W) * cs });
     const plain = (i) => M.cell[i] === '.' || M.cell[i] === 'S';
     let vmax = 0.05;
     for (let i = 0; i < M.n; i++) if (plain(i)) vmax = Math.max(vmax, Math.abs(F.v(i)));
@@ -567,7 +601,7 @@
         const [dx, dy] = RL.DIRS[a], cx = x + cs / 2, cy = y + cs / 2, L = cs * 0.3;
         NA.archKit.arrow(ctx, cx - dx * L * 0.6, cy - dy * L * 0.6, cx + dx * L, cy + dy * L, { color: theme.c('ink', gap * (T ? 0.35 : 1)), lw: Math.max(1.2, cs * 0.045), head: Math.max(4, cs * 0.12) });
       }
-      if (!T && i === S.sel && this.show.inside) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2.5; ctx.strokeRect(x + 1.5, y + 1.5, cs - 3, cs - 3); }
+      if (!T && i === S.sel && this.show.inside && M === S.maze) { ctx.strokeStyle = theme.c('focus'); ctx.lineWidth = 2.5; ctx.strokeRect(x + 1.5, y + 1.5, cs - 3, cs - 3); }
       if (i === this.hoverCell && c !== '#' && !T) { ctx.strokeStyle = theme.c('focus', 0.6); ctx.lineWidth = 1.5; ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2); }
     }
     // the path: the test so far, the episode being watched, or the route it would take now (greedy, from the start)
@@ -587,7 +621,7 @@
       if (move !== null) { const [dx, dy] = RL.DIRS[move]; NA.archKit.arrow(ctx, cx + dx * cs * 0.22, cy + dy * cs * 0.22, cx + dx * cs * 0.85, cy + dy * cs * 0.85, { color: theme.c('ink'), lw: Math.max(2, cs * 0.06), head: Math.max(6, cs * 0.18) }); }
       ctx.fillStyle = theme.c('s7'); ctx.beginPath(); ctx.arc(cx, cy, cs * 0.2, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = theme.c('panel'); ctx.lineWidth = 2; ctx.stroke();
     }
-    const title = `${this.mazeName()} · ${S.model === 'net' ? 'Q-network' : 'Q-table'}${T ? ` · test: ${this.testCount().toLowerCase()}` : walk ? ' · learning' : ''}`;
+    const title = `${this.shownName()} · ${S.model === 'net' ? 'Q-network' : 'Q-table'}${T ? ` · test: ${this.testCount().toLowerCase()}` : walk ? ' · learning' : ''}`;
     S_text(ctx, title, G.x + (cs * M.W) / 2, Math.max(10, G.y - 14), 12, 'ink-2', 600);
   };
   // where its greedy policy goes from the start (the table: stops at a loop)
@@ -654,11 +688,12 @@
       const lg = (items) => el('div', { class: 'mini-legend' }, ...items.map(([n, tok]) => el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: `var(--${tok})` } }), n)));
       P.tiles = el('div', { class: 'tiles' }); body.append(P.tiles);
       if (maze && net) {
-        P.a = mk('Mazes it gets through', { height: 150, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['100 new mazes', 's1'], ['the 5 named mazes', 's7']]), 'Its best moves from S, no exploring. It never trains on any of these mazes: the named ones and the 100 new ones only test it. Networks trained this way wobble: a maze it got through can be lost again for a while.');
+        P.a = mk('Mazes it gets through', { height: 150, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['100 new mazes', 's1'], ['the 5 named mazes', 's7'], ['the maze shown', 'ink-2']]), 'Its best moves from S, no exploring. Trained on random mazes it never trains on any of these: they only test it. Networks trained this way wobble: a maze it got through can be lost again for a while. Trained on the maze shown only, it overfits: that maze is fine and the new ones fall.');
         P.b = mk('Steps per episode while learning', { height: 120, format: (v) => fmt(v, 1) }, null, 'On the random mazes it learns from, exploring. Its first mazes are easy, so this rises before it falls.');
       } else if (maze) {
-        P.a = mk('Steps per episode', { height: 140, format: (v) => fmt(v, 1) }, lg([['while training (exploring)', 'ink-2'], ['its best route', 'pos']]), 'Average over every 20 episodes. Exploring adds detours; the best route is the greedy one, with no random moves.');
-        P.b = mk('Reward per episode', { height: 130, format: (v) => fmt(v, 2) }, null, '+1 at the goal minus 0.02 a step, or −1 in a pit.');
+        P.a = mk('How often it gets through', { height: 140, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['the maze shown', 's7'], ['100 new mazes', 's1']]), 'Its best moves from S, no exploring: on the maze shown (20 tries) and on 100 random mazes it never trains on. A table that gets through its own maze and no other has learned that maze, not mazes: overfitting, as far as it goes.');
+        P.b = mk('Steps per episode', { height: 130, format: (v) => fmt(v, 1) }, lg([['while training (exploring)', 'ink-2'], ['its best route', 'pos']]), 'Average over every 20 episodes. Exploring adds detours; the best route is the greedy one, with no random moves.');
+        P.c = mk('Reward per episode', { height: 120, format: (v) => fmt(v, 2) }, null, '+1 at the goal minus 0.02 a step, or −1 in a pit.');
       } else {
         P.a = mk('Against a random player', { height: 140, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['wins', 'pos'], ['losses', 'neg']]), 'Half the games moving first. A random player is easy: this shows it learned the basics.');
         P.b = mk('Against the rule-follower', { height: 140, format: (v) => fmtPct(v, 0), yFormat: (v) => fmtPct(v, 0) }, lg([['wins', 'pos'], ['losses', 'neg']]), 'The rule-follower wins when it can and blocks your winning cell when it must, otherwise plays at random. Beating it takes some planning.');
@@ -676,12 +711,14 @@
     else if (id === 'train') {
       if (S.maze && S.model === 'net') {
         clear(P.tiles).append(UI.tile('Episodes', fmtInt(S.n), S.pretrained ? 'mostly trained offline' : null), UI.tile('Named mazes', last && last.named != null ? `${Math.round(last.named * 5)} of 5` : '—'), UI.tile('New mazes', last && last.fresh != null ? fmtPct(last.fresh, 0) : '—', 'of 100 it never trained on'));
-        P.a.frame(); P.a.set({ series: [{ name: 'new mazes', color: theme.c('s1'), points: h.filter((q) => q.fresh != null).map((q) => [q.n, q.fresh]) }, { name: 'named mazes', color: theme.c('s7'), points: h.filter((q) => q.named != null).map((q) => [q.n, q.named]) }] });
+        P.a.frame(); P.a.set({ series: [{ name: 'new mazes', color: theme.c('s1'), points: h.filter((q) => q.fresh != null).map((q) => [q.n, q.fresh]) }, { name: 'named mazes', color: theme.c('s7'), points: h.filter((q) => q.named != null).map((q) => [q.n, q.named]) }, { name: 'the maze shown', color: theme.c('ink-2'), points: h.filter((q) => q.greedy != null).map((q) => [q.n, q.greedy]) }] });
         P.b.frame(); P.b.set({ series: [{ name: 'steps', color: theme.c('ink-2'), points: h.filter((q) => q.steps != null).map((q) => [q.n, q.steps]) }] });
       } else if (S.maze) {
-        clear(P.tiles).append(UI.tile('Episodes', fmtInt(S.n)), UI.tile('Best route', last && last.greedy ? `${fmt(last.route, 1)} steps` : '—', last ? `reaches the goal ${fmtPct(last.greedy, 0)}` : null), UI.tile('Exploration', fmt(S.o.eps, 2)));
-        P.a.frame(); P.a.set({ series: [{ name: 'training', color: theme.c('ink-2'), points: h.map((q) => [q.n, q.steps]) }, { name: 'best route', color: theme.c('pos'), points: h.filter((q) => q.greedy > 0).map((q) => [q.n, q.route]) }] });
-        P.b.frame(); P.b.set({ series: [{ name: 'reward', color: theme.c('s1'), points: h.map((q) => [q.n, q.ret]) }] });
+        const fr = lastFresh(h);
+        clear(P.tiles).append(UI.tile('Episodes', fmtInt(S.n), S.o.on === 'random' ? 'a new random maze each' : 'all on this maze'), UI.tile('Best route', last && last.greedy ? `${fmt(last.route, 1)} steps` : '—', last ? `reaches the goal ${fmtPct(last.greedy, 0)}` : null), UI.tile('New mazes', fr != null ? fmtPct(fr, 0) : '—', 'of 100 it never trained on'));
+        P.a.frame(); P.a.set({ series: [{ name: 'the maze shown', color: theme.c('s7'), points: h.filter((q) => q.greedy != null).map((q) => [q.n, q.greedy]) }, { name: 'new mazes', color: theme.c('s1'), points: h.filter((q) => q.fresh != null).map((q) => [q.n, q.fresh]) }] });
+        P.b.frame(); P.b.set({ series: [{ name: 'training', color: theme.c('ink-2'), points: h.map((q) => [q.n, q.steps]) }, { name: 'best route', color: theme.c('pos'), points: h.filter((q) => q.greedy > 0).map((q) => [q.n, q.route]) }] });
+        P.c.frame(); P.c.set({ series: [{ name: 'reward', color: theme.c('s1'), points: h.map((q) => [q.n, q.ret]) }] });
       } else {
         clear(P.tiles).append(UI.tile('Games', fmtInt(S.n), S.pretrained ? 'includes 100,000 trained offline' : null), UI.tile(S.model === 'table' ? 'Positions in its table' : 'Parameters', S.model === 'table' ? fmtInt(S.brain.size) : fmtInt(S.brain.paramCount)), UI.tile('Beats random', last ? fmtPct(last.rnd.win, 0) : '—'));
         const ser = (key) => [{ name: 'wins', color: theme.c('pos'), points: h.map((q) => [q.n, q[key].win]) }, { name: 'losses', color: theme.c('neg'), points: h.map((q) => [q.n, q[key].loss]) }];
@@ -692,7 +729,7 @@
   };
   const kv = (k, v, note) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }), note ? el('span', { class: 'kv-note', text: note }) : null);
   LAB.inspectMaze = function () {
-    const S = this.S, M = S.maze, P = NA.archRL.probe(this), s = P.s, x = s % M.W, y = Math.floor(s / M.W), u = S.update, net = S.model === 'net';
+    const S = this.S, P = NA.archRL.probe(this), M = P.M, s = P.s, x = s % M.W, y = Math.floor(s / M.W), u = S.update, net = S.model === 'net';
     const rows = RL.DIR_NAMES.map((d, a) => kv(`Q(${x}, ${y}, ${d})`, fmt(P.q[a], 4), a === P.a ? 'its best move here' : M.move(s, a) === s ? 'into a wall: it stays put' : null));
     const out = [UI.section(`Square (${x}, ${y})${P.why === 'test' ? ', in the test' : ''}`, UI.note(net ? `What its network outputs on this square${P.why === 'test' ? ', having been where the test went' : ', as if it had been nowhere else'}: the reward it expects for each move. ${NA.tapWord()} any square of the maze to see it there.` : `${NA.tapWord()} any square of the maze to see its four values. Each is how much reward it expects if it makes that move here and then plays its best.`), el('div', { class: 'kv-grid' }, ...rows))];
     if (u) {
@@ -728,6 +765,7 @@
       const r = L.here(), d = RL.shortest(S.maze);
       out.push(r.end === 'goal' ? ['good', `Gets through ${L.mazeName()} in ${r.steps} steps`, r.steps === d ? 'The shortest way through, in a maze it never trained on.' : `The shortest way is ${d} steps. It sees only 2 squares around it, so it does not plan the whole route: ${S.maze.cell.includes('X') ? 'it keeps its distance from pits and takes a safer way' : 'where it cannot see the way, it tries a side and remembers where it has been'}.`]
         : ['warn', `Does not get through ${L.mazeName()}`, `Its route ${r.end === 'pit' ? 'ends in a pit' : 'wanders until the 60 steps run out'}. It sees only 2 squares around it and which way the goal lies: a way that first leads away from the goal, or a dead end it cannot see the end of, can fool it. More training helps a little; seeing further, or a network with memory, helps more.`]);
+      if (S.o.on === 'maze') out.push(['warn', 'Training on this maze only', `Every episode is ${L.mazeName()}, so it fits this maze and forgets what holds in mazes in general: watch New mazes fall${S.freshBefore != null ? ` (it got through ${fmtPct(S.freshBefore, 0)} before)` : ''}. That is overfitting. Set Train on back to random mazes, or load the trained network.`]);
       if (last && last.fresh != null) out.push([last.fresh >= 0.8 ? 'good' : 'info', `Gets through ${fmtPct(last.fresh, 0)} of new mazes`, 'Of 100 random mazes it never trained on, from S with its best moves. A table could not do this at all: it has no row for a square it never stood on.']);
       out.push(['info', `${fmtInt(S.net.paramCount)} parameters`, 'One Q-table for one maze holds about 120 numbers. The network holds more, but they are shared by every maze: the price of not knowing in advance which maze it will meet.']);
     } else if (S.maze) {
@@ -735,7 +773,9 @@
       else if (last.greedy === 1) out.push(['good', `Found a route: ${fmt(last.route, 0)} steps`, S.maze.slip ? 'On a slippery floor every step near a pit is a risk, so the best route may be longer than the shortest one.' : `The shortest way through is ${RL.shortest(S.maze)} steps: it learned its route from rewards alone.`]);
       else out.push(['warn', `Its route reaches the goal ${fmtPct(last.greedy, 0)} of the time`, S.maze.slip ? 'The floor is slippery: some slips end in a pit whatever it does. A smaller learning rate averages the luck out.' : 'Still learning: keep training.']);
       if (S.o.eps === 0) out.push(['warn', 'No exploring', 'With ε = 0 it only ever tries the move it already rates best, so it can settle on the first route it found, or none.']);
-      out.push(['info', 'This table fits one maze', 'Its rows are this maze’s squares. Pick another maze and a new table starts from nothing; switch the model to Q-network for one that works in any maze.']);
+      const fr = lastFresh(h);
+      if (S.o.on === 'random') out.push(['warn', `Trained on random mazes, it learns no maze${fr != null ? `: ${fmtPct(fr, 0)} of new ones` : ''}`, 'A table has a row for each square, not for each situation: square (3, 2) is a wall in one maze and the goal in the next. Each entry ends up an average over all of them and fits none, so it gets through almost no maze, this one included. To learn from many mazes an agent has to see what is around it: switch the model to Q-network.']);
+      else out.push(['info', `It learned this maze, not mazes${fr != null ? `: ${fmtPct(fr, 0)} of new ones` : ''}`, 'Its rows are this maze’s squares, so nothing it learned holds in another maze, however long it trains: that is why its route here is perfect and new mazes stay near 0. Training a table on random mazes does not help (try Train on: Random mazes); a network that sees what is around it does. Pick another maze and a new table starts from nothing.']);
     } else {
       out.push([last && last.rnd.win > 0.9 ? 'good' : 'info', `Beats a random player ${last ? fmtPct(last.rnd.win, 0) : '—'} of the time`, 'A random player is easy; this shows it learned to make lines and to finish them.']);
       if (last) out.push([last.rules.win > 0.7 ? 'good' : 'warn', `Against the rule-follower: wins ${fmtPct(last.rules.win, 0)}, loses ${fmtPct(last.rules.loss, 0)}`, last.rules.loss > 0.2 ? 'It still walks into some threats the rule-follower blocks or completes. More games, or less exploring, help.' : 'It sets up positions with two ways to win, so blocking one is not enough.']);
@@ -747,11 +787,12 @@
     const S = L.S;
     if (S.maze && S.model === 'net') return { kicker: 'Maze', title: 'One network for every maze', about: [
       `The colours and arrows show what its network says on every square of ${L.mazeName()}, as if it stood there: blue where it expects reward, orange where it expects to lose. It has never trained on this maze, nor on any of the named ones: it learned on ${fmtInt(S.n)} random mazes, easy ones first.`,
-      'A table cannot do that: it has a row for each square of one maze. The network has none. It sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, so the same surroundings get the same answer in any maze. Pick New random maze to give it one nobody has seen.',
+      'A table cannot do that: it has a row for each square of one maze. The network has none. It sees the 24 squares around it (walls, pits, the goal, where it has been) and which way the goal lies, so the same surroundings get the same answer in any maze. Every training episode is a new random maze (Train on, in the panel); pick New random maze to give it one nobody has seen.',
       'Test run walks its route slowly, with the 5 × 5 squares it sees outlined, and draws its network beside the maze at every step: the inputs, the 64 hidden neurons that fire, and the four Q-values. This is DQN (2013–15), the method that learned Atari games from the screen, here on mazes.'], code: NA.archRL.py.mazeNet(L) };
     if (S.maze) return { kicker: 'Maze', title: 'Q-learning: values from rewards', about: [
       'Each square is coloured by the value of its best move (blue: it expects reward from here, orange: it expects to lose), and the arrow is that move. At first every value is 0. The first time it stumbles into the goal, the square next to it learns that one move pays; on later visits that value is copied, a little discounted, to the squares before it. The values spread back from the goal like a scent, and the arrows line up into a route.',
       `It explores: ${fmtPct(S.o.eps, 0)} of its moves are random (ε), so it keeps finding new ways. The dashed line is the route it would take now, choosing its best move on every square. Tick Watch to see one move at a time; Test run walks the route slowly with its table entries beside the maze.`,
+      'It learns this maze, not mazes: its rows are this maze’s squares. Training it on a new random maze every episode (Train on, in the panel) does not help a table; the Q-network learns from random mazes because it sees what is around it.',
       'This is Q-learning (Watkins, 1989), the start of deep reinforcement learning: DQN (2013) replaced the table with a neural network. Switch the model to Q-network to see one that works in any maze.'], code: NA.archRL.py.maze(L) };
     const three = S.id === 'three', net = S.model === 'net';
     return { kicker: NAMES[S.id], title: three ? (net ? 'A network learns a game by playing itself' : 'Learning a game by playing itself') : 'A network that judges positions', about: [
@@ -783,10 +824,15 @@
     else if (t.action === 'test') this.startTest();
     else if (t.action === 'table' || t.action === 'net') this.setModel(t.action);
     else if (t.action === 'newMaze') this.newMaze();
+    else if (t.action === 'trainOn') {
+      S.o.on = t.on; S.freshBefore = lastFresh(S.history);
+      if (t.fresh) retrain(t.on === 'random' ? 'A new table, trained on a new random maze every episode.' : 'A new agent, trained on this maze only.');
+      else { this.watch = false; this.test = null; this.buildAgain(); this.renderBar(); this.fastForward(t.n || 2000); NA.ui.toast.show(t.on === 'maze' ? 'Training on this maze only: watch New mazes.' : 'Training on a new random maze every episode.'); }
+    }
     else if (t.action === 'maze') this.setMaze(t.maze);
     else if (t.action === 'default') {
       this.test = null;
-      Object.assign(S.o, S.maze ? (S.model === 'net' ? { eps: 0.05, lr: 0.01, gamma: 0.97 } : { eps: 0.1, alpha: 0.5, gamma: 0.95 }) : S.model === 'table' ? { eps: 0.1, alpha: 0.2 } : { eps: 0.1, lr: 0.05 });
+      Object.assign(S.o, S.maze ? (S.model === 'net' ? { eps: 0.05, lr: 0.01, gamma: 0.97, on: 'random' } : { eps: 0.1, alpha: 0.5, gamma: 0.95, on: 'maze' }) : S.model === 'table' ? { eps: 0.1, alpha: 0.2 } : { eps: 0.1, lr: 0.05 });
       if (S.maze) S.maze.slip = 0;
       this.fresh();
       if (this.S.id === 'four' || (this.S.maze && this.S.model === 'net')) this.loadTrained();
@@ -800,8 +846,8 @@
   LAB.measured = function () {
     const S = this.S, h = S.history, last = h[h.length - 1];
     if (!last) return '';
-    if (S.maze && S.model === 'net') return `Measured: it gets through ${last.named != null ? `${Math.round(last.named * 5)} of the 5 named mazes and ` : ''}${fmtPct(last.fresh, 0)} of 100 new ones.`;
-    if (S.maze) return `Measured: its route reaches the goal ${fmtPct(last.greedy, 0)} of the time${last.greedy ? `, in ${fmt(last.route, 1)} steps` : ''}.`;
+    if (S.maze && S.model === 'net') return `Measured: it gets through ${last.named != null ? `${Math.round(last.named * 5)} of the 5 named mazes and ` : ''}${fmtPct(last.fresh, 0)} of 100 new ones${S.o.on === 'maze' && S.freshBefore != null ? ` (${fmtPct(S.freshBefore, 0)} before it trained on this maze only)` : ''}.`;
+    if (S.maze) { const fr = lastFresh(h); return `Measured: on the maze shown its route reaches the goal ${fmtPct(last.greedy, 0)} of the time${last.greedy ? `, in ${fmt(last.route, 1)} steps` : ''}${fr != null ? `; on 100 new mazes it gets through ${fmtPct(fr, 0)}` : ''}.`; }
     const first = h.filter((q) => q.first !== undefined), ninety = h.find((q) => q.rnd.win >= 0.9);
     return `Measured: ${first.length ? `blue won ${fmtPct(first.reduce((s, q) => s + q.first, 0) / first.length, 0)} of its self-play games; ` : ''}it beats a random player ${fmtPct(last.rnd.win, 0)} of the time${ninety ? ` (9 in 10 by game ${fmtInt(ninety.n)})` : ''}.`;
   };

@@ -223,7 +223,7 @@
 
   function readouts() {
     const m = App.metrics(), cls = App.ds.task !== 'regression', step = App.displayStep();
-    $('#roStep').textContent = fmtInt(step);
+    $('#roStep').textContent = NA.fmtCount(step);
     $('#roEpoch').textContent = fmt(App.epoch(step), 1);
     $('#roTrain').textContent = fmt(m.trainLoss, 3);
     $('#roVal').textContent = fmt(m.valLoss, 3);
