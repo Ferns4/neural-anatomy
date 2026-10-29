@@ -331,7 +331,7 @@
     $$('.zoo-card').forEach((card) => {
       const c = $('.zoo-glyph', card), sizes = card._sizes, W = 64, H = 44, ctx = NA.fitCanvas(c, W, H);
       ctx.clearRect(0, 0, W, H);
-      if (card._lab) { NA.labHost.get(card._lab).glyph(ctx, W, H); return; }
+      if (card._lab) { NA.labHost.get(card._lab).glyph(ctx, W, H, card.dataset.id); return; } // (a lab with several examples draws the preset's)
       const xs = sizes.map((_, i) => 6 + (i * (W - 12)) / Math.max(1, sizes.length - 1));
       const ys = sizes.map((n) => { const m = Math.min(n, 6), out = []; for (let k = 0; k < m; k++) out.push(H / 2 + (k - (m - 1) / 2) * 6.5); return out; });
       ctx.strokeStyle = theme.c('line-2'); ctx.lineWidth = 0.6;

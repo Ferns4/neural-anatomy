@@ -326,7 +326,71 @@
     ],
   });
 
-  const GROUPS = ['Build your own', 'Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Signal processing', 'Failure modes'];
+  // Reinforcement learning (lab-rl.js): no examples of good play, only rewards. The two board games were made for this site.
+  PRESETS.push(
+    {
+      id: 'rl-maze', group: 'Reinforcement learning', lab: 'rl', example: 'maze', name: 'Maze Runner', tagline: 'Q-learning: finding a route from rewards alone.',
+      meta: 'Q-learning · 30 squares × 4 moves · no network',
+      about: 'An agent starts in the corner of a maze and is told nothing about it. Reaching the goal gives +1, a pit −1, and every step costs 0.02. It keeps a table of values, one for each move from each square: how much reward it expects if it makes that move and then plays its best. After every move it nudges that value toward what it got plus the best value of where it landed (Q-learning). The first lucky arrival at the goal teaches one square; the values then spread back, square by square, until the arrows show the shortest way through.',
+      look: [
+        'The maze: each square is coloured by the value of its best move and the arrow is that move. The dashed line is the route it would take now.',
+        'Tick Watch it learn to see one move at a time: it wanders at first, then the values spread back from the goal like a scent.',
+        'Q-values tab: click any square to see its four numbers, and while watching, the update after each move worked out with real numbers.',
+        'Table: the whole Q-table, 120 numbers. Open a square, then a value, down to the bits and memory cells that hold it.',
+        'Training tab: the steps it takes per episode drop to 12, the shortest way, once it has found the route.',
+      ],
+      try: [
+        { text: 'Start from nothing and watch it learn, one move at a time.', label: 'Watch it learn', action: 'watch' },
+        { text: 'Make the floor slippery: 15% of moves go sideways. A smaller learning rate averages out the luck.', label: 'Slippery floor', action: 'slippery', n: 3000,
+          predict: { q: 'On a slippery floor, which way will it go?', options: ['The same 12-step route', 'A longer route, away from the pits', 'It stops reaching the goal'], answer: 1,
+            why: 'The short way runs between four pits, where one slip ends the episode at −1. The long way down the right passes none, so despite its 4 extra steps it earns more on average: it learns that from the rewards alone.' } },
+        { text: 'No exploring at all (ε = 0): it only ever makes the move it already rates best.', label: 'No exploring', action: 'noExplore',
+          predict: { q: 'With no random moves, will it still find the goal?', options: ['Yes, as quickly', 'Yes, but much slower', 'No, it gets stuck'], answer: 0,
+            why: 'Every step costs 0.02, so a move it has tried looks worse than one it has not (still 0). Rating untried moves higher makes it try them: the step cost does the exploring. In bigger problems that is not enough, and ε is needed.' } },
+        { text: 'Back to the original maze and settings, and a new agent.', label: 'Reset', action: 'default' },
+      ],
+    },
+    {
+      id: 'rl-three', group: 'Reinforcement learning', lab: 'rl', example: 'three', name: 'Three-line', tagline: 'A board game it learns by playing itself.',
+      meta: 'Self-play · TD learning · a table of positions',
+      about: 'A small board game made for this site: two players take turns placing stones on a 4 × 4 board, and three in a row (across, down or diagonally) wins. The agent learns it by playing against itself, starting from nothing. It keeps a value for every position it meets, its estimate of the chance that the player who just moved will win, and moves to the position it values most. After every game the values of the last positions move toward the result, and over many games those lessons spread back to the moves that led there (temporal-difference learning).',
+      look: [
+        'The board: during your games, the numbers on the empty cells are its estimate of the chance to win after each move. It plays the highest.',
+        'Watch it learn shows each self-play game move by move. Early games are random; after a few hundred, it finishes lines and blocks.',
+        'Training tab: wins against a random player and against a rule-follower that takes a win when it can and blocks when it must.',
+        'Table: the entries for the positions each move leads to, down to the bits of each value.',
+      ],
+      try: [
+        { text: 'Train 3,000 games of self-play.', label: 'Train 3,000 games', action: 'train', n: 3000,
+          predict: { q: 'Playing itself, who will win most of the games?', options: ['Blue, who moves first', 'Orange, who moves second', 'Mostly draws'], answer: 0,
+            why: 'On a 4 × 4 board there is room to make two threats at once, and the first player gets there first: with good play, blue can force a win. In self-play blue wins about 9 games in 10.' } },
+        { text: 'Watch it play itself, one move at a time.', label: 'Watch self-play', action: 'watch' },
+        { text: 'Play against it, moving first. Can you find the win?', label: 'Play first', action: 'playFirst' },
+        { text: 'Play second, against its best opening.', label: 'Play second', action: 'playSecond' },
+        { text: 'A new agent that knows nothing, with the original settings.', label: 'Reset', action: 'default' },
+      ],
+    },
+    {
+      id: 'rl-four', group: 'Reinforcement learning', lab: 'rl', example: 'four', name: 'Four-line', tagline: 'Too many positions for a table: a network judges them.',
+      meta: 'Self-play · 50–64–1 value network · 3,329 parameters',
+      about: 'Another game made for this site: a 5 × 5 board, four in a row wins. It has billions of positions, far too many for a table, so a small neural network learns to judge them: the board goes in as 50 inputs (where each player’s stones are), 64 hidden neurons look for patterns, and one output gives the chance to win. It learns as Three-line does, by playing itself and moving each position’s value toward the next one’s; but every lesson adjusts weights shared by all positions, so it can judge positions it has never seen. It opens with a network trained offline with the same code for 100,000 games.',
+      look: [
+        'Play against it: the numbers on the empty cells are its view of each move before it plays.',
+        'Network: the board as inputs, the 64 hidden neurons lit by the position, and the output. Open a neuron to see its weighted sum, down to the transistors.',
+        'Training tab: its record against a random player and against the rule-follower, over the 100,000 games it trained.',
+        'Start from nothing to watch a network learn from scratch: it beats a random player within a few hundred games; beating the rule-follower takes far more.',
+      ],
+      try: [
+        { text: 'Play against the trained network, moving first.', label: 'Play first', action: 'playFirst' },
+        { text: 'Start from nothing and train 2,000 games.', label: 'Train from scratch', action: 'scratch', n: 2000,
+          predict: { q: 'From nothing, how soon will it beat a random player 9 games in 10?', options: ['Within a few hundred games', 'After a few thousand', 'Only after tens of thousands'], answer: 0,
+            why: 'Within about 250 games: lines are easy to learn to finish, and a random player never blocks. Against the rule-follower, which takes its wins and blocks, it needs tens of thousands of games.' } },
+        { text: 'Bring back the network trained for 100,000 games.', label: 'Trained network', action: 'trained' },
+        { text: 'Watch it play itself, one move at a time.', label: 'Watch self-play', action: 'watch' },
+      ],
+    });
+
+  const GROUPS = ['Build your own', 'Foundations', 'Representation', 'Function fitting', 'Perception', 'Language models', 'Physics-informed', 'Generative models', 'Signal processing', 'Reinforcement learning', 'Failure modes'];
 
   NA.presets = { PRESETS, GROUPS, byId: Object.fromEntries(PRESETS.map((p) => [p.id, p])) };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));
