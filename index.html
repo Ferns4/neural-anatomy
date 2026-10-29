@@ -218,6 +218,13 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .dot-probe { border: 2px solid var(--ink); width: 11px; height: 11px; }
 .key-line { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; }
 .key-sq { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; opacity: 0.6; }
+/* the RL lab's bar above the board: maze and model, play and test, a test's step controls */
+.rl-bar { gap: 8px 10px; padding: 7px 12px; }
+.rl-bar .field { flex-direction: row; align-items: center; gap: 7px; }
+.rl-test { display: inline-flex; align-items: center; gap: 3px; }
+.rl-ic { min-width: 34px; padding: 0 8px; font-size: 13px; }
+.rl-count { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rl-status { font-weight: 600; font-size: 12.5px; }
 .key-fit { background: var(--pos); } .key-target { background: var(--ink-2); opacity: 0.6; } .key-contrib { background: linear-gradient(90deg, var(--neg) 50%, var(--pos) 50%); }
 .key-tri { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 7px solid var(--ink-2); display: inline-block; }
 .key-box { display: inline-block; width: 10px; height: 10px; background: color-mix(in srgb, var(--pos) 22%, transparent); }
@@ -1028,6 +1035,7 @@ body.bd-dragging, body.bd-dragging * { cursor: grabbing !important; user-select:
   .panel-data .panel-scroll { overflow: visible; }
   .lab-center { height: auto; min-height: 480px; }
   .lab-center .lab-stage { flex: none; height: max(320px, 56vh); }
+  .lab-center .lab-stage.rl-tall { height: max(540px, 84vh); }
   .lab-left .panel-scroll { overflow: visible; }
   .topbar { flex-wrap: wrap; gap: 10px 14px; }
   .topbar-sub { display: none; }
@@ -1146,6 +1154,10 @@ body[data-layout="mobile"] { overflow: hidden; overscroll-behavior: none; }
 [data-layout="mobile"] .ip-body { max-height: 32vh; padding: 0 10px 10px; }
 [data-layout="mobile"] .lab-center .lab-stage { flex: 1 1 0; height: auto; min-height: 220px; }
 [data-layout="mobile"] .lab-stage canvas { touch-action: none; }
+/* the RL lab with its model drawn under the board: a taller stage, and the column scrolls (a finger on the board scrolls too) */
+body[data-layout="mobile"][data-lab="rl"] .lab-center { overflow-y: auto; overscroll-behavior: contain; }
+[data-layout="mobile"] .lab-center .lab-stage.rl-tall { flex: none; height: max(540px, 72vh); }
+[data-layout="mobile"] .rl-stage canvas { touch-action: pan-y; }
 [data-layout="mobile"] .ip-title { font-size: 13px; }
 [data-layout="mobile"] .code { font-size: 11px; }
 [data-layout="mobile"] .arch-crumb { padding: 5px 10px; }
@@ -1669,65 +1681,65 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=582d34cb31"></script>
-<script src="js/engine.js?v=582d34cb31"></script>
-<script src="js/data.js?v=582d34cb31"></script>
-<script src="js/presets.js?v=582d34cb31"></script>
-<script src="js/app.js?v=582d34cb31"></script>
-<script src="js/ui.js?v=582d34cb31"></script>
-<script src="js/network-view.js?v=582d34cb31"></script>
-<script src="js/data-view.js?v=582d34cb31"></script>
-<script src="js/hidden-space.js?v=582d34cb31"></script>
-<script src="js/landscape.js?v=582d34cb31"></script>
-<script src="js/charts.js?v=582d34cb31"></script>
-<script src="js/insights.js?v=582d34cb31"></script>
-<script src="js/inspector.js?v=582d34cb31"></script>
-<script src="js/walkthrough.js?v=582d34cb31"></script>
-<script src="js/lab.js?v=582d34cb31"></script>
-<script src="js/archview.js?v=582d34cb31"></script>
-<script src="js/arch-deep.js?v=582d34cb31"></script>
-<script src="js/net-deep.js?v=582d34cb31"></script>
-<script src="js/circuit.js?v=582d34cb31"></script>
-<script src="js/scale-view.js?v=582d34cb31"></script>
-<script src="js/lm-data.js?v=582d34cb31"></script>
-<script src="js/transformer.js?v=582d34cb31"></script>
-<script src="js/lm-weights.js?v=582d34cb31"></script>
-<script src="js/arch-transformer.js?v=582d34cb31"></script>
-<script src="js/lab-transformer.js?v=582d34cb31"></script>
-<script src="js/pinn.js?v=582d34cb31"></script>
-<script src="js/pinn-weights.js?v=582d34cb31"></script>
-<script src="js/arch-pinn.js?v=582d34cb31"></script>
-<script src="js/lab-pinn.js?v=582d34cb31"></script>
-<script src="js/diffusion.js?v=582d34cb31"></script>
-<script src="js/diffusion-weights.js?v=582d34cb31"></script>
-<script src="js/arch-diffusion.js?v=582d34cb31"></script>
-<script src="js/lab-diffusion.js?v=582d34cb31"></script>
-<script src="js/yolo.js?v=582d34cb31"></script>
-<script src="js/arch-yolo.js?v=582d34cb31"></script>
-<script src="js/lab-yolo.js?v=582d34cb31"></script>
-<script src="js/radar.js?v=582d34cb31"></script>
-<script src="js/radar-weights.js?v=582d34cb31"></script>
-<script src="js/arch-radar.js?v=582d34cb31"></script>
-<script src="js/lab-radar.js?v=582d34cb31"></script>
-<script src="js/rl.js?v=582d34cb31"></script>
-<script src="js/rl-weights.js?v=582d34cb31"></script>
-<script src="js/arch-rl.js?v=582d34cb31"></script>
-<script src="js/lab-rl.js?v=582d34cb31"></script>
-<script src="js/builder-engine.js?v=582d34cb31"></script>
-<script src="js/classic-ml.js?v=582d34cb31"></script>
-<script src="js/builder-tasks.js?v=582d34cb31"></script>
-<script src="js/builder-challenges.js?v=582d34cb31"></script>
-<script src="js/part-guide.js?v=582d34cb31"></script>
-<script src="js/builder-insights.js?v=582d34cb31"></script>
-<script src="js/builder-viz.js?v=582d34cb31"></script>
-<script src="js/builder-py.js?v=582d34cb31"></script>
-<script src="js/arch-builder.js?v=582d34cb31"></script>
-<script src="js/lab-builder.js?v=582d34cb31"></script>
-<script src="js/mobile.js?v=582d34cb31"></script>
-<script src="js/share.js?v=582d34cb31"></script>
-<script src="js/glossary.js?v=582d34cb31"></script>
-<script src="js/tour.js?v=582d34cb31"></script>
-<script src="js/chrome.js?v=582d34cb31"></script>
-<script src="pwa.js?v=582d34cb31"></script>
+<script src="js/core.js?v=417859c94f"></script>
+<script src="js/engine.js?v=417859c94f"></script>
+<script src="js/data.js?v=417859c94f"></script>
+<script src="js/presets.js?v=417859c94f"></script>
+<script src="js/app.js?v=417859c94f"></script>
+<script src="js/ui.js?v=417859c94f"></script>
+<script src="js/network-view.js?v=417859c94f"></script>
+<script src="js/data-view.js?v=417859c94f"></script>
+<script src="js/hidden-space.js?v=417859c94f"></script>
+<script src="js/landscape.js?v=417859c94f"></script>
+<script src="js/charts.js?v=417859c94f"></script>
+<script src="js/insights.js?v=417859c94f"></script>
+<script src="js/inspector.js?v=417859c94f"></script>
+<script src="js/walkthrough.js?v=417859c94f"></script>
+<script src="js/lab.js?v=417859c94f"></script>
+<script src="js/archview.js?v=417859c94f"></script>
+<script src="js/arch-deep.js?v=417859c94f"></script>
+<script src="js/net-deep.js?v=417859c94f"></script>
+<script src="js/circuit.js?v=417859c94f"></script>
+<script src="js/scale-view.js?v=417859c94f"></script>
+<script src="js/lm-data.js?v=417859c94f"></script>
+<script src="js/transformer.js?v=417859c94f"></script>
+<script src="js/lm-weights.js?v=417859c94f"></script>
+<script src="js/arch-transformer.js?v=417859c94f"></script>
+<script src="js/lab-transformer.js?v=417859c94f"></script>
+<script src="js/pinn.js?v=417859c94f"></script>
+<script src="js/pinn-weights.js?v=417859c94f"></script>
+<script src="js/arch-pinn.js?v=417859c94f"></script>
+<script src="js/lab-pinn.js?v=417859c94f"></script>
+<script src="js/diffusion.js?v=417859c94f"></script>
+<script src="js/diffusion-weights.js?v=417859c94f"></script>
+<script src="js/arch-diffusion.js?v=417859c94f"></script>
+<script src="js/lab-diffusion.js?v=417859c94f"></script>
+<script src="js/yolo.js?v=417859c94f"></script>
+<script src="js/arch-yolo.js?v=417859c94f"></script>
+<script src="js/lab-yolo.js?v=417859c94f"></script>
+<script src="js/radar.js?v=417859c94f"></script>
+<script src="js/radar-weights.js?v=417859c94f"></script>
+<script src="js/arch-radar.js?v=417859c94f"></script>
+<script src="js/lab-radar.js?v=417859c94f"></script>
+<script src="js/rl.js?v=417859c94f"></script>
+<script src="js/rl-weights.js?v=417859c94f"></script>
+<script src="js/arch-rl.js?v=417859c94f"></script>
+<script src="js/lab-rl.js?v=417859c94f"></script>
+<script src="js/builder-engine.js?v=417859c94f"></script>
+<script src="js/classic-ml.js?v=417859c94f"></script>
+<script src="js/builder-tasks.js?v=417859c94f"></script>
+<script src="js/builder-challenges.js?v=417859c94f"></script>
+<script src="js/part-guide.js?v=417859c94f"></script>
+<script src="js/builder-insights.js?v=417859c94f"></script>
+<script src="js/builder-viz.js?v=417859c94f"></script>
+<script src="js/builder-py.js?v=417859c94f"></script>
+<script src="js/arch-builder.js?v=417859c94f"></script>
+<script src="js/lab-builder.js?v=417859c94f"></script>
+<script src="js/mobile.js?v=417859c94f"></script>
+<script src="js/share.js?v=417859c94f"></script>
+<script src="js/glossary.js?v=417859c94f"></script>
+<script src="js/tour.js?v=417859c94f"></script>
+<script src="js/chrome.js?v=417859c94f"></script>
+<script src="pwa.js?v=417859c94f"></script>
 </body>
 </html>

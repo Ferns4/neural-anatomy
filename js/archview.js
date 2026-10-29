@@ -235,8 +235,10 @@
       if (!this.path.length) this.path = [this.root.id];
       // parts can disappear when the model changes shape: stay at the deepest level that still exists
       let n = this.root, keep = 1;
-      for (const id of this.path.slice(1)) { const c = this.childOf(n, id); if (!c) break; n = c; keep++; }
+      const titles = [n.title]; // (the breadcrumbs follow a title that changes under the same id: another model)
+      for (const id of this.path.slice(1)) { const c = this.childOf(n, id); if (!c) break; n = c; keep++; titles.push(c.title); }
       if (keep < this.path.length) { this.path = this.path.slice(0, keep); this.selected = null; this.focusKey = null; }
+      this.pathTitles = titles.join('/');
       if (this.focusLater) { this.focusLater = false; this.notify(); }
       this.W = W; this.H = H;
       const a = this.anim;
@@ -1053,7 +1055,7 @@
       return s;
     }
     syncBar() {
-      const key = this.path.join('/');
+      const key = this.path.join('/') + '|' + (this.pathTitles || '');
       const outer = this.opts.outer;
       this.back.hidden = this.path.length < 2 && !outer;
       if (key === this.crumbKey) return;

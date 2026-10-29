@@ -85,6 +85,172 @@
     return { success: goal / n, steps: goal ? steps / goal : NaN };
   };
 
+  // ------------------------------------------------------------------ many mazes
+  // mazes drawn for the site, each with a way through; the first is the one above
+  const MAZE_SET = [
+    { id: 'pits', name: 'Pits', rows: MAZE },
+    { id: 'hook', name: 'Hook', rows: ['S.#.....', '..#.##..', '#.....#.', '.##.#.#.', '.X..#.#X', '...##..G'] },
+    { id: 'field', name: 'Open field', rows: ['S.......', '..X..#..', '.....#..', '..#.....', '..#..X..', '.......G'] },
+    { id: 'switchback', name: 'Switchback', rows: ['S.....#.', '#####.#.', '......#.', '.######.', '........', '######.G'] },
+    { id: 'rooms', name: 'Rooms', rows: ['S..#....', '...#..X.', '.......#', '###.##.#', '.X......', '....#..G'] },
+  ];
+  // the fewest steps from S to G without falling into a pit (0: there is no way through)
+  RL.shortest = function (maze) {
+    const d = new Int16Array(maze.n).fill(-1), q = [maze.start];
+    d[maze.start] = 0;
+    while (q.length) {
+      const s = q.shift();
+      for (let a = 0; a < 4; a++) { const t = maze.move(s, a); if (d[t] >= 0 || maze.cell[t] === 'X') continue; d[t] = d[s] + 1; if (t === maze.goal) return d[t]; q.push(t); }
+    }
+    return 0;
+  };
+  /* A random 8 × 6 maze: about one square in five a wall, 1 to 3 pits, S and G on any two free squares, kept only
+     when its shortest way through takes between minD and maxD steps. */
+  RL.randomMaze = function (rng, minD = 8, maxD = 99) {
+    for (;;) {
+      const g = Array.from({ length: 6 }, () => Array(8).fill('.'));
+      for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) if (rng() < 0.22) g[y][x] = '#';
+      const pits = 1 + Math.floor(rng() * 3);
+      for (let k = 0; k < pits; k++) g[Math.floor(rng() * 6)][Math.floor(rng() * 8)] = 'X';
+      const free = [];
+      for (let y = 0; y < 6; y++) for (let x = 0; x < 8; x++) if (g[y][x] === '.') free.push([x, y]);
+      const s = free[Math.floor(rng() * free.length)], t = free[Math.floor(rng() * free.length)];
+      if (s === t) continue;
+      g[s[1]][s[0]] = 'S'; g[t[1]][t[0]] = 'G';
+      const rows = g.map((r) => r.join('')), d = RL.shortest(new Maze(rows));
+      if (d && d >= minD && d <= maxD) return rows;
+    }
+  };
+  // 100 random mazes no agent ever trains on (the same every time): the test of how it does on new mazes
+  let TEST = null;
+  RL.testMazes = () => TEST || (TEST = (() => { const r = RL.rand(1234); return Array.from({ length: 100 }, () => new Maze(RL.randomMaze(r))); })());
+
+  /* A table belongs to one maze: its rows are that maze's squares. To find its way through mazes it has never seen,
+     an agent needs an input that says what is around it rather than which square it is on. This network sees the
+     24 squares around it, 2 in every direction (each one: a wall or the edge, a pit, the goal, or a square it has
+     already been on this run), and which way the goal lies (8 inputs: right, left, below or above, 1–2 squares away
+     or further): 104 inputs, each 0 or 1. Then 64 ReLU neurons, and 4 outputs, a Q-value for each move. */
+  const VIEW = 2, SIDE = 2 * VIEW + 1, NV = SIDE * SIDE - 1;
+  const PLANES = ['wall', 'pit', 'goal', 'visited'], PLANE_NAMES = ['a wall (or the edge)', 'a pit', 'the goal', 'a square it has been on'];
+  const GOAL_IN = ['goal 1–2 right', 'goal 3+ right', 'goal 1–2 left', 'goal 3+ left', 'goal 1–2 below', 'goal 3+ below', 'goal 1–2 above', 'goal 3+ above'];
+  // window square k (0–23, row by row, the agent's own square left out) as an offset from the agent
+  const offset = (k) => { const kk = k < NV / 2 ? k : k + 1; return [(kk % SIDE) - VIEW, Math.floor(kk / SIDE) - VIEW]; };
+  const where = (dx, dy) => [dy ? `${Math.abs(dy)} ${dy < 0 ? 'up' : 'down'}` : '', dx ? `${Math.abs(dx)} ${dx < 0 ? 'left' : 'right'}` : ''].filter(Boolean).join(', ');
+  class MazeNet {
+    constructor(hidden = 64, seed = 7) {
+      this.kind = 'mazenet'; this.nIn = 4 * NV + 8; this.nH = hidden;
+      const rng = RL.rand(seed), g = () => { let u = 0; for (let k = 0; k < 6; k++) u += rng(); return (u - 3) / Math.sqrt(0.5); };
+      this.W1 = Float64Array.from({ length: this.nIn * hidden }, () => g() * Math.sqrt(2 / 12));
+      this.b1 = new Float64Array(hidden);
+      this.W2 = Float64Array.from({ length: hidden * 4 }, () => g() * Math.sqrt(1 / hidden));
+      this.b2 = new Float64Array(4);
+      this.z = new Float64Array(hidden); this.h = new Float64Array(hidden); this.gh = new Float64Array(hidden); this.q = new Float64Array(4);
+    }
+    get paramCount() { return this.nIn * this.nH + this.nH + this.nH * 4 + 4; }
+    // the inputs that are 1 for the agent on square s (seen: the squares it has been on, 1 each); all others are 0
+    static inputs(maze, s, seen) {
+      const W = maze.W, x0 = s % W, y0 = Math.floor(s / W), on = [];
+      for (let k = 0; k < NV; k++) {
+        const [dx, dy] = offset(k), x = x0 + dx, y = y0 + dy;
+        const c = x < 0 || y < 0 || x >= W || y >= maze.H ? '#' : maze.cell[y * W + x];
+        if (c === '#') on.push(k); else if (c === 'X') on.push(NV + k); else if (c === 'G') on.push(2 * NV + k); else if (seen && seen[y * W + x]) on.push(3 * NV + k);
+      }
+      const dx = (maze.goal % W) - x0, dy = Math.floor(maze.goal / W) - y0, b = 4 * NV;
+      if (dx > 0) on.push(b + (dx > 2 ? 1 : 0)); if (dx < 0) on.push(b + 2 + (dx < -2 ? 1 : 0));
+      if (dy > 0) on.push(b + 4 + (dy > 2 ? 1 : 0)); if (dy < 0) on.push(b + 6 + (dy < -2 ? 1 : 0));
+      return on;
+    }
+    // input i in words, and where it looks
+    static inputName(i) { if (i >= 4 * NV) return GOAL_IN[i - 4 * NV]; const [dx, dy] = offset(i % NV); return `${PLANES[Math.floor(i / NV)]} ${where(dx, dy)}`; }
+    static inputAt(i) { return i >= 4 * NV ? null : { plane: Math.floor(i / NV), dx: offset(i % NV)[0], dy: offset(i % NV)[1] }; }
+    // the 4 Q-values for these inputs; the hidden layer's sums and outputs stay in z and h
+    forward(on) {
+      const H = this.nH, z = this.z, h = this.h, q = this.q;
+      z.set(this.b1);
+      for (const i of on) { const o = i * H; for (let j = 0; j < H; j++) z[j] += this.W1[o + j]; }
+      for (let j = 0; j < H; j++) h[j] = z[j] > 0 ? z[j] : 0;
+      for (let a = 0; a < 4; a++) { let s = this.b2[a]; for (let j = 0; j < H; j++) s += this.W2[j * 4 + a] * h[j]; q[a] = s; }
+      return q;
+    }
+    /* One step of gradient descent on (Q(s, a) − target)², the error clipped to ±1 (the Huber loss DQN used, so one
+       surprising reward cannot throw the weights far). Only the output of move a has an error. */
+    train(on, a, target, lr) {
+      const q = this.forward(on), d = Math.max(-1, Math.min(1, q[a] - target)), H = this.nH, h = this.h, gh = this.gh;
+      this.b2[a] -= lr * d;
+      for (let j = 0; j < H; j++) { gh[j] = h[j] > 0 ? d * this.W2[j * 4 + a] : 0; this.W2[j * 4 + a] -= lr * d * h[j]; this.b1[j] -= lr * gh[j]; }
+      for (const i of on) { const o = i * H; for (let j = 0; j < H; j++) this.W1[o + j] -= lr * gh[j]; }
+      return d;
+    }
+    copy() { const o = new MazeNet(this.nH, 1); o.W1.set(this.W1); o.b1.set(this.b1); o.W2.set(this.W2); o.b2.set(this.b2); return o; }
+    toJSON() { const r = (a) => Array.from(a, (v) => +v.toFixed(5)); return { hidden: this.nH, W1: r(this.W1), b1: r(this.b1), W2: r(this.W2), b2: r(this.b2) }; }
+    static from(o) { const net = new MazeNet(o.hidden); net.W1.set(o.W1); net.b1.set(o.b1); net.W2.set(o.W2); net.b2.set(o.b2); return net; }
+  }
+  const argmax4 = (q) => { let a = 0; for (let b = 1; b < 4; b++) if (q[b] > q[a]) a = b; return a; };
+
+  /* Q-learning with a network, as DQN (2013) did on Atari screens: each move goes into a replay memory, and after
+     every move it learns from a few moves drawn at random from that memory (so one maze does not crowd out the
+     rest), each toward r + γ·max Q(next) by a target network, a copy of itself refreshed every 1,000 moves. */
+  class DQN {
+    constructor(net) { this.net = net; this.target = net.copy(); this.mem = []; this.cap = 50000; this.next = 0; this.moves = 0; }
+    remember(e) { if (this.mem.length < this.cap) this.mem.push(e); else { this.mem[this.next] = e; this.next = (this.next + 1) % this.cap; } }
+    replay(k, lr, gamma, rng) {
+      let err = 0;
+      for (let n = 0; n < k; n++) {
+        const e = this.mem[Math.floor(rng() * this.mem.length)];
+        let t = e.r;
+        if (e.x2) { const q2 = this.target.forward(e.x2); t += gamma * Math.max(q2[0], q2[1], q2[2], q2[3]); }
+        err = this.net.train(e.x, e.a, t, lr);
+      }
+      if (++this.moves % 1000 === 0) this.target = this.net.copy();
+      return err;
+    }
+  }
+  // its schedule: it explores at random at first and less over its first 24,000 mazes, and its first mazes are
+  // easy (the goal a few steps away), longer ones coming in over its first 60,000 (a curriculum)
+  RL.SCHEDULE = { warm: 24000, grow: 60000 };
+  RL.netSchedule = (n, eps, o = RL.SCHEDULE) => ({ eps: Math.max(eps, 1 - n / o.warm), maxD: Math.round(3 + 30 * Math.min(1, n / o.grow)) });
+  RL.curriculumMaze = function (n, rng, o) { const maxD = RL.netSchedule(n, 0, o).maxD; return new Maze(RL.randomMaze(rng, Math.min(8, Math.max(1, maxD - 6)), maxD)); };
+  // one episode of learning on a maze
+  RL.netEpisode = function (maze, agent, o, rng, keepPath) {
+    let s = maze.start, total = 0, steps = 0, end = 'timeout';
+    const seen = new Uint8Array(maze.n), path = keepPath ? [s] : null;
+    seen[s] = 1;
+    let x = MazeNet.inputs(maze, s, seen);
+    while (steps < 80) {
+      const a = rng() < o.eps ? Math.floor(rng() * 4) : argmax4(agent.net.forward(x)), t = maze.step(s, a, rng);
+      seen[t.s] = 1;
+      const x2 = t.done ? null : MazeNet.inputs(maze, t.s, seen);
+      agent.remember({ x, a, r: t.r, x2 });
+      agent.replay(o.updates || 4, o.lr, o.gamma, rng);
+      total += t.r; steps++; s = t.s; x = x2;
+      if (path) path.push(s);
+      if (t.done) { end = t.r > 0 ? 'goal' : 'pit'; break; }
+    }
+    return { total, steps, end, path };
+  };
+  // its best move on every square of a run from the start (no exploring, no learning): the path, how it ended, and
+  // (keep) what it saw and thought at every step
+  RL.netRun = function (maze, net, rng, keep, maxSteps = 60) {
+    let s = maze.start, end = 'timeout';
+    const seen = new Uint8Array(maze.n), path = [s], frames = keep ? [] : null;
+    seen[s] = 1;
+    for (let k = 0; k < maxSteps; k++) {
+      const x = MazeNet.inputs(maze, s, seen), q = net.forward(x), a = argmax4(q);
+      const f = frames ? { s, x, q: Float64Array.from(q), z: Float64Array.from(net.z), h: Float64Array.from(net.h), seen: Uint8Array.from(seen), a } : null;
+      const t = maze.step(s, a, rng);
+      s = t.s; seen[s] = 1; path.push(s);
+      if (f) { Object.assign(f, { went: t.a, slipped: t.slipped, r: t.r, s2: s }); frames.push(f); }
+      if (t.done) { end = t.r > 0 ? 'goal' : 'pit'; break; }
+    }
+    return { path, end, steps: path.length - 1, frames };
+  };
+  // the share of these mazes its best moves get through, and the average length of the routes that do
+  RL.netEval = function (mazes, net, rng) {
+    let ok = 0, steps = 0;
+    for (const m of mazes) { const r = RL.netRun(m, net, rng); if (r.end === 'goal') { ok++; steps += r.steps; } }
+    return { success: ok / mazes.length, steps: ok ? steps / ok : NaN };
+  };
+
   // ------------------------------------------------------------------ board games: k in a row
   /* Players take turns placing a stone on an empty cell; k in a row (across, down or diagonally) wins, and a full
      board is a draw. Cells are numbered row by row; a board is an Int8Array: 0 empty, 1 and 2 the players, 1 first. */
@@ -278,6 +444,6 @@
     return { win: win / n, draw: draw / n, loss: loss / n };
   };
 
-  Object.assign(RL, { MAZE, DIRS, DIR_NAMES, Maze, QTable, LineGame, ValueTable, ValueNet });
+  Object.assign(RL, { MAZE, MAZE_SET, DIRS, DIR_NAMES, Maze, QTable, MazeNet, DQN, LineGame, ValueTable, ValueNet, VIEW, PLANE_NAMES, argmax4 });
   NA.rl = RL;
 })(window.NA);
