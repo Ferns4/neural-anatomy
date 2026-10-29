@@ -389,6 +389,7 @@
     const rnd = (i) => { const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return v - Math.floor(v); };
     const mid = H / 2, pulse = (t % 2) / 2;
     ctx.clearRect(0, 0, W, H);
+    if (String(type).startsWith('rl-')) { drawRL(type, ctx, W, H, t, { c, line, dot, label, rnd, mid }); return; }
     if (type === 'dense' || type === 'neuron' || type === 'gated') {
       const ins = type === 'neuron' ? 3 : 4, outs = type === 'neuron' ? 1 : 3, x0 = W * 0.22, x1 = W * 0.7;
       const yi = (i) => mid + (i - (ins - 1) / 2) * (H / (ins + 1)), yo = (j) => mid + (j - (outs - 1) / 2) * (H / (outs + 1.5));
@@ -492,6 +493,63 @@
   // ------------------------------------------------------------------ the guide
   /* render(type, o): the full guide. o: { part (palette entry: name, group, hint), fits (bool), kind ('points'…),
      add (button element), switchTo (button element offering a problem where it fits) }. */
+  // learning from rewards: the methods (not layers; they set how the network you built learns)
+  const RL_CODE = {
+    dqn: 'q = model(x).gather(1, a[:, None])[:, 0]                 # Q of the moves made\nwith torch.no_grad():\n    best = model(x2).argmax(1)                              # double DQN: the network picks,\n    y = r + gamma * alive * target(x2).gather(1, best[:, None])[:, 0]   # the target network values\nloss = F.smooth_l1_loss(q, y)',
+    pg: 'logp = model(x).log_softmax(1)[range(len(a)), a]       # log π(move) for every move played\nadv = (G - G.mean()) / G.std()                         # better or worse than usual\nloss = -(adv * logp).mean()',
+    a2c: 'out = model(x)\nlogp = out[:, :n].log_softmax(1)[range(len(a)), a]\nadv = R - out[:, n].detach()                           # rewards + γ·V(where it ended) − V(here)\nloss = -(adv * logp).mean() + 0.25 * ((out[:, n] - R) ** 2).mean()',
+    ppo: 'ratio = (logp_new - logp_old).exp()                    # how far the policy has moved\nloss = -torch.min(ratio * adv, ratio.clamp(0.8, 1.2) * adv).mean()',
+    ga: 'fit = [play(w) for w in population]                    # each network plays\nparents = [tournament(population, fit) for _ in range(2)]\nchild = torch.where(torch.rand(n) < 0.5, *parents)      # each weight from one parent\nchild += (torch.rand(n) < 0.1) * sigma * torch.randn(n) # a few mutate',
+  };
+  Object.assign(G, {
+    'rl-dqn': {
+      what: 'Not a layer: a way to learn from rewards. Your network gives one output per action, its Q-value: the reward it expects in the end if it takes that action now. It plays the largest, and while it learns it sometimes plays at random to find out what else pays.',
+      deep: ['Each move goes into a replay memory. Every step, 32 moves drawn from it are learned from at once: each Q-value is pulled toward the reward it got plus γ times the best Q-value of where it landed. A copy of the network (the target network), refreshed every 500 steps, gives those targets so they hold still while it learns.'],
+      how: ['Play the move with the largest Q-value, or a random one while exploring (ε-greedy).', 'Remember (state, move, reward, next state).', 'Draw 32 remembered moves; for each, target = reward + γ × the best Q-value of the next state.', 'One gradient step pulls each Q(state, move) toward its target (Huber loss).', 'Every 500 steps, copy the network into the target network.'],
+      math: ['target = r + γ · Q_target(s′, argmax Q(s′, ·))', 'loss = Huber(Q(s, a) − target)'],
+      params: 'none of its own: it trains the network you built, with a copy of it as the target network',
+      use: ['A few actions, and rewards that come from the world: mazes, catching, games. DQN learned Atari games from the screen this way (2013–15).', 'When experience is precious: the replay memory learns from each move many times.'],
+      watch: ['Without exploring it may never find what pays.', 'Its play can get worse again for a while: a smaller learning rate steadies it.'],
+      code: RL_CODE.dqn, try: 'rlmaze',
+    },
+    'rl-pg': {
+      what: 'A way to learn from rewards that trains the policy itself. Your network gives one score per action; softmax turns them into the probability of playing each. After an episode or two, every move it made becomes more likely in proportion to how much better than usual the return after it was, and less likely if worse.',
+      how: ['Play whole episodes, drawing each move from the probabilities.', 'For each move, add up the rewards that came after it (discounted by γ): its return.', 'Compare with the batch’s average return: the advantage.', 'One gradient step raises log π(move) by its advantage, plus a little bonus for staying uncertain (entropy).'],
+      math: ['∇J = E[ A · ∇ log π(a | s) ]', 'A = (G − mean G) / spread of G'],
+      params: 'none of its own: it trains the network you built',
+      use: ['Short episodes and actions that should stay a little random.', 'The idea under every policy method since (Williams, 1992).'],
+      watch: ['Noisy: it needs many episodes, since a whole episode judges each move.', 'Long episodes blur which moves earned the reward.'],
+      code: RL_CODE.pg, try: 'pole',
+    },
+    'rl-a2c': {
+      what: 'Actor-critic: your network gets one more output than there are actions. The actions’ outputs are the policy (the actor); the extra one, the critic, estimates how good the current state is. It plays 8 moves in each of 8 copies of the world, then learns from the advantage: what it got plus the critic’s value of where it ended, minus what the critic expected.',
+      how: ['Play 8 moves in each of 8 copies of the world, drawing moves from the policy.', 'At the end, ask the critic how good each copy’s state is.', 'Work back: return R = reward + γ × the next return; advantage A = R − the critic’s value.', 'One gradient step: the actor raises moves with a positive advantage, the critic moves toward R.'],
+      math: ['A = r + γ·V(s′) − V(s)', 'loss = −A · log π(a | s) + ¼ (V(s) − R)²'],
+      params: 'none of its own; its one extra output (the critic) is part of the output layer',
+      use: ['When single moves should be judged without waiting for the end of the episode.', 'Steadier than REINFORCE: the critic is the baseline.'],
+      watch: ['A large learning rate throws the policy about: it may never settle.', 'The critic has to learn too: early on its values are guesses.'],
+      code: RL_CODE.a2c, try: 'catch',
+    },
+    'rl-ppo': {
+      what: 'Proximal policy optimisation: actor-critic with a safety catch. It plays 128 moves, then takes 16 small steps on them, each clipped so no action’s probability moves more than 20% away from the policy that played. It is the usual choice today, from robots to tuning chatbots with human feedback.',
+      how: ['Play 16 moves in each of 8 copies of the world; keep each move’s probability.', 'Work out advantages (GAE, λ = 0.95) and scale them to spread 1.', 'Take 16 steps over the batch in minibatches; each compares the new probability with the old one.', 'Where the ratio is already beyond 0.8–1.2 in the helpful direction, that move adds nothing more.'],
+      math: ['ratio = π_new(a | s) / π_old(a | s)', 'loss = −min(ratio·A, clip(ratio, 0.8, 1.2)·A) + ¼ (V − R)²'],
+      params: 'none of its own; like actor-critic, the critic is one extra output',
+      use: ['The default for most problems: steady, and forgiving of its settings.'],
+      watch: ['Each batch is reused 4 times: the steps are many but the play is the same 128 moves.'],
+      code: RL_CODE.ppo, try: 'catch',
+    },
+    'rl-ga': {
+      what: 'Evolution instead of gradients: 24 copies of your network, each a little different, play. The best two pass on unchanged; every other place goes to a child of two fitter ones, each weight taken from one parent or the other, a few of them mutated. One step is one generation. No loss, no learning rate, no gradient.',
+      how: ['Every network in the population plays the same episodes; its fitness is the reward it collects.', 'Keep the best two as they are (elitism).', 'For each other place, pick two parents, each the fitter of three drawn at random (a tournament).', 'Take each weight from one parent or the other, then move one weight in ten by a random amount (mutation).'],
+      math: ['child = mix(parent a, parent b) + N(0, σ²) on 10% of its weights'],
+      params: 'none of its own; the population is 24 copies of your network’s weights',
+      use: ['Small networks, and goals with no gradient to follow: only a score at the end.', 'Neuroevolution: see Evolution in the RL lab.'],
+      watch: ['Thousands of weights make most mutations noise: it is slow on big networks.', 'Each generation plays every member, so a step takes longer.'],
+      code: RL_CODE.ga, try: 'pole',
+    },
+  });
+
   function render(type, o = {}) {
     const g = G[type] || {}, p = o.part || {};
     const canvas = el('canvas', { class: 'pg-canvas', role: 'img', 'aria-label': `How ${(p.name || type).toLowerCase()} works: ${g.what || ''}` });
@@ -526,6 +584,54 @@
     d.addEventListener('toggle', () => { if (d.open) animate(canvas, type); });
     if (d.open) animate(canvas, type);
     return d;
+  }
+  // the methods of learning from rewards, as moving pictures
+  function drawRL(type, ctx, W, H, t, k) {
+    const { c, line, dot, label, rnd, mid } = k;
+    const bars = (x0, w, vals, best, top, bottom, toks) => {
+      const n = vals.length, bw = w / n, hi = Math.max(...vals, 1e-9);
+      vals.forEach((v, i) => { const h = (bottom - top) * (v / hi); ctx.fillStyle = c(i === best ? 's2' : (toks && toks[i]) || 's1', i === best ? 0.95 : 0.55); ctx.fillRect(x0 + i * bw + 3, bottom - h, bw - 6, h); });
+    };
+    const phase = (t % 4) / 4;
+    if (type === 'rl-dqn') {
+      // Q-values for 4 moves; the largest is played; a remembered move travels from the memory to the network
+      const q = [0.35 + 0.1 * Math.sin(t), 0.8 + 0.08 * Math.sin(t * 1.3), 0.5 + 0.1 * Math.cos(t), 0.3], best = 1;
+      bars(W * 0.08, W * 0.36, q, best, 14, H - 22);
+      label('Q-values: it plays the largest', W * 0.26, H - 9, { maxW: W * 0.46 });
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = c('ink-2', 0.25 + 0.1 * (i % 2)); ctx.fillRect(W * 0.62, 14 + i * 12, W * 0.28, 9); }
+      const p = phase, y = 14 + Math.floor(rnd(Math.floor(t / 4)) * 6) * 12 + 4;
+      dot(W * 0.62 + (W * 0.28) * 0.5 - (W * 0.18) * p, y + (H * 0.5 - y) * p, 4, c('s7'));
+      label('replay memory', W * 0.76, H - 9, { maxW: W * 0.44 });
+    } else if (type === 'rl-pg' || type === 'rl-a2c' || type === 'rl-ppo') {
+      // probabilities of 3 moves; the one that paid grows; actor-critic adds the critic's value, PPO a clip band
+      const grow = 0.25 + 0.5 * phase, p = [0.33 * (1 - grow) + 0.05, 0.34 + grow * 0.5, 0.33 * (1 - grow) + 0.05];
+      bars(W * 0.08, W * 0.36, p, 1, 14, H - 22, ['s1', 's1', 's1']);
+      label(type === 'rl-pg' ? 'a move that paid: more likely' : 'actor: move probabilities', W * 0.26, H - 9, { maxW: W * 0.46 });
+      if (type === 'rl-pg') {
+        const xs = W * 0.58, xe = W * 0.94;
+        for (let i = 0; i < 8; i++) { const x = xs + (i / 7) * (xe - xs), r = i === 7 ? 1 : 0; dot(x, mid, 4, c(r ? 'good' : 'muted', 0.9)); if (i) line(x - (xe - xs) / 7 + 5, mid, x - 5, mid, c('muted'), 1); }
+        label('an episode, then its return', (xs + xe) / 2, H - 9, { maxW: W * 0.42 });
+      } else if (type === 'rl-a2c') {
+        const v = 0.3 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.4)), cx = W * 0.76, r = Math.min(W * 0.12, H * 0.3);
+        ctx.strokeStyle = c('line-2'); ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, mid + 6, r, Math.PI, 2 * Math.PI); ctx.stroke();
+        ctx.strokeStyle = c('s7'); ctx.beginPath(); ctx.arc(cx, mid + 6, r, Math.PI, Math.PI + Math.PI * v); ctx.stroke();
+        label('critic: the state’s value', cx, H - 9, { maxW: W * 0.44 });
+      } else {
+        const x0 = W * 0.58, x1 = W * 0.94, y = (v) => mid + 4 - (v - 1) * (H * 0.9), lo = y(1.2), hi = y(0.8);
+        ctx.fillStyle = c('s7', 0.15); ctx.fillRect(x0, lo, x1 - x0, hi - lo);
+        line(x0, lo, x1, lo, c('s7'), 1); line(x0, hi, x1, hi, c('s7'), 1);
+        const r = 1 + 0.35 * Math.sin(t * 1.6), rc = Math.min(1.2, Math.max(0.8, r));
+        dot(x0 + (x1 - x0) * phase, y(r), 3, c('muted'));
+        dot(x0 + (x1 - x0) * phase, y(rc), 4.5, c('s2'));
+        label('steps kept within ±20%', (x0 + x1) / 2, H - 9, { maxW: W * 0.42 });
+      }
+    } else {
+      // a population of networks by fitness; the best two kept; the next generation bred from the fitter ones
+      const n = 10, x0 = W * 0.06, w = W * 0.88, bw = w / n, gen = Math.floor(t / 2);
+      const fit = Array.from({ length: n }, (_, i) => 0.25 + 0.7 * rnd(i + gen * 13) * (0.6 + 0.4 * Math.min(1, gen / 6))).sort((a, b) => b - a);
+      fit.forEach((f, i) => { const h = (H - 40) * f; ctx.fillStyle = c(i < 2 ? 's2' : 's1', i < 2 ? 0.95 : 0.55); ctx.fillRect(x0 + i * bw + 3, H - 24 - h, bw - 6, h); });
+      label(`generation ${gen + 1}, fittest first · orange: kept as they are`, W / 2, H - 9, { maxW: W - 12 });
+    }
   }
   // draws the picture every frame while it is on screen (once, with reduced motion)
   function animate(canvas, type) {

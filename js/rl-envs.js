@@ -222,12 +222,21 @@
       if (on) { ctx.fillStyle = T.c(s.last.r ? 'pos' : 'muted'); ctx.font = `700 ${Math.max(11, rad * 0.6)}px sans-serif`; ctx.textAlign = 'center'; ctx.fillText(s.last.r ? '+1' : '0', x, cy + rad * 4.4); }
     }
   }
+  // the maze as the RL lab draws it: the goal (the exit) +1, pits −1, S where every episode starts
   function drawMaze(ctx, r, s, T) {
     const M = new (RL().Maze)(s.rows), cs = Math.min(r.w / M.W, r.h / M.H), x0 = r.x + (r.w - cs * M.W) / 2, y0 = r.y + (r.h - cs * M.H) / 2;
+    const fam = (typeof getComputedStyle === 'function' && getComputedStyle(document.body).getPropertyValue('--font-ui')) || 'sans-serif';
+    const say = (t, x, y, size, tok, w = 700) => { ctx.font = `${w} ${size}px ${fam}`; ctx.fillStyle = T.c(tok); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, x, y); };
     for (let i = 0; i < M.n; i++) {
       const c = M.cell[i], x = x0 + (i % M.W) * cs, y = y0 + Math.floor(i / M.W) * cs;
-      ctx.fillStyle = c === '#' ? T.c('line-2') : c === 'G' ? T.c('pos', 0.4) : c === 'X' ? T.c('neg', 0.4) : T.c('panel'); ctx.fillRect(x, y, cs, cs);
+      ctx.fillStyle = c === '#' ? T.c('line-2') : c === 'G' ? T.c('pos', 0.45) : c === 'X' ? T.c('neg', 0.42) : T.c('panel'); ctx.fillRect(x, y, cs, cs);
       ctx.strokeStyle = T.c('line'); ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
+      if (c === 'G') {
+        ctx.strokeStyle = T.c('pos'); ctx.lineWidth = Math.max(2, cs * 0.05); ctx.strokeRect(x + 2, y + 2, cs - 4, cs - 4);
+        if (cs >= 34) { say('+1', x + cs / 2, y + cs * 0.4, Math.max(10, cs * 0.26), 'pos'); say('exit', x + cs / 2, y + cs * 0.72, Math.max(8.5, cs * 0.17), 'ink-2', 600); }
+        else say('+1', x + cs / 2, y + cs / 2, Math.max(8, cs * 0.34), 'pos');
+      } else if (c === 'X') say('−1', x + cs / 2, y + cs / 2, Math.max(8, cs * (cs >= 34 ? 0.26 : 0.34)), 'neg');
+      else if (i === M.start && cs >= 20) say('S', x + cs * 0.2, y + cs * 0.22, Math.max(8, cs * 0.2), 'ink-2', 600);
     }
     if (s.path && s.path.length > 1) { ctx.strokeStyle = T.c('s7', 0.85); ctx.lineWidth = Math.max(2, cs * 0.07); ctx.lineJoin = 'round'; ctx.beginPath(); s.path.forEach((q, k) => { const x = x0 + (q % M.W + 0.5) * cs, y = y0 + (Math.floor(q / M.W) + 0.5) * cs; k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); }
     ctx.fillStyle = T.c('s7'); ctx.beginPath(); ctx.arc(x0 + (s.s % M.W + 0.5) * cs, y0 + (Math.floor(s.s / M.W) + 0.5) * cs, cs * 0.22, 0, Math.PI * 2); ctx.fill();

@@ -12,7 +12,7 @@
   const ACTS = NA.engine.ACTIVATIONS, ACT_ORDER = NA.engine.ACTIVATION_ORDER;
 
   // ------------------------------------------------------------------ the parts
-  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6', Combine: 's3', 'Classic ML': 's5' };
+  const GROUP_TONE = { Layers: 's1', Sequences: 's7', Images: 's4', Reshape: 's6', Combine: 's3', 'Classic ML': 's5', Rewards: 's8' };
   const PARTS = [
     { type: 'dense', group: 'Layers', label: 'Dense', name: 'Dense layer', make: () => ({ type: 'dense', units: 16, act: 'relu' }),
       hint: 'Neurons that each weigh every input, add a bias and bend the sum with an activation.' },
@@ -68,6 +68,17 @@
       hint: 'Many deep trees on random samples of the data and the inputs, voting together.' },
     { type: 'boost', group: 'Classic ML', label: 'Boosting', name: 'Gradient boosting (XGBoost)', make: () => ({ type: 'boost', rounds: 100, eta: 0.3, depth: 4, lambda: 1, gamma: 0, subsample: 1, colsample: 1 }), classic: true,
       hint: 'Small trees added one after another, each fixing what the rest still get wrong: the favourite for tables.' },
+    // learning from rewards: not layers but ways to train the network you built (they set the Output block's Learns by)
+    { type: 'rl-dqn', group: 'Rewards', label: 'DQN', name: 'DQN (Q-learning)', method: 'dqn', world: 'rlmaze',
+      hint: 'Learns a Q-value for every action, the reward it expects for it, from a replay memory of past moves.' },
+    { type: 'rl-pg', group: 'Rewards', label: 'REINFORCE', name: 'REINFORCE (policy gradient)', method: 'pg', world: 'pole',
+      hint: 'Learns the probability of each action: the moves before a good return become more likely.' },
+    { type: 'rl-a2c', group: 'Rewards', label: 'Actor-critic', name: 'Actor-critic (A2C)', method: 'a2c', world: 'catch',
+      hint: 'A policy (the actor) and a judge of each state (the critic), learning from the surprise of every few moves.' },
+    { type: 'rl-ppo', group: 'Rewards', label: 'PPO', name: 'PPO (proximal policy optimisation)', method: 'ppo', world: 'catch',
+      hint: 'Actor-critic with a safety catch: each step clipped so no action’s probability moves more than 20%.' },
+    { type: 'rl-ga', group: 'Rewards', label: 'Evolution', name: 'Genetic algorithm', method: 'ga', world: 'pole',
+      hint: 'No gradients: copies of your network play, the fittest have children with mixed, mutated weights.' },
   ];
   const isClassic = (type) => !!(PART[type] && PART[type].classic);
   const PART = Object.fromEntries(PARTS.map((p) => [p.type, p]));
@@ -143,6 +154,11 @@
     boost: ['M4 18h3v-3H4z', 'M10 18h3v-6h-3z', 'M16 18h3V7h-3z', 'M5 12l6-5 6-3'],
     part: ['M4 8l8-4 8 4v8l-8 4-8-4z', 'M4 8l8 4 8-4', 'M12 12v8'],
     parallel: ['M2 12h4', 'M6 12l4-6h5', 'M6 12l4 6h5', 'M15 6l4 6-4 6', 'M19 12h3'],
+    'rl-dqn': ['M3 20h18', 'M6 20v-7', 'M10 20V6', 'M14 20v-9', 'M18 20v-5', 'M8 4l2 2 2-2'],
+    'rl-pg': ['M3 20h18', 'M4 20c3-1 4-9 7-9s4 8 7 9', 'M15 7l3-3', 'M15 4h3v3'],
+    'rl-a2c': ['C12 5 2.2', 'M12 7.2V12', 'M12 12l-5 5', 'M12 12l5 5', 'C6 19 1.6', 'C18 19 1.6'],
+    'rl-ppo': ['M3 8h18', 'M3 16h18', 'M4 18l4-10h8l4 10'],
+    'rl-ga': ['C6 6 2', 'C18 6 2', 'C12 18 2.4', 'M7.2 7.8L10.8 15.8', 'M16.8 7.8L13.2 15.8', 'M3 12h2', 'M19 12h2'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -727,9 +743,9 @@
     const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table', control: 'this world as it is seen' }[fam];
     this.renderMyParts();
     NA.$$('.bd-part:not(.bd-part-mine)', this.palette).forEach((t) => {
-      const off = !fits.includes(t.dataset.type);
+      const P = PART[t.dataset.type], off = !P.method && !fits.includes(t.dataset.type);
       t.classList.toggle('is-unsuited', off);
-      t.title = PART[t.dataset.type].hint + (off ? ` Not useful for ${kind}: the model will say why if you add it.` : '');
+      t.title = P.hint + (off ? ` Not useful for ${kind}: the model will say why if you add it.` : P.method && fam !== 'control' ? ` It learns from rewards: using it switches the problem to ${BT.byId[P.world].label.toLowerCase()}.` : '');
     });
     // a hidden screen (the phone's Parts screen) has no width yet: draw the preview when it shows
     if (!this.preview.parentElement.clientWidth) { this.leftDirty = true; return; }
@@ -752,7 +768,7 @@
     const k = (this.dataFor().input || {}).kind;
     return (k === 'image' ? FITS.digits : k === 'series' ? SEQ_PARTS : VECTOR_PARTS).filter((t) => !CLASSIC_PARTS.includes(t));
   };
-  BL.fitsHere = function (type) { return this.fits().includes(type); };
+  BL.fitsHere = function (type) { return PART[type] && PART[type].method ? this.family() === 'control' : this.fits().includes(type); };
   // learning from rewards: another method, with the number of steps that suits it here
   BL.setMethod = function (m) {
     const p = this.problem(), s = this.ps();
@@ -817,8 +833,19 @@
     if (!(this.sel && this.sel.kind === 'guide')) this.guideFrom = this.sel;
     this.selectBlock({ kind: 'guide', id: 'guide:' + type, type });
   };
+  // learning from rewards: a method part (DQN, PPO, …) sets how the network learns; on a problem without rewards it
+  // first switches to one that has them (Undo brings the old setup back)
+  BL.useMethod = function (p) {
+    const switched = this.family() !== 'control';
+    if (switched) this.setProblem(p.world);
+    if (this.ps().method === p.method) NA.ui.toast.show(`${switched ? `${BT.byId[p.world].label}, learning from rewards: ` : ''}it learns by ${NA.brl.METHODS[p.method].label} already.`);
+    else this.setMethod(p.method);
+    if (switched) NA.ui.toast.show(`${p.label} learns from rewards, so the problem is now ${BT.byId[p.world].label.toLowerCase()}, learning by ${NA.brl.METHODS[p.method].label}. Undo brings your setup back.`);
+    this.selectBlock({ kind: 'output', id: 'output' }, true);
+  };
   BL.addPart = function (p) {
     if (this.sel && this.sel.kind === 'guide') this.sel = this.guideFrom || null;
+    if (p.method) { this.useMethod(p); return; }
     if (p.classic || this.setup.blocks.some((b) => isClassic(b.type))) {
       const had = this.setup.blocks.length, was = had ? (this.setup.blocks.some((b) => isClassic(b.type)) ? 'classic' : 'network') : null;
       if (p.classic || was === 'classic') {
@@ -1141,7 +1168,7 @@
   };
   // a block dragged from the model onto a branch moves into it
   BL.laneDroppable = function (src) {
-    if (src.kind === 'part') return !src.part.custom && !src.part.classic && src.part.type !== 'parallel';
+    if (src.kind === 'part') return !src.part.custom && !src.part.classic && !src.part.method && src.part.type !== 'parallel';
     if (src.kind !== 'block') return false;
     const b = this.setup.blocks.find((q) => q.id === src.id);
     return !!b && b.type !== 'parallel' && !b.grp && !isClassic(b.type);
@@ -1371,6 +1398,7 @@
     NA.$$('.bd-gap.is-target, .bd-lane.is-target, .bd-card.is-drop-into, .bd-card.is-lifted', this.stack).forEach((n) => n.classList.remove('is-target', 'is-drop-into', 'is-lifted'));
     this.drag = null;
     if (!t) return;
+    if (src.kind === 'part' && src.part.method) { this.useMethod(src.part); return; } // dropped anywhere on the model
     if (t.kind === 'lane') { if (src.kind === 'part') this.addToLane(t.id, t.br, src.part.type); else if (src.kind === 'block') this.moveIntoLane(src.id, t.id, t.br); return; }
     if (src.kind === 'part' && src.part.custom) { if (t.kind === 'gap') this.addCopy(src.part.custom, t.at); return; }
     if (src.kind === 'group') {
@@ -1780,9 +1808,10 @@
     const p = PART[type];
     if (!p || !NA.partGuide) { body.append(UI.note('No guide for this part.')); return; }
     const fits = this.fitsHere(type), g = NA.partGuide.G[type] || {}, tryId = g.try === 'csv' ? 'csv' : g.try, tp = tryId && BT.byId[tryId];
-    const add = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.addPart(p) }, p.classic ? `Use a ${p.name.toLowerCase()}` : 'Add to the model');
-    const switchTo = !fits && tp ? el('button', { class: 'btn', type: 'button', onclick: () => { this.setProblem(tryId); if (tryId === 'csv' && !this.setup.custom.table) this.setTable(BT.SAMPLES.houses.make()); this.showGuide(type); } }, `Switch to ${tp.label.toLowerCase()}`) : null;
-    body.append(NA.partGuide.render(type, { part: p, fits, kind: KIND_TEXT[this.family()], add, switchTo }),
+    const add = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => this.addPart(p) }, p.method ? (this.family() === 'control' ? `Learn by ${p.label}` : `Learn by ${p.label}: ${BT.byId[p.world].label.toLowerCase()}`) : p.classic ? `Use a ${p.name.toLowerCase()}` : 'Add to the model');
+    const switchTo = !fits && tp && !p.method ? el('button', { class: 'btn', type: 'button', onclick: () => { this.setProblem(tryId); if (tryId === 'csv' && !this.setup.custom.table) this.setTable(BT.SAMPLES.houses.make()); this.showGuide(type); } }, `Switch to ${tp.label.toLowerCase()}`) : null;
+    // a method part fits any problem: its button switches to one with rewards when needed
+    body.append(NA.partGuide.render(type, { part: p, fits: fits || !!p.method, kind: KIND_TEXT[this.family()], add, switchTo }),
       el('div', { class: 'btn-row' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => this.selectBlock(this.guideFrom || null) }, '← Back')));
   };
   BL.renderProblemSettings = function (body) {
@@ -1916,9 +1945,9 @@
       m === 'ga' ? UI.section('Evolution', UI.field('Population', UI.seg([12, 24, 48].map((v) => ({ value: v, label: String(v) })), s.pop, (v) => set((q) => { q.pop = v; }), 'Population')),
         UI.field('Mutation', UI.seg([0.05, 0.2, 0.5].map((v) => ({ value: v, label: String(v) })), s.sigma, (v) => set((q) => { q.sigma = v; }), 'Mutation size')),
         UI.note('Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')) : null,
-      m !== 'ga' && d.world !== 'levers' ? UI.section('Discount', UI.field('γ', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
+      m !== 'ga' && d.world !== 'levers' ? UI.section('Discount', UI.field('Each step later counts ×', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
         UI.note('How much a reward one step later is worth: with 0.9, a reward ten steps away counts about a third. At 0 only the very next reward counts, so a move that pays off later is never learned.')) : null,
-      m === 'dqn' ? UI.section('Exploration', UI.field('Random moves for', UI.select([[0, 'none'], [300, '300 moves'], [1500, '1,500 moves'], [4000, '4,000 moves'], [10000, '10,000 moves']].map(([value, label]) => ({ value, label })), s.explore, (v) => set((q) => { q.explore = +v; }))),
+      m === 'dqn' ? UI.section('Exploration', UI.field('Random moves for', UI.select([[0, 'none'], [300, '300 moves'], [1500, '1,500 moves'], [3000, '3,000 moves'], [4000, '4,000 moves'], [10000, '10,000 moves']].map(([value, label]) => ({ value, label })), s.explore, (v) => set((q) => { q.explore = +v; }))),
         UI.note('Its chance of a random move falls from 1 to 0.05 over this many moves. Without exploring it only ever tries what already looks best, and may never find out that something else pays more.')) : null,
       UI.section('The output layer', UI.note(`${what} The added dense layer is built for you, sized to the world.`))].filter(Boolean));
   };
