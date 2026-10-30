@@ -1721,6 +1721,23 @@
       if (isFinite(gradNorm)) this._update(opt, opt.clip > 0 && gradNorm > opt.clip ? opt.clip / gradNorm : 1);
       return { loss, gradNorm };
     }
+    /* The gradients of a quantity of your own, with no update: grad(out, dOut) writes its gradient for each of the B
+       outputs into dOut; the parameters' gradients are left in .g (getGrads reads them as one array). Evolution's
+       safe mutations use it to find how much the outputs depend on each weight. */
+    gradWith(X, B, grad) {
+      this.zeroGrad();
+      const out = this._forward(X, 0, B, true);
+      if (this._dB !== B) { this.dOut = this.mem.view('dOut', B * this.outSize); this._dB = B; }
+      this.dOut.fill(0);
+      grad(out, this.dOut);
+      this.backward();
+    }
+    getGrads(into) {
+      const out = into || new Float32Array(this.paramCount);
+      let k = 0;
+      for (const p of this.params) { out.set(p.g, k); k += p.g.length; }
+      return out;
+    }
     // every weight and bias as one array, and back (a target network's copy, a genetic algorithm's population)
     getWeights(into) {
       const out = into || new Float32Array(this.paramCount);

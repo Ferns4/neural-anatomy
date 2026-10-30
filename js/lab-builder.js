@@ -79,6 +79,12 @@
       hint: 'Actor-critic with a safety catch: each step clipped so no action’s probability moves more than 20%.' },
     { type: 'rl-ga', group: 'Rewards', label: 'Evolution', name: 'Genetic algorithm', method: 'ga', world: 'pole',
       hint: 'No gradients: copies of your network play, the fittest have children with mixed, mutated weights.' },
+    { type: 'rl-grow', group: 'Rewards', label: 'Grow & prune', name: 'Grow and prune (evolving the network itself)', method: 'ga', grow: true, world: 'arena',
+      hint: 'Evolution that reshapes the network: children can gain or lose neurons and whole layers, and a size penalty keeps them small.' },
+    { type: 'rl-es', group: 'Rewards', label: 'ES', name: 'Evolution strategies', method: 'es', world: 'arena',
+      hint: 'One network nudged in many random directions: the nudges that did better show which way to step. A gradient made from scores alone.' },
+    { type: 'rl-me', group: 'Rewards', label: 'MAP-Elites', name: 'MAP-Elites (many styles)', method: 'me', world: 'track',
+      hint: 'The best network for every style of play, in a grid of 12 × 12 styles, instead of a single best.' },
   ];
   const isClassic = (type) => !!(PART[type] && PART[type].classic);
   const PART = Object.fromEntries(PARTS.map((p) => [p.type, p]));
@@ -159,6 +165,9 @@
     'rl-a2c': ['C12 5 2.2', 'M12 7.2V12', 'M12 12l-5 5', 'M12 12l5 5', 'C6 19 1.6', 'C18 19 1.6'],
     'rl-ppo': ['M3 8h18', 'M3 16h18', 'M4 18l4-10h8l4 10'],
     'rl-ga': ['C6 6 2', 'C18 6 2', 'C12 18 2.4', 'M7.2 7.8L10.8 15.8', 'M16.8 7.8L13.2 15.8', 'M3 12h2', 'M19 12h2'],
+    'rl-grow': ['C5 19 1.7', 'C12 19 1.7', 'C19 19 1.7', 'C8.5 11.5 1.7', 'C15.5 11.5 1.7', 'C12 4 1.7', 'M6 17.4l1.6-4.3', 'M12 17.3v-4', 'M18 17.4l-1.6-4.3', 'M9.6 10l1.6-4.3', 'M14.4 10l-1.6-4.3'],
+    'rl-es': ['C8 12 1.8', 'M8 12l-4-5', 'M8 12l-4 5', 'M8 12l3-7', 'M8 12l3 7', 'M8 12h12', 'M17 9l3 3-3 3'],
+    'rl-me': ['M4 4h16v16H4z', 'M9.33 4v16', 'M14.67 4v16', 'M4 9.33h16', 'M4 14.67h16', 'C6.67 6.67 1.3', 'C12 12 1.3', 'C17.33 17.33 1.3', 'C17.33 6.67 1.3', 'C6.67 17.33 1.3'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -362,6 +371,12 @@
   const RUN_COLOURS = ['s1', 's2', 's4', 's7', 's3', 's5', 's6', 's8'];
   // steps per press of Train; 0 trains until you pause
   const STEP_CHOICES = [[300, '300'], [1000, '1,000'], [2000, '2,000'], [3000, '3,000'], [5000, '5,000'], [10000, '10,000'], [0, '∞ until paused']];
+  // what a press of Train runs: steps, or generations for evolution (and the number set now, if it is not a choice)
+  const stepChoices = (evo, cur) => {
+    const c = evo ? [[50, '50'], [100, '100'], [150, '150'], [200, '200'], [300, '300'], [500, '500'], [1000, '1,000'], [0, '∞ until paused']] : STEP_CHOICES.slice();
+    if (!c.some(([v]) => v === cur)) { c.push([cur, fmtInt(cur)]); c.sort((a, b) => (a[0] || Infinity) - (b[0] || Infinity)); }
+    return c.map(([value, label]) => ({ value, label }));
+  };
   BL.newRun = function () {
     const d = this.dataFor(), chk = this.recheck();
     if (d.error) { NA.ui.toast.show(d.error); return false; }
@@ -379,8 +394,12 @@
     if (this.runs.length > 12) this.runs.splice(0, this.runs.length - 12);
     this.run = run; this.model = model; this.data = d; this.stale = false; this.step = 0;
     // learning from rewards: the network plays in its world, and the method turns what happens into steps
-    this.agent = d.family === 'control' ? NA.brl.make({ world: d.world, ws: d.ws, net: model, makeNet: () => NA.bx.build(cfg.blocks, d.input, d.output, { seed: T.seed, init: T.init }), method: d.method, seed: T.seed * 977 + n, s: Object.assign({}, d.s, { batch: T.batch }) }) : null;
-    if (this.agent) { run.method = d.method; run.bestVm = null; this.demo = null; }
+    this.agent = d.family === 'control' ? NA.brl.make({ world: d.world, ws: d.ws, net: model, makeNet: () => NA.bx.build(cfg.blocks, d.input, d.output, { seed: T.seed, init: T.init }), blocks: cfg.blocks, method: d.method, seed: T.seed * 977 + n, s: Object.assign({}, d.s, { batch: T.batch }) }) : null;
+    if (this.agent) { run.method = d.method; run.bestVm = null; run.grow = !!(this.agent.evo && this.agent.evo.grow); this.demo = null; this.watchCell = null; this.genReplay = null; }
+    // grow and prune while it learns (problems with answers): a few networks side by side, reshaped every generation
+    this.grower = !this.agent && !classic && T.grow && NA.bevo.evolvable(cfg.blocks, d.input) && d.output.kind !== 'tokens'
+      ? new NA.bevo.Grower({ blocks: cfg.blocks, model, input: d.input, output: d.output, seed: T.seed, init: T.init, every: T.growEvery || 150, penalty: T.growPenalty || 'light', newLayer: T.growNew || 'identity', judge: (m) => this.judgeModel(m) }) : null;
+    if (this.grower) run.grow = true;
     this.order = null; this.epochPos = 0; this.rng = new NA.RNG(T.seed * 977 + n);
     if (this.seqView) this.seqView.cont = null; // written by the new model once it has trained a little
     this.vizVersion = (this.vizVersion || 0) + 1; this._region = null; this.confusion = null; this.lastEval = 0; this.evalMs = 0;
@@ -392,6 +411,7 @@
   };
   // Train: a run that finished (and has not been edited since) carries on from where it stopped; otherwise a new run.
   BL.play = function () {
+    if (this.youPlay) this.playYourself(false); // training takes the controls back
     if (this.canContinue()) this.extendRun();
     else if (!this.run || this.stale || this.run.done) { if (!this.newRun()) return; }
     this.training = true; this.run.status = 'running'; NA.app.emit('training');
@@ -430,7 +450,8 @@
   /* A run's film: its results picture at moments spread on a log scale of steps, the run's score then, how big each
      layer's weights were and how far they had moved from the run's start, and the numbers of a step then */
   BL.filmFor = function (run) {
-    const model = this.model, d = this.data, agent = this.agent, layers = this.layersOf(model, run.cfg), start = layers ? NA.growth.copyLayers(layers) : null;
+    // (a network that grows and prunes changes shape, so there is no fixed set of layers to follow)
+    const model = this.model, d = this.data, agent = this.agent, layers = run.grow ? null : this.layersOf(model, run.cfg), start = layers ? NA.growth.copyLayers(layers) : null;
     return new NA.growth.Recorder({
       step: () => run.step,
       draw: (ctx, w, h) => BV.draw(ctx, { x: 4, y: 4, w: w - 8, h: h - 8 }, { data: d, model, vizVersion: -1 - run.step, _region: null, confusion: this.confusion, seqView: {}, demo: this.demo, run }),
@@ -459,8 +480,15 @@
       const ps = run.cfg.ps[run.cfg.problem] || {}, m = d.method, E = NA.rlEnvs, vars = E.REWARD_VARS[d.world].map((v) => v[0]), own = ps.rFormula && !BT.compile(ps.rFormula, vars).error;
       const rw = E.REWARDS[d.world].filter((r) => r.key !== 'rCloser' || ps.closer).map((r) => { const v = typeof ps[r.key] === 'number' ? ps[r.key] : r.def; return `${v > 0 ? '+' : ''}${fmt(v, Math.abs(v) < 0.1 && v ? 2 : v % 1 ? 1 : 0)}  ${r.label.toLowerCase().replace(/ \(.*\)$/, '')}`; });
       const pays = { title: 'What it is paid: its reward', lines: own ? [{ t: `r = ${ps.rFormula}`, strong: true }] : rw.map((l, i) => (i ? l : { t: l, strong: true })), note: `It learns to collect as much reward as it can: ${own ? 'your formula' : 'this table'} is the goal it is given. The score measures the real goal: ${E.WORLDS[d.world].goal}.` };
-      const g = ps.gamma, rule = m === 'dqn' ? G.dqn({ gamma: g, eps: x.eps, loss: x.loss }) : m === 'pg' ? G.pg({ gamma: g, ret: x.ret }) : m === 'a2c' ? G.a2c({ gamma: g, ret: x.ret }) : m === 'ppo' ? G.ppo({ gamma: g, ret: x.ret }) : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean });
-      return [pays, rule, m === 'ga' ? null : step];
+      const g = ps.gamma, ev = this.agent && this.agent.evo, h = ev && ev.history.length ? ev.history[ev.history.length - 1] : null;
+      const rule = m === 'dqn' ? G.dqn({ gamma: g, eps: x.eps, loss: x.loss }) : m === 'pg' ? G.pg({ gamma: g, ret: x.ret }) : m === 'a2c' ? G.a2c({ gamma: g, ret: x.ret }) : m === 'ppo' ? G.ppo({ gamma: g, ret: x.ret })
+        : m === 'es' ? G.es({ pop: ps.pop, sigma: ps.esSigma, lr: ps.esLr, best: x.best, mean: x.mean }) : m === 'me' ? G.me({ batch: ps.pop, sigma: ps.sigma, filled: h && h.filled, axes: NA.rlEnvs.WORLDS[d.world].axes, best: x.best })
+          : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean, select: ps.select, cross: ps.cross, mutate: ps.mutate, grow: run.grow, penalty: ev ? ev.penalty * ev.scale : 0, units: h && h.units, weights: h && h.weights });
+      return [pays, rule, NA.brl.isEvo(m) ? null : step];
+    }
+    if (run.grow && this.grower) {
+      const gw = this.grower, h = gw.history.length ? gw.history[gw.history.length - 1] : null;
+      return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step, G.grow({ size: gw.members.length, every: gw.every, penalty: gw.penalty, units: h && h.units, weights: h && h.weights, score: h && h.score, value: BT.isValue(d.family) })];
     }
     return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step,
       before ? G.change('step', { step: before.step, v: before.x && before.x.loss, moved: moved(before) }, { step: f.step, v: x.loss, moved: moved(f) }, 'L') : null];
@@ -501,11 +529,16 @@
         r = this.model.step();
       } else if (this.agent) {
         opt.lr = this.lrAt(run.step - (run.sched0 || 0));
-        r = this.agent.step(opt);
+        r = this.agent.step(opt, budget ? t0 + budget : undefined);
+        // an evolutionary method judges its generation a few members at a time: no step until all have played
+        if (r.partial) { this.genProgress = r; this.resultsDirty = true; break; }
+        this.genProgress = null;
+        if (this.agent.net !== this.model) { this.model = this.agent.net; run.params = this.model.paramCount; this.archStale = true; this.vizVersion++; }
       } else {
         opt.lr = this.lrAt(run.step - (run.sched0 || 0));
         const [X, Y] = this.batch(B);
-        r = this.model.step(X, Y, B, loss, opt);
+        r = this.grower ? this.grower.step(X, Y, B, loss, opt) : this.model.step(X, Y, B, loss, opt);
+        if (this.grower && this.grower.best.model !== this.model) { this.model = this.grower.best.model; run.params = this.model.paramCount; this.archStale = true; this.vizVersion++; this._region = null; }
       }
       if (!Number.isFinite(r.loss) || r.loss > 1e6) { this.finish('diverged'); NA.ui.toast.show(`Run ${run.n} blew up: the loss became ${Number.isFinite(r.loss) ? 'enormous' : 'NaN'}. Try a learning rate ten times smaller.`); break; }
       run.ema = run.ema === null ? r.loss : 0.97 * run.ema + 0.03 * r.loss;
@@ -561,12 +594,13 @@
   // learning from rewards: the score of its best moves (0 to 1), the average return of its episodes, the best score so far
   BL.evaluateControl = function (full, t0) {
     // a genetic algorithm: its generation's best fitness in place of the return while exploring
-    const run = this.run, A = this.agent, sc = A.score(), pt = { step: run.step, train: run.ema, val: null, tm: null, vm: sc, ret: A.method === 'ga' ? (A.genBest === undefined ? null : A.genBest) : A.retEma };
+    const run = this.run, A = this.agent, sc = A.score(), pt = { step: run.step, train: run.ema, val: null, tm: null, vm: sc, ret: NA.brl.isEvo(A.method) ? (A.genBest === undefined ? null : A.genBest) : A.retEma };
     const last = run.curve[run.curve.length - 1];
     if (!last || last.step !== pt.step) run.curve.push(pt); else run.curve[run.curve.length - 1] = pt;
     if (run.curve.length > 400) run.curve = run.curve.filter((q, i) => i % 2 === 0 || i === run.curve.length - 1);
     if (run.bestVm === null || run.bestVm === undefined || sc > run.bestVm) { run.bestVm = sc; run.bestAt = run.step; }
     run.last = pt; run.seconds = (performance.now() - run.started) / 1000;
+    if (A.evo && A.evo.archive) run.styles = A.evo.archive.size; // MAP-Elites: the styles of play found so far
     this.vizVersion++; this.resultsDirty = true; this.inspDirty = true;
     this.lastEval = performance.now(); if (!full) this.evalMs = this.lastEval - t0;
     this.archStale = true;
@@ -575,24 +609,112 @@
   /* The results picture plays episodes with the network's best moves, a move every 150 ms (random moves before it
      has trained): what it sees, its outputs for it, the move they pick. A new episode starts when one ends. */
   BL.demoTick = function (now) {
-    const d = this.data && this.data.family === 'control' ? this.data : this.dataFor();
+    // the run's own world while it is current; once the setup has changed (another world), the setup's, as the picture draws it
+    const d = this.run && !this.stale && this.data && this.data.family === 'control' ? this.data : this.dataFor();
     if (d.family !== 'control' || d.error) { this.demo = null; return; }
-    const live = this.run && !this.stale && this.agent ? this.agent : null, key = JSON.stringify([d.world, d.ws, d.method, !!live]);
+    // you play (Try it yourself): your moves, the network's outputs beside them
+    const P = this.youPlay ? PLAY[d.world] : null;
+    if (this.youPlay && !P) this.playYourself(false);
+    const live = this.run && !this.stale && this.agent ? this.agent : null, key = JSON.stringify([d.world, d.ws, d.method, !!live, this.watchCell === undefined ? null : this.watchCell, !!P]);
     let D = this.demo;
     if (!D || D.key !== key) D = this.demo = { key, world: NA.rlEnvs.make(d.world, d.ws), rng: new NA.RNG(99), ep: 0, at: 0 };
-    if (now - D.at < (D.end ? 1000 : 150)) return;
+    // a whole generation replaying: the picture moves every frame
+    if (this.evoView === 'generation' && live && live.evo && live.evo.last && !P) this.resultsDirty = true;
+    const W = NA.rlEnvs.WORLDS[d.world] || {};
+    // your moves come at a person's pace; a world that waits for each move waits for your key
+    if (now - D.at < (D.end ? 1000 : P ? P.ms || 0 : W.demoMs || 150)) return;
+    if (P && P.turn && D.obs && !D.end && !this.playQueue.length) return;
     D.at = now;
     if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; }
     else {
-      const t = D.world.step(D.a, D.rng);
-      D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a: D.a, r: t.r };
-      if (t.done) D.end = d.world === 'maze' ? D.world.end : d.world === 'catch' ? (D.world.caught ? 'caught' : 'missed') : d.world === 'pole' ? (t.fell ? 'fell' : 'up') : 'pulled';
+      const a = P ? (P.turn ? this.playQueue.shift() : heldMove(P, this.playHeld)) : D.a, t = D.world.step(a, D.rng);
+      D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a, r: t.r };
+      if (t.done) D.end = d.world === 'catch' ? (D.world.caught ? 'caught' : 'missed') : d.world === 'pole' ? (t.fell ? 'fell' : 'up') : d.world === 'levers' ? 'pulled' : D.world.end || 'over';
     }
     D.snap = D.world.snap();
-    D.out = live && !D.end ? live.outputs(D.obs) : null;
-    D.a = D.end ? null : D.out ? NA.brl.argmax(D.out, d.nA) : D.rng.int(d.nA);
+    D.out = live && !D.end ? live.outputs(D.obs, this.watchNet(live)) : null;
+    D.a = D.end ? null : P ? (P.turn ? null : heldMove(P, this.playHeld)) : D.out ? NA.brl.argmax(D.out, d.nA) : D.rng.int(d.nA);
     this.resultsDirty = true;
   };
+  /* The network the results play: the one on show, or with MAP-Elites the elite of the cell you picked (a copy of
+     the network with that elite's weights). */
+  BL.watchNet = function (live) {
+    const ev = live && live.evo;
+    if (!ev || !ev.archive || this.watchCell === null || this.watchCell === undefined) return live.net;
+    const e = ev.elite(this.watchCell);
+    if (!e) return live.net;
+    if (!this._eliteNet || this._eliteNet.paramCount !== live.net.paramCount) this._eliteNet = live.makeNet();
+    if (this._eliteFor !== e) { this._eliteNet.setWeights(e.w); this._eliteFor = e; }
+    return this._eliteNet;
+  };
+  /* Try it yourself: each world's keys (and buttons, for a touch screen or a mouse), the move when nothing is held,
+     and how often a move comes (slower than the network's, for a person); a world of single moves (the maze, the
+     levers) waits for each press. The arena has no move for standing still: with nothing held it fires whenever the
+     gun is ready. */
+  const PLAY = {
+    track: { idle: 1, ms: 70, keys: { ArrowLeft: 0, ArrowRight: 2, ArrowDown: 3 }, help: '← → steer, ↓ brakes', pad: [[0, '◀ Steer'], [3, 'Brake'], [2, 'Steer ▶']] },
+    arena: { idle: 3, ms: 90, keys: { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ' ': 3 }, help: '← → turn, ↑ walks; it fires whenever no key is held and the gun is ready', pad: [[0, '◀ Turn'], [2, 'Walk'], [1, 'Turn ▶']] },
+    lander: { idle: 0, ms: 70, keys: { ArrowUp: 1, ArrowLeft: 2, ArrowRight: 3 }, help: '↑ fires the main engine, ← → the side thrusters', pad: [[2, '◀ Turn'], [1, 'Engine'], [3, 'Turn ▶']] },
+    pole: { idle: 2, ms: 45, keys: { ArrowLeft: 0, ArrowRight: 1 }, help: '← → push the cart', pad: [[0, '◀ Push'], [1, 'Push ▶']] },
+    catch: { idle: 1, ms: 380, keys: { ArrowLeft: 0, ArrowRight: 2 }, help: '← → move the paddle', pad: [[0, '◀'], [2, '▶']] },
+    maze: { turn: true, keys: { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 }, help: 'the arrow keys move a square a press', pad: [[3, '◀'], [0, '▲'], [2, '▼'], [1, '▶']] },
+    levers: { turn: true, keys: { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4 }, help: 'the keys 1 to 5 pull a lever' },
+  };
+  const heldMove = (P, held) => (held && held.length ? held[held.length - 1] : P.idle); // the key pressed last wins
+  BL.playYourself = function (on) {
+    const d = this.dataFor(), P = PLAY[d.world];
+    if (on && (d.family !== 'control' || !P)) return;
+    if (on && this.training) this.pause();
+    this.youPlay = !!on; this.playHeld = []; this.playQueue = []; this.demo = null;
+    if (on) this.evoView = 'best';
+    this.listenPlay(this.youPlay);
+    this._headKey = null; this.resultsDirty = true;
+    if (on) NA.ui.toast.show(`Your turn: ${NA.mobile && NA.mobile.mobile ? 'press and hold the buttons above the picture' : P.help}.${this.run && !this.stale ? ' The bars show what the network would do.' : ''}`);
+  };
+  // the keys while you play (taken before the page's own shortcuts; never while typing in a field)
+  BL.listenPlay = function (on) {
+    const K = this._playKeys;
+    if (K) { document.removeEventListener('keydown', K.down, true); document.removeEventListener('keyup', K.up, true); window.removeEventListener('blur', K.blur); this._playKeys = null; }
+    if (!on) return;
+    const P = () => (this.youPlay && NA.labHost && NA.labHost.lab === this ? PLAY[this.dataFor().world] : null);
+    const typing = (e) => !!e.target && (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable);
+    const down = (e) => {
+      const p = P();
+      if (!p || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+      const a = p.keys[e.key];
+      if (a === undefined || a >= this.dataFor().nA) return;
+      e.preventDefault(); e.stopPropagation();
+      if (p.turn) { if (!e.repeat) this.playQueue.push(a); } else if (!this.playHeld.includes(a)) this.playHeld.push(a);
+    };
+    const up = (e) => { const p = P(); if (!p || p.keys[e.key] === undefined) return; e.preventDefault(); this.playHeld = this.playHeld.filter((q) => q !== p.keys[e.key]); };
+    const blur = () => { this.playHeld = []; };
+    this._playKeys = { down, up, blur };
+    document.addEventListener('keydown', down, true); document.addEventListener('keyup', up, true); window.addEventListener('blur', blur);
+  };
+  // the row under the results' title: Try it yourself, and while you play the controls and buttons to hold
+  BL.playRow = function (d) {
+    const P = PLAY[d.world], on = !!this.youPlay, touch = (NA.mobile && NA.mobile.mobile) || (window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    const row = el('div', { class: 'bd-play' },
+      el('button', { class: on ? 'btn' : 'btn btn-quiet', type: 'button', onclick: () => this.playYourself(!on) }, on ? 'Let it play' : 'Try it yourself'),
+      el('span', { class: 'sec-note', text: on ? `${touch ? 'Press and hold the buttons' : P.help[0].toUpperCase() + P.help.slice(1)}.${this.run && !this.stale ? ' The bars: what the network would do.' : ''}` : 'Take the controls yourself, then watch how the network does it.' }));
+    if (!on) return row;
+    const pad = el('div', { class: 'bd-pad', role: 'group', 'aria-label': 'Your controls' }, ...(P.pad || d.actions.map((a, i) => [i, a])).filter(([a]) => a < d.nA).map(([a, label]) => {
+      const b = el('button', { class: 'btn bd-pad-btn', type: 'button', text: label, 'aria-label': d.actions[a] || label });
+      const release = () => { this.playHeld = this.playHeld.filter((q) => q !== a); };
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); if (P.turn) this.playQueue.push(a); else if (!this.playHeld.includes(a)) this.playHeld.push(a); try { b.setPointerCapture(e.pointerId); } catch (_) { /* a synthetic event */ } });
+      for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, release);
+      b.addEventListener('keydown', (e) => { if (P.turn && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); this.playQueue.push(a); } });
+      return b;
+    }));
+    return el('div', null, row, pad);
+  };
+  // grow and prune: how a network does on the validation examples (its loss, and its accuracy or R²)
+  BL.judgeModel = function (m) {
+    const d = this.data, loss = this.setup.loss, n = Math.min(d.nVa, 600), X = d.Xva.subarray(0, n * (d.Xva.length / d.nVa)), Y = d.Yva.subarray(0, n * (d.Yva.length / d.nVa)), r = m.evaluate(X, Y, n, loss);
+    return { loss: r.loss, score: BT.isValue(d.family) ? BT.r2(m.predict(X, n), Y, n) : r.count ? r.correct / r.count : 0 };
+  };
+  // whether the model can grow and prune: Dense blocks only, on a list of numbers
+  BL.evolvable = function () { const d = this.dataFor(); return !d.error && NA.bevo.evolvable(this.setup.blocks, d.input); };
   BL.confusionMatrix = function () {
     const d = this.data, n = Math.min(d.nVa, 600), K = d.classes, P = d.Xva.length / d.nVa, o = this.model.predict(d.Xva.subarray(0, n * P), n), M = NA.range(K).map(() => new Array(K).fill(0));
     for (let i = 0; i < n; i++) { let b = 0; for (let k = 1; k < K; k++) if (o[i * K + k] > o[i * K + b]) b = k; M[d.Yva[i]][b]++; }
@@ -621,7 +743,7 @@
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
       const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
-      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', ...REWARD_WORDS })[k] || k} ${k === 'hide' ? (pa[k] && pa[k].length ? pa[k].join(', ') : 'none') : pa[k] === undefined ? 'as before' : pa[k]} → ${k === 'hide' ? (pb[k].length ? pb[k].join(', ') : 'none') : pb[k] === '' ? 'the table' : pb[k]}`);
+      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', select: 'choosing parents', cross: 'mixing parents', mutate: 'mutation kind', grow: 'grow and prune', penalty: 'size penalty', newLayer: 'new layers', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'drone speed', wind: 'wind', pad: 'pad', fuel: 'fuel', ...REWARD_WORDS })[k] || k} ${k === 'hide' ? (pa[k] && pa[k].length ? pa[k].join(', ') : 'none') : pa[k] === undefined ? 'as before' : pa[k]} → ${k === 'hide' ? (pb[k].length ? pb[k].join(', ') : 'none') : pb[k] === '' ? 'the table' : pb[k]}`);
       if (a.problem === 'draw' && JSON.stringify(a.custom.points) !== JSON.stringify(b.custom.points)) out.push(`points: ${a.custom.points.length} → ${b.custom.points.length}`);
     }
     // blocks: match by type in order (longest common subsequence), then compare settings
@@ -716,16 +838,18 @@
       this.ro.set('run', r ? `${r.n}` : '—');
       this.ro.set('step', r ? fmtInt(r.step) + (r.limit && !this.stale && !(NA.mobile && NA.mobile.mobile) ? ` / ${fmtInt(r.limit)}` : '') : '0');
       const ctl = this.family() === 'control';
-      // a genetic algorithm has no loss: its step reports the population's average fitness (as a loss, negated)
-      const ga = ctl && r && r.method === 'ga';
+      // an evolutionary method has no loss: its step reports the population's average fitness (as a loss, negated)
+      const ga = ctl && r && NA.brl.isEvo(r.method);
       this.ro.label('loss', ga ? 'Avg. fitness' : ctl ? 'Loss' : 'Train loss'); this.ro.label('val', ga ? 'Best fitness' : ctl ? 'Return' : 'Val. loss'); this.ro.label('metric', ctl ? 'Score' : 'Val. score');
       this.ro.set('loss', r && !this.stale && r.ema !== null ? (ga ? fmt(-r.ema, 2) : fmt(r.ema, 4)) : '—');
       this.ro.set('val', ctl ? (p && p.ret !== null && p.ret !== undefined ? fmt(p.ret, 2) : '—') : p && p.val !== null ? fmt(p.val, 4) : '—');
       this.ro.set('metric', p && p.vm !== null && p.vm !== undefined ? (BT.isValue(r.family) ? `R² ${fmt(p.vm, 3)}` : fmtPct(p.vm, 1)) : '—');
-      this.ro.set('params', this.check && this.check.ok ? fmtInt(this.check.params) : '—');
+      // (a network evolution has reshaped: its own count)
+      this.ro.set('params', r && !this.stale && this.model && this.model.evoBlocks ? fmtInt(this.model.paramCount) : this.check && this.check.ok ? fmtInt(this.check.params) : '—');
     }
     if (this.family() === 'control') this.demoTick(now);
-    if (this.resultsDirty && this.resCanvas.offsetParent && (!this.training || now - (this.lastRes || 0) > (this.vizMs > 25 ? 700 : 280))) { this.lastRes = now; this.resultsDirty = false; this.drawResults(); }
+    // (a world moving in small steps keeps moving while it trains)
+    if (this.resultsDirty && this.resCanvas.offsetParent && (!this.training || now - (this.lastRes || 0) > (this.vizMs > 25 ? 700 : this.family() === 'control' ? 110 : 280))) { this.lastRes = now; this.resultsDirty = false; this.drawResults(); }
     if (this.inspDirty && this.tabs.body.offsetParent && (!this.training || now - (this.lastInsp || 0) > 500)) { this.lastInsp = now; this.inspDirty = false; this.updateTab(); }
     if (this.training && now - (this.lastBench || 0) > 600) { this.lastBench = now; this.paintNeurons(); }
     if (this.leftDirty && this.preview.parentElement.clientWidth) { this.leftDirty = false; this.renderLeft(); } // drawn while its screen was hidden
@@ -749,14 +873,14 @@
     }
     if (!rates.includes(T.lr)) { rates.push(T.lr); rates.sort((a, b) => a - b); } // a rate set on the slider
     this._hyperKey = this.hyperKey();
-    // learning from rewards: the method first; a genetic algorithm takes no optimizer, learning rate or batch
-    const ctl = this.family() === 'control', method = ctl ? this.ps().method : null, ga = method === 'ga';
+    // learning from rewards: the method first; evolution takes no optimizer, learning rate or batch
+    const ctl = this.family() === 'control', method = ctl ? this.ps().method : null, ga = !!method && NA.brl.isEvo(method);
     clear(this.hyperRoot).append(...[
       ctl ? UI.field('Learns by', UI.select(NA.brl.ORDER.map((m) => ({ value: m, label: NA.brl.METHODS[m].short })), method, (v) => this.setMethod(v)), 'How the network learns from the rewards') : null,
       ga ? null : UI.field('Optimizer', UI.select(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => this.edit((s) => { s.train.opt = v; }))),
       ga ? null : UI.field('Learning rate', UI.select(rates.map((v) => ({ value: v, label: String(v) })), T.lr, (v) => this.edit((s) => { s.train.lr = +v; }))),
       ga ? null : UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))),
-      UI.field(ga ? 'Generations' : 'Steps', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => this.edit((s) => { s.train.steps = +v; })), ga ? 'How many generations each press of Train runs: ∞ evolves until you pause' : 'How many steps each press of Train runs: ∞ trains until you pause')].filter(Boolean));
+      UI.field(ga ? 'Generations' : 'Steps', UI.select(stepChoices(ga, T.steps), T.steps, (v) => this.edit((s) => { s.train.steps = +v; })), ga ? 'How many generations each press of Train runs: ∞ evolves until you pause' : 'How many steps each press of Train runs: ∞ trains until you pause')].filter(Boolean));
   };
 
   // ------------------------------------------------------------------ left: problem and parts
@@ -775,18 +899,43 @@
       UI.section('1 · Problem', this.problemSel, this.problemHint, el('div', { class: 'bd-preview-box' }, this.preview)),
       UI.section('2 · Start from', this.tplRow),
       UI.section('3 · Parts', UI.note(NA.mobile && NA.mobile.mobile ? 'Tap a part to see how it works and add it to the model.' : 'Drag a part onto the model, or click it to see how it works and add it.'), this.palette));
+    // each group folds away (its header is a button); which are open is remembered once you change one
+    this.palGroups = {};
     for (const g of Object.keys(GROUP_TONE)) {
-      const grid = el('div', { class: 'bd-pal-grid' });
-      for (const p of PARTS.filter((q) => q.group === g)) {
+      const grid = el('div', { class: 'bd-pal-grid', id: `bd-pal-${g.replace(/\W+/g, '')}` });
+      const list = PARTS.filter((q) => q.group === g);
+      for (const p of list) {
         const tile = el('button', { class: 'bd-part', type: 'button', title: p.hint, style: { '--bk': `var(--${GROUP_TONE[g]})` }, dataset: { type: p.type } }, el('span', { class: 'bd-part-ico' }, icon(p.type)), el('span', { class: 'bd-part-name', text: p.label }));
         tile.addEventListener('pointerdown', (e) => this.pressStart(e, { kind: 'part', part: p, el: tile }));
         tile.addEventListener('click', (e) => { if (e.detail === 0) this.showGuide(p.type); }); // keyboard
         grid.append(tile);
       }
-      this.palette.append(el('div', { class: 'bd-pal-group' }, el('div', { class: 'bd-pal-title', text: g }), grid));
+      this.palette.append(this.palGroup(g, list.length, grid, GROUP_TONE[g]));
     }
     this.myParts = el('div', { class: 'bd-pal-group bd-myparts', hidden: '' });
     this.palette.append(this.myParts);
+  };
+  // a group of parts with a header that folds it away: the group's colour, its name, how many parts, a chevron
+  BL.palGroup = function (name, count, grid, tone) {
+    const head = el('button', { class: 'bd-pal-title bd-pal-toggle', type: 'button', 'aria-expanded': 'true', 'aria-controls': grid.id || null, title: `Show or hide the ${name} parts` },
+      el('i', { class: 'bd-pal-dot', style: { background: `var(--${tone || 'ink-2'})` } }), el('span', { class: 'bd-pal-name', text: name }), el('span', { class: 'bd-pal-n', text: String(count) }), el('span', { class: 'bd-pal-chev', 'aria-hidden': 'true', text: '▾' }));
+    const box = el('div', { class: 'bd-pal-group', dataset: { group: name } }, head, grid);
+    head.addEventListener('click', () => { const open = head.getAttribute('aria-expanded') !== 'true'; this.palOpen = Object.assign({}, this.palOpenNow(), { [name]: open }); NA.store.set('builder.palOpen', this.palOpen); this.syncPalette(); });
+    this.palGroups[name] = { box, head, grid };
+    return box;
+  };
+  // the groups open by default: the layers, and the group that suits the problem (pictures, sequences, rewards, tables)
+  BL.palOpenNow = function () {
+    if (this.palOpen) return this.palOpen;
+    const fam = this.family(), k = (this.dataFor().input || {}).kind;
+    return { Layers: true, Sequences: fam === 'sequence' || fam === 'seqclass' || fam === 'series' || k === 'series', Images: fam === 'digits' || k === 'image', Reshape: false, Combine: false, 'Classic ML': fam === 'table', Rewards: fam === 'control', 'Your parts': true };
+  };
+  BL.syncPalette = function () {
+    const open = this.palOpenNow();
+    for (const [name, g] of Object.entries(this.palGroups || {})) {
+      const on = open[name] !== false && (open[name] || false);
+      g.head.setAttribute('aria-expanded', String(!!on)); g.grid.hidden = !on; g.box.classList.toggle('is-folded', !on);
+    }
   };
   BL.renderLeft = function () {
     if (!this.problemSel) return;
@@ -797,7 +946,9 @@
     // which parts fit this problem's kind of data
     const fits = this.fits();
     const kind = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table', control: 'this world as it is seen' }[fam];
+    if (this.palOpen === undefined) this.palOpen = NA.store.get('builder.palOpen', null);
     this.renderMyParts();
+    this.syncPalette();
     NA.$$('.bd-part:not(.bd-part-mine)', this.palette).forEach((t) => {
       const P = PART[t.dataset.type], off = !P.method && !fits.includes(t.dataset.type);
       t.classList.toggle('is-unsuited', off);
@@ -831,7 +982,7 @@
     if (p.family !== 'control' || s.method === m || !NA.brl.METHODS[m]) return;
     const steps = NA.brl.stepsFor(p.task, m);
     this.edit((S) => { S.ps[S.problem].method = m; S.train.steps = steps; });
-    NA.ui.toast.show(`Learns by ${NA.brl.METHODS[m].label} now: ${fmtInt(steps)} ${m === 'ga' ? 'generations' : 'steps'} a press of Train.`);
+    NA.ui.toast.show(`Learns by ${NA.brl.METHODS[m].label} now: ${fmtInt(steps)} ${NA.brl.isEvo(m) ? 'generations' : 'steps'} a press of Train.`);
   };
   // another way to see the world: when the blocks no longer fit (dense layers on a picture), a Flatten goes in front
   BL.setWorldView = function (v) {
@@ -894,8 +1045,12 @@
   BL.useMethod = function (p) {
     const switched = this.family() !== 'control';
     if (switched) this.setProblem(p.world);
-    if (this.ps().method === p.method) NA.ui.toast.show(`${switched ? `${BT.byId[p.world].label}, learning from rewards: ` : ''}it learns by ${NA.brl.METHODS[p.method].label} already.`);
-    else this.setMethod(p.method);
+    const already = this.ps().method === p.method && (!p.grow || this.ps().grow);
+    if (already) NA.ui.toast.show(`${switched ? `${BT.byId[p.world].label}, learning from rewards: ` : ''}it learns by ${NA.brl.METHODS[p.method].label}${p.grow ? ', growing and pruning,' : ''} already.`);
+    else {
+      if (this.ps().method !== p.method) this.setMethod(p.method);
+      if (p.grow) { this.edit((S) => { S.ps[S.problem].grow = true; }); NA.ui.toast.show(`Grow and prune: children of the genetic algorithm can now gain or lose neurons and whole layers${this.evolvable() ? '' : '. Your model has blocks other than Dense, or sees a picture, so only its weights evolve: try the Small MLP'}.`); }
+    }
     if (switched) NA.ui.toast.show(`${p.label} learns from rewards, so the problem switches to “${BT.byId[p.world].label}”, learning by ${NA.brl.METHODS[p.method].label}. Undo brings your setup back.`);
     this.selectBlock({ kind: 'output', id: 'output' }, true);
   };
@@ -1069,6 +1224,7 @@
       scratchLabel: 'New run from scratch',
     }, { title: 'How it learned', what: 'Its results', emptyText: 'Press Train. The moments of the run collect here: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.' });
     this.resCanvas.addEventListener('contextmenu', (e) => { if (this.problem().id === 'draw') e.preventDefault(); });
+    this.resCanvas.addEventListener('pointerdown', (e) => this.resultsPointer(e));
     this.resizeObs = new ResizeObserver(() => { this.layoutCenter(); this.resultsDirty = true; });
     this.resizeObs.observe(this.split); this.resizeObs.observe(this.resBox);
     this.layoutCenter();
@@ -1529,19 +1685,21 @@
     this.renderResHead(live); // first: the header's height decides the picture's
     const box = this.resBox, W = Math.max(200, box.clientWidth), Hh = Math.max(200, box.clientHeight), ctx = NA.fitCanvas(this.resCanvas, W, Hh);
     ctx.clearRect(0, 0, W, Hh);
-    const L = { data: live ? this.data : this.dataFor(), model: live ? this.model : null, vizVersion: this.vizVersion, _region: this._region, confusion: live ? this.confusion : null, seqView: this.seqView || (this.seqView = {}), demo: this.demo, run: live ? this.run : null };
+    const ev = live && this.agent ? this.agent.evo : null, gr = live ? this.grower : null;
+    const L = { data: live ? this.data : this.dataFor(), model: live ? this.model : null, vizVersion: this.vizVersion, _region: this._region, confusion: live ? this.confusion : null, seqView: this.seqView || (this.seqView = {}), demo: this.demo, run: live ? this.run : null,
+      evo: ev, grower: gr, evoView: this.evoView || 'best', watchCell: this.watchCell, you: !!this.youPlay, genProgress: this.genProgress, replay: this.genReplay || (this.genReplay = { at: performance.now(), gen: -1 }), now: performance.now() };
     const t0 = performance.now();
     this.resRect = { x: 8, y: 8, w: W - 16, h: Hh - 16 };
     BV.draw(ctx, this.resRect, L);
-    this.vizMs = performance.now() - t0; this._region = L._region;
+    this.vizMs = performance.now() - t0; this._region = L._region; this._hits = L.hits || null;
     // the run's loss curves (a diverged run's huge values are capped so the scale stays readable)
     const run = live ? this.run : null, cap = (v) => Math.min(v, 1e3), ctl = L.data.family === 'control';
     this.lossBox.hidden = ctl; this.lossKey.hidden = ctl; this.retBox.hidden = !ctl; this.retKey.hidden = !ctl;
-    if (ctl) this.retKeyText.textContent = run && run.method === 'ga' ? 'the fittest of each generation: the return of its best moves' : 'return per episode while it learns (average of the latest)';
+    if (ctl) this.retKeyText.textContent = run && NA.brl.isEvo(run.method) ? `${run.method === 'me' ? 'the best of all the styles' : run.method === 'es' ? 'the best nudged copy of each generation' : 'the fittest of each generation'}: the return of its best moves` : 'return per episode while it learns (average of the latest)';
     if (ctl) {
       // learning from rewards: the average return of its episodes as it learns (the loss of a policy says little)
       this.retChart.frame();
-      this.retChart.set({ series: run ? [{ name: run.method === 'ga' ? 'best fitness' : 'return per episode', color: theme.c('s1'), points: run.curve.filter((p) => p.ret !== null && p.ret !== undefined && Number.isFinite(p.ret)).map((p) => [p.step, p.ret]) }, { name: 'score', color: theme.c('s2'), points: [] }].filter((s) => s.points.length) : [] });
+      this.retChart.set({ series: run ? [{ name: NA.brl.isEvo(run.method) ? 'best fitness' : 'return per episode', color: theme.c('s1'), points: run.curve.filter((p) => p.ret !== null && p.ret !== undefined && Number.isFinite(p.ret)).map((p) => [p.step, p.ret]) }, { name: 'score', color: theme.c('s2'), points: [] }].filter((s) => s.points.length) : [] });
       return;
     }
     this.lossChart.frame();
@@ -1549,16 +1707,29 @@
   };
   BL.renderResHead = function (live) {
     const d = live ? this.data : this.dataFor(), p = this.problem(), run = live ? this.run : null, S = this.seqView || (this.seqView = {});
-    const key = JSON.stringify([p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok]);
+    const narrow = !!this.resBox && this.resBox.clientWidth - 16 <= 520;
+    const key = JSON.stringify([this.evoView, narrow, !!this.youPlay, this.watchCell, run && run.method, live && this.model && this.model.evoBlocks ? this.model.paramCount + ':' + this.model.evoBlocks.map((b) => b.units).join('-') : '', p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok]);
     if (key === this._headKey) return;
     this._headKey = key;
     const parts = [];
     const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (BT.isValue(d.family) ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
     if (d.error) parts.push(el('div', { class: 'bd-res-error', role: 'alert', text: d.error }));
     parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · ${d.family === 'control' ? `score of its best moves${run.bestVm > (run.last ? run.last.vm : 0) ? ` (best ${fmtPct(run.bestVm, 0)})` : ''}` : `validation ${this.metricName()}`}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
-    const lg = legendFor(d, live);
+    // learning by evolution: the best plays, or its whole generation at once (in the worlds that keep their paths)
+    if (live && d.family === 'control' && (run.method === 'ga' || run.method === 'es') && (NA.rlEnvs.WORLDS[d.world] || {}).trace)
+      parts.push(el('div', { class: 'bd-evoview' }, UI.seg([{ value: 'best', label: 'The best plays' }, { value: 'generation', label: 'The whole generation', title: 'Every member of the last generation at once, from the same start: the colours match their bars' }], this.evoView === 'generation' ? 'generation' : 'best', (v) => { this.evoView = v; this.genReplay = null; this._headKey = null; this.resultsDirty = true; }, 'Show')));
+    // MAP-Elites on a small screen: its grid of styles in a view of its own
+    if (live && d.family === 'control' && run.method === 'me' && narrow) parts.push(el('div', { class: 'bd-evoview' }, UI.seg([{ value: 'best', label: 'It plays' }, { value: 'grid', label: 'The grid of styles', title: 'The best network of each style of play: tap a cell to watch it' }], this.evoView === 'grid' ? 'grid' : 'best', (v) => { this.evoView = v; this._headKey = null; this.resultsDirty = true; }, 'Show')));
+    if (live && run.method === 'me' && this.watchCell !== null && this.watchCell !== undefined) parts.push(el('p', { class: 'sec-note', text: `Watching the elite of one style. ${Click()} its cell again to watch the best of all.` }));
+    // grow and prune: the shape it has evolved so far, next to the one built
+    const evo = live && run.grow && this.model && this.model.evoBlocks, hidden = (bs) => (bs.length ? `${bs.map((b) => b.units).join(' → ')} neuron${bs.length === 1 && bs[0].units === 1 ? '' : 's'}` : 'no hidden layer');
+    if (evo) parts.push(el('p', { class: 'sec-note bd-res-shape', text: `Its shape now: ${hidden(evo)}, ${fmtInt(this.model.paramCount)} weights (you built ${hidden(this.setup.blocks.filter((b) => b.type === 'dense'))}).` }));
+    // learning from rewards: Try it yourself
+    if (d.family === 'control' && !d.error && PLAY[d.world]) parts.push(this.playRow(d));
+    // (while you play, the picture gets the room: no legend, no diagnosis)
+    const lg = this.youPlay ? null : legendFor(d, live);
     if (lg) parts.push(lg);
-    const ins = NA.builderInsights;
+    const ins = this.youPlay ? null : NA.builderInsights;
     if (ins) {
       // the most pressing thing about the run, in one line, with the fixes to try; the Training tab has the whole story
       const top = ins.diagnose(this)[0];
@@ -1646,6 +1817,11 @@
     this.resultsDirty = true;
   };
   BL.resultsPointer = function (e) {
+    // a cell of MAP-Elites' grid: watch that style's elite (again: back to the best of all)
+    if (this._hits && this.family() === 'control') {
+      const r = this.resCanvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, h = this._hits.find((q) => x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h);
+      if (h && h.cell !== undefined) { this.watchCell = this.watchCell === h.cell ? null : h.cell; if (this.evoView === 'grid') this.evoView = 'best'; this.demo = null; this.resultsDirty = true; this._headKey = null; return; }
+    }
     if (this.problem().id !== 'draw' || !this.resRect) return;
     const r = this.resCanvas.getBoundingClientRect(), q = BV.planeAt(this.resRect, e.clientX - r.left, e.clientY - r.top);
     if (!q.inside) return;
@@ -1850,14 +2026,17 @@
     clear(this.myParts);
     this.myParts.hidden = !parts.length;
     if (!parts.length) return;
-    const grid = el('div', { class: 'bd-pal-grid' });
+    const grid = el('div', { class: 'bd-pal-grid', id: 'bd-pal-mine' });
     for (const def of parts) {
       const proto = partProto(def), tile = el('button', { class: 'bd-part bd-part-mine', type: 'button', title: `${def.name}: ${def.blocks.map(blockLabel).join(' → ')}. Drag it onto the model, or ${click()} it.`, style: { '--bk': 'var(--ink-2)' }, dataset: { type: proto.type } }, el('span', { class: 'bd-part-ico' }, icon('part')), el('span', { class: 'bd-part-name', text: def.name }));
       tile.addEventListener('pointerdown', (e) => this.pressStart(e, { kind: 'part', part: proto, el: tile }));
       tile.addEventListener('click', (e) => { if (e.detail === 0) this.showGuide(proto.type); });
       grid.append(tile);
     }
-    this.myParts.append(el('div', { class: 'bd-pal-title', text: 'Your parts' }), grid);
+    const g = this.palGroup('Your parts', parts.length, grid, 'ink-2');
+    this.myParts.append(...g.childNodes);
+    this.palGroups['Your parts'].box = this.myParts;
+    this.syncPalette();
   };
   // the guide to a part, with a button that adds it, and one that switches to a problem it suits when this one does not
   const KIND_TEXT = { plane: 'points', curve: 'a curve', surface: 'a surface', digits: 'pictures', sequence: 'sequences', seqclass: 'sequences', series: 'a series', table: 'a table', control: 'this world as it is seen' };
@@ -1961,6 +2140,25 @@
     }
     if (p.task === 'catch') out.push(UI.field('Ball drift', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], s.drift !== false, (v) => set((q) => { q.drift = v; }), 'Ball drift')),
       UI.note(s.drift !== false ? 'Each ball drifts left, right or straight down, bouncing off the walls: where it lands depends on which way it drifts.' : 'Every ball falls straight down: where it starts is where it lands.'));
+    if (p.task === 'track') {
+      out.push(UI.field('Track', UI.seg([['oval', 'Oval'], ['esses', 'Esses'], ['hairpins', 'Hairpins'], ['random', 'Random', 'A new random track every episode, and scored on 4 it never saw']].map(([value, label, title]) => ({ value, label, title })), s.track || 'esses', (v) => set((q) => { q.track = v; }), 'Track')),
+        UI.note({ oval: 'Two long straights and two wide bends: it can keep its foot down almost all the way.', esses: 'A long sweeping bend, then four tight S-bends one after another: it has to brake for them, and steer left and right in turn.', hairpins: 'Four hairpins, each turning it right round: twice as long, and it has to slow right down for every one.', random: 'A new track every episode: what it learns has to work on any track. It is scored on 4 tracks it never trained on.' }[s.track || 'esses']),
+        worldPick(L, s, 'Longest episode', 'maxSteps', [0, 1500, 3000], 0, (v) => (v ? `${fmtInt(v)} steps` : '4 laps at 10 m/s')),
+        UI.note('It sees 7 distances to the walls and its speed (or a camera picture from above). Throttle builds its speed toward 24 m/s; grip limits how sharply it can turn, so it has to brake for tight bends. The score is the share of 4 laps it drives.'));
+    }
+    if (p.task === 'arena') {
+      out.push(UI.field('Map', UI.seg([['room', 'Room'], ['pillars', 'Pillars'], ['halls', 'Halls']].map(([value, label]) => ({ value, label })), s.map || 'room', (v) => set((q) => { q.map = v; }), 'Map')),
+        UI.field('Drones at once', UI.seg([1, 2, 3].map((v) => ({ value: v, label: String(v) })), s.drones || 2, (v) => set((q) => { q.drones = v; }), 'Drones at once')),
+        UI.field('Drones fly', UI.seg([['slow', 'Slowly'], ['fast', 'Fast']].map(([value, label]) => ({ value, label })), s.speed || 'slow', (v) => set((q) => { q.speed = v; }), 'Drone speed')),
+        UI.note(`${{ room: 'An open room with four pillars.', pillars: 'More pillars to hide behind: drones vanish from view and come back.', halls: 'Walls split it into halls and doorways: a drone can be close but out of sight.' }[s.map || 'room']} Drones drift toward it and cost a life on reaching it (3 lives); a shot that crosses one destroys it. The gun takes 4 steps to recharge. The score is the share of 10 drones it destroys.`));
+    }
+    if (p.task === 'lander') {
+      out.push(worldPick(L, s, 'Gravity', 'gravity', [1.62, 3.71, 9.81], 1.62, (v) => `${{ 1.62: 'Moon', 3.71: 'Mars', 9.81: 'Earth' }[v] || 'Gravity'}: ${v} m/s²`),
+        UI.field('Wind', UI.seg([{ value: false, label: 'Calm' }, { value: true, label: 'Gusts' }], !!s.wind, (v) => set((q) => { q.wind = v; }), 'Wind')),
+        UI.field('The pad', UI.seg([['middle', 'In the middle'], ['random', 'Anywhere']].map(([value, label]) => ({ value, label })), s.pad || 'middle', (v) => set((q) => { q.pad = v; }), 'Pad')),
+        worldPick(L, s, 'Fuel', 'fuel', [100, 150, 300], 150, (v) => `${v} steps of engine`),
+        UI.note('It sees where it is from the pad, how fast it moves, its tilt and spin, and its fuel. The main engine pushes along its axis (more strongly where gravity is stronger); the side thrusters turn it. Landing is gentle on the pad (12 m wide), slower than 3 m/s down and 2 m/s across and within 25° of upright; anything else is a crash, and so is running out of time. The score is the share of 10 starts it lands.'));
+    }
     if (p.task === 'maze') {
       out.push(UI.field('Maze', UI.select(NA.rl.MAZE_SET.map((m) => ({ value: m.id, label: m.name })), s.maze, (v) => set((q) => { q.maze = v; }))),
         UI.field('Train on', UI.seg([{ value: false, label: 'This maze' }, { value: true, label: 'Random mazes', title: 'A new random maze every episode' }], !!s.random, (v) => set((q) => { q.random = v; }), 'Train on')),
@@ -1991,7 +2189,8 @@
     // the rewards
     const vars = E.REWARD_VARS[p.task], names = vars.map((v) => v[0]), table = E.REWARDS[p.task].filter((r) => r.key !== 'rCloser' || s.closer);
     const CHOICES = { rPay: [0.5, 1, 2, 5], rGoal: [0.5, 1, 2, 5, 10], rPit: [0, -0.5, -1, -2, -5, -10], rStep: [0, -0.01, -0.02, -0.05, -0.1], rWall: [0, -0.05, -0.1, -0.5, -1], rNew: [0, 0.01, 0.05, 0.1],
-      rCloser: [0.05, 0.1, 0.2, 0.5], rUp: [0, 0.1, 1], rFell: [0, -1, -10, -100], rCatch: [0.5, 1, 2, 5], rMiss: [0, -0.5, -1, -2, -5], rMove: [0, -0.01, -0.05, -0.1, -0.5] };
+      rCloser: [0.05, 0.1, 0.2, 0.5], rUp: [0, 0.1, 1], rFell: [0, -1, -10, -100], rCatch: [0.5, 1, 2, 5], rMiss: [0, -0.5, -1, -2, -5], rMove: [0, -0.01, -0.05, -0.1, -0.5],
+      rProgress: [0, 1, 10, 50], rCrash: [0, -0.5, -1, -5, -10], rLap: [0, 1, 5, 20], rHit: [0.5, 1, 2, 5], rHurt: [0, -0.5, -1, -2, -5], rShot: [0, -0.01, -0.05, -0.2], rLand: [0, 1, 2, 5, 10], rShape: [0, 0.5, 1, 2], rFuel: [0, -0.003, -0.01, -0.03] };
     const own = !!s.rFormula && !BT.compile(s.rFormula, names).error, rw = [];
     rw.push(UI.note(`What it is paid for, step by step. It learns to collect as much reward as it can, so the reward is the goal it is given. The score still measures the real goal (${E.WORLDS[p.task].goal}): a reward that pays for something else shows there.`));
     const grid = el('div', { class: 'bd-rewards' + (own ? ' is-off' : '') }, ...table.map((r) => worldPick(L, s, r.label, r.key, CHOICES[r.key], r.def, signed)));
@@ -2009,7 +2208,8 @@
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') use(); });
     inp.addEventListener('change', use);
     check();
-    const EXAMPLES = { levers: ['paid', 'right', '2paid - 1'], maze: ['goal - pit', 'goal - pit + 0.05new', 'goal - pit - 0.1wall', '-dist/10'], pole: ['1 - abs(angle)/12', '1 - abs(x)/2.4', '-10fell', 'fell'], catch: ['caught - missed - 0.1moved', '1 - abs(dx)/4', '-abs(dx)', 'missed - caught'] };
+    const EXAMPLES = { levers: ['paid', 'right', '2paid - 1'], maze: ['goal - pit', 'goal - pit + 0.05new', 'goal - pit - 0.1wall', '-dist/10'], pole: ['1 - abs(angle)/12', '1 - abs(x)/2.4', '-10fell', 'fell'], catch: ['caught - missed - 0.1moved', '1 - abs(dx)/4', '-abs(dx)', 'missed - caught'],
+      track: ['10progress - crashed', '10progress - crashed - 0.02center', 'speed/24 - crashed', '20lap - crashed'], arena: ['hit - hurt', 'hit - hurt - 0.05shot', 'hit - hurt + 0.02aimed', 'hit + 0.01seen - hurt'], lander: ['landed - crashed + closer', '3landed - crashed + closer - 0.005engine', 'landed - crashed', '-dist/30 - speed/10'] };
     rw.push(el('label', { class: 'field bd-formula' }, el('span', { text: 'r =' }), inp), msg,
       el('div', { class: 'chip-row' }, ...EXAMPLES[p.task].map((f) => el('button', { class: 'chip bd-tpl chip-mono', type: 'button', onclick: () => { inp.value = f; set((q) => { q.rFormula = f; }); } }, f))),
       el('dl', { class: 'bd-vars' }, ...vars.flatMap(([n, what]) => [el('dt', { class: 'mono', text: n }), el('dd', { text: what })])));
@@ -2071,16 +2271,41 @@
   }
   // learning from rewards: the output block says what the outputs mean and how they learn
   BL.renderControlOutput = function (body, d) {
-    const s = this.ps(), M = NA.brl.METHODS, set = (fn) => this.edit((S) => fn(S.ps[S.problem])), m = s.method;
+    const s = this.ps(), M = NA.brl.METHODS, set = (fn) => this.edit((S) => fn(S.ps[S.problem])), m = s.method, evo = NA.brl.isEvo(m), def = NA.brl.defaults(d.world), EV = NA.bevo;
+    // a choice among a few values, the one in use from your settings or the method's default
+    const pick = (label, key, opts, title) => UI.field(label, UI.seg(opts.map(([value, l, t]) => ({ value, label: l, title: t })), key === 'grow' ? !!s.grow : s[key] ?? def[key], (v) => set((q) => { q[key] = v; }), title || label));
+    const evoSecs = [];
+    if (evo) {
+      evoSecs.push(UI.section(m === 'me' ? 'MAP-Elites' : m === 'es' ? 'Evolution strategies' : 'Evolution',
+        pick(m === 'me' ? 'New networks a step' : 'Population', 'pop', [[12, '12'], [24, '24'], [48, '48'], [96, '96']]),
+        m === 'es' ? pick('Nudge size σ', 'esSigma', [[0.02, '0.02'], [0.05, '0.05'], [0.1, '0.1']]) : pick('Mutation', 'sigma', [[0.05, '0.05'], [0.2, '0.2'], [0.5, '0.5']], 'Mutation size'),
+        m === 'es' ? pick('Step size', 'esLr', [[0.01, '0.01'], [0.03, '0.03'], [0.1, '0.1']]) : null,
+        UI.note(m === 'es' ? 'Each generation tries the network nudged in half as many random directions as the population, each both ways (plus and minus). Ranks, not raw scores, weigh each direction, and Adam steps the network toward the better ones. It needs no backpropagation, only scores; but it moves one network, so on a hard world it can stall at the first obstacle where a population would have spread out to look for a way past.'
+          : m === 'me' ? `A grid of 12 × 12 styles: ${(NA.rlEnvs.WORLDS[d.world] || {}).axes ? NA.rlEnvs.WORLDS[d.world].axes.join(' across, ') + ' down' : 'two numbers the world measures'}. Each step plays this many new networks (random at first, then mutated copies of elites picked at random); each goes to the cell of its style and stays if it beats the one there. ${Click()} a cell in the results to watch that style’s best.`
+            : 'Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')));
+      if (m === 'ga') {
+        const sel = s.select || def.select, cr = s.cross || def.cross, mu = s.mutate || def.mutate, can = this.evolvable();
+        evoSecs.push(UI.section('Choosing parents', pick('Parents', 'select', [['tournament', 'Tournament'], ['truncation', 'Top fifth'], ['rank', 'By rank']]),
+          UI.note(`${EV.SELECT[sel]}. ${{ tournament: 'A little luck lets weaker members breed now and then, which keeps the population varied.', truncation: 'Only the best breed: quick at first, but the population soon looks all alike and can get stuck.', rank: 'Every member can breed, the better the likelier: gentle pressure, and more variety.' }[sel]} The best two always carry on unchanged.`)),
+          UI.section('Mixing parents', pick('Mix', 'cross', [['uniform', 'Weight by weight'], ['neuron', 'Neuron by neuron'], ['none', 'Not at all']]),
+            UI.note(`${EV.CROSS[cr]}. ${{ uniform: 'Fast mixing, but a neuron can end up with half its weights from one parent and half from the other, which may make sense to neither.', neuron: 'Each neuron is a working unit, so this mixes whole features: a child gets some of each parent’s neurons as they were.', none: 'Mutation alone: every child is a copy of one parent, nudged. Two networks can do the same job with their neurons in a different order, so mixing them can break both: on the race track and the rocket, copies alone found their way sooner.' }[cr]} Only parents of the same shape can be mixed.`)),
+          UI.section('Mutation', pick('Kind', 'mutate', [['plain', 'Plain'], ['safe', 'Safe']]),
+            UI.note(mu === 'safe' ? 'Safe mutations: before nudging, it measures how much the moves depend on each weight (the gradient of every output, over moments it lived through) and divides each nudge by that. Weights the moves hang on barely move, the others move more, with the same total nudge as plain: children stay close to what worked. Lehman and others, 2018.' : 'Plain: one weight in ten moves by a random amount, whatever it does. A nudge to a weight the moves depend on can wreck a good network.')),
+          UI.section('Grow and prune', pick('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']]),
+            s.grow ? pick('Size penalty', 'penalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']]) : null,
+            s.grow ? pick('New layers start', 'newLayer', [['identity', 'Passing values through'], ['random', 'At random']]) : null,
+            UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape; yours keeps its shape and only its weights evolve. The Small MLP can grow, and so can the Linear template, from no hidden layer at all.'
+              : !s.grow ? 'Turn it on, and a child may also gain or lose a neuron or a whole layer as it is born. A new neuron starts with its outgoing weights at 0 and a new layer passing values straight through, so a change does no harm until later mutations put it to work.'
+                : `A quarter of the children are born with one change to their shape: a neuron more or less, a layer more or less. ${(s.newLayer || def.newLayer) === 'random' ? 'New layers start at random: right after one is added the network forgets much of what it did, so children that grow a layer rarely win.' : 'New layers start as the identity, so a child that grows a layer plays exactly as its parent did (after a ReLU layer).'} ${(s.penalty || def.penalty) === 'off' ? 'With no size penalty nothing holds them back: they tend to swell with weights that do nothing.' : `The penalty takes a little off the fitness for every 100 weights, so the smaller of two equal networks wins.`} The Architecture view shows the best network as it is now.`)));
+      }
+    }
     const what = m === 'dqn' ? `${d.nA} Q-values, one per action: what it expects to collect from here on if it takes that action now. It plays the largest.`
-      : m === 'ga' ? `${d.nA} scores, one per action, and it plays the largest. Nothing says what they should be: the weights that play best are kept.`
+      : evo ? `${d.nA} scores, one per action, and it plays the largest. Nothing says what they should be: the weights that play best are kept.`
         : `${d.nA} scores that softmax turns into the probability of each action${d.output.k > d.nA ? ', and one more output: the critic’s value of the state, what it expects to collect from here on' : ''}. While it learns it samples its moves from the probabilities; its best moves take the likeliest.`;
     body.append(...[el('div', { class: 'bd-insp-head', style: { '--bk': 'var(--s2)' } }, el('span', { class: 'bd-card-ico' }, icon('output')), el('div', null, el('h3', { class: 'bd-insp-title', text: 'Output and how it learns' }), el('div', { class: 'sec-note', text: d.error ? '' : outputText(d, this.setup.loss) }))),
-      UI.section('Learns by', UI.select(NA.brl.ORDER.map((k) => ({ value: k, label: M[k].label })), m, (v) => this.setMethod(v)), UI.note(M[m].hint)),
-      m === 'ga' ? UI.section('Evolution', UI.field('Population', UI.seg([12, 24, 48].map((v) => ({ value: v, label: String(v) })), s.pop, (v) => set((q) => { q.pop = v; }), 'Population')),
-        UI.field('Mutation', UI.seg([0.05, 0.2, 0.5].map((v) => ({ value: v, label: String(v) })), s.sigma, (v) => set((q) => { q.sigma = v; }), 'Mutation size')),
-        UI.note('Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')) : null,
-      m !== 'ga' && d.world !== 'levers' ? UI.section('Discount', UI.field('Each step later counts ×', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
+      UI.section('Learns by', UI.select(NA.brl.ORDER.map((k) => ({ value: k, label: M[k].label })), m, (v) => this.setMethod(v)), UI.note(M[m].hint), m === 'me' && d.world === 'levers' ? UI.note('The levers have no styles of play to tell apart: MAP-Elites needs a world with episodes of many moves.') : null),
+      ...evoSecs,
+      !evo && d.world !== 'levers' ? UI.section('Discount', UI.field('Each step later counts ×', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
         UI.note('How much a reward one step later is worth: with 0.9, a reward ten steps away counts about a third. At 0 only the very next reward counts, so a move that pays off later is never learned.')) : null,
       m === 'dqn' ? UI.section('Exploration', UI.field('Random moves for', UI.select([[0, 'none'], [300, '300 moves'], [1500, '1,500 moves'], [3000, '3,000 moves'], [4000, '4,000 moves'], [10000, '10,000 moves']].map(([value, label]) => ({ value, label })), s.explore, (v) => set((q) => { q.explore = +v; }))),
         UI.note('Its chance of a random move falls from 1 to 0.05 over this many moves. Without exploring it only ever tries what already looks best, and may never find out that something else pays more.')) : null,
@@ -2128,7 +2353,7 @@
         UI.section('Settings', UI.note('A classic model’s settings are on its block: select it in the model.')));
       return;
     }
-    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train)), ctl = this.family() === 'control', ga = ctl && this.ps().method === 'ga';
+    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train)), ctl = this.family() === 'control', ga = ctl && NA.brl.isEvo(this.ps().method);
     clear(body);
     const lr = UI.slider({ label: 'Learning rate', min: -4, max: 0, step: 0.05, value: Math.log10(T.lr), format: (v) => fmtLr(Math.pow(10, v)), onChange: (v) => set((t) => { t.lr = +Math.pow(10, v).toPrecision(2); }) });
     const P = this.parts;
@@ -2138,14 +2363,16 @@
     if (story) body.append(story);
     P.sweep = null;
     body.append(...[P.live,
-      ga ? UI.section('No gradients', UI.note('A genetic algorithm needs no optimizer, learning rate or batches: each generation plays every member of the population and breeds the next from the best. Its settings (population and mutation) are on the Output block; Steps here are generations.')) : null,
+      ga ? UI.section('No gradients', UI.note('Evolution needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones (evolution strategies step by their own size). The settings are on the Output block.'),
+        UI.field('Generations per press of Train', UI.select(stepChoices(true, T.steps), T.steps, (v) => set((t) => { t.steps = +v; })))) : null,
+      !ctl && !this.isClassicSetup() ? this.growSection() : null,
       ga ? null : UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
         UI.note({ sgd: 'Plain gradient descent: step downhill by learning rate × gradient.', momentum: 'Keeps a running velocity (0.9 of the last one plus the new gradient): faster along consistent directions, damped zig-zags.', adam: 'Adapts the step for every weight from running averages of its gradient and squared gradient. Usually the easiest to tune.', adamw: 'Adam with weight decay applied directly to the weights (decoupled), the usual choice for transformers.' }[T.opt]),
         lr, UI.note('How big each step is. Too small: slow. Too big: the loss jumps around or blows up (the run is marked diverged).')),
       ctl ? null : UI.section('Find a learning rate', P.sweep = el('div', { class: 'bd-sweep' })),
       ga ? null : UI.section('Batches and schedule',
         UI.field('Batch size', UI.seg([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => set((t) => { t.batch = +v; }), 'Batch size')),
-        UI.field('Steps per press of Train', UI.select(STEP_CHOICES.map(([value, label]) => ({ value, label })), T.steps, (v) => set((t) => { t.steps = +v; }))),
+        UI.field('Steps per press of Train', UI.select(stepChoices(false, T.steps), T.steps, (v) => set((t) => { t.steps = +v; }))),
         UI.field('Learning-rate schedule', UI.select(Object.entries(SCHED_LABEL).map(([value, label]) => ({ value, label })), T.sched, (v) => set((t) => { t.sched = v; }))),
         UI.note(T.steps ? 'Train runs this many steps; Continue then runs as many again, so a run can go on as long as you like. Cosine and step schedules lower the learning rate over each stretch, for a finer finish.' : 'Training goes on until you pause. Schedules need a fixed number of steps, so the learning rate stays as set.')),
       UI.section('Regularisation and stability',
@@ -2159,6 +2386,18 @@
       UI.section('Gradient size by layer', el('div', { class: 'chart-box' }, P.grad), UI.note(ga ? 'A genetic algorithm takes no gradient steps, so these stay empty.' : 'How strongly the last step changed each layer. Bars that shrink toward the input mean vanishing gradients; huge ones mean the steps are too big.'))].filter(Boolean));
     this.renderSweep();
     this.updateTrainLive();
+  };
+  /* Grow and prune while it learns: 6 networks side by side from your model, the worse half replaced every 150 steps
+     by copies of the better half, each with one change to its shape (problems with answers; Dense blocks on numbers). */
+  BL.growSection = function () {
+    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train)), can = this.evolvable(), d = this.dataFor(), seg = (label, key, opts, def) => UI.field(label, UI.seg(opts.map(([value, l]) => ({ value, label: l })), T[key] ?? def, (v) => set((t) => { t[key] = v; }), label));
+    if (d.error || (d.output && d.output.kind === 'tokens')) return null;
+    return UI.section('Grow and prune', seg('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']], false),
+      T.grow ? seg('Size penalty', 'growPenalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']], 'light') : null,
+      T.grow ? seg('New layers start', 'growNew', [['identity', 'Passing values through'], ['random', 'At random']], 'identity') : null,
+      UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape. Start from the Linear template, or one Dense block of 1 neuron, and let it grow.'
+        : !T.grow ? 'Turn it on and 6 networks learn side by side from your model; every 150 steps the worse half are replaced by copies of the better half, each with one change to its shape: a neuron or a layer more or less. Start from one neuron on Two spirals and watch it grow.'
+          : `6 networks learn side by side from the same batches. Every 150 steps each is judged by its validation loss${(T.growPenalty || 'light') === 'off' ? '' : ' plus a little for every 100 weights'}, and the worse half become copies of the better half, weights and all, each with one change to its shape. New neurons and ${(T.growNew || 'identity') === 'random' ? 'layers start at random (a random layer makes it forget much of what it did)' : 'layers start out changing nothing (a new layer passes values straight through)'}. The best so far is the one on show, in the results and the Architecture view.`));
   };
   const fmtLr = (v) => (v >= 0.01 ? fmt(v, 3) : v.toExponential(1).replace('e-', ' × 10⁻').replace(/(\d)$/, (d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[d]));
   BL.updateTrainLive = function () {
@@ -2267,7 +2506,7 @@
     const fam = ch ? BC.family(ch) : null, here = ch && this.setup.problem === ch.problem;
     const run = ch && this.run && this.run.cfg.problem === ch.problem ? this.run : null, vm = run ? (run.family === 'control' ? run.bestVm : run.last ? run.last.vm : null) : null;
     const params = this.check && this.check.ok ? this.check.params : null, ownData = !ch || BC.sameData(ch, this.setup);
-    const key = JSON.stringify([ch && ch.id, [...done], run && run.n, vm, params, this.setup.train.opt, here, this._hint, ownData, ch && ch.goals.some((g) => g.steps !== undefined) && run ? run.step : 0, this.setup.blocks.map((b) => b.type).join()]);
+    const key = JSON.stringify([ch && ch.id, [...done], run && run.n, vm, run && run.styles, params, this.setup.train.opt, !!this.setup.train.grow, here, this._hint, ownData, ch && ch.goals.some((g) => g.steps !== undefined) && run ? run.step : 0, this.setup.blocks.map((b) => b.type).join()]);
     if (key === this._chKey) return;
     this._chKey = key;
     clear(root);
@@ -2307,6 +2546,15 @@
         label = `Keep at least ${g.dense} dense layers`;
         now = `now ${n}`;
         ok = n >= g.dense;
+      } else if (g.styles !== undefined) {
+        label = `Find at least ${g.styles} of the 144 styles of play`;
+        now = run && run.styles !== undefined ? `last run: ${run.styles}` : run ? 'last run: none (only MAP-Elites keeps styles)' : 'not trained yet';
+        ok = !!run && run.styles >= g.styles;
+      } else if (g.grow !== undefined) {
+        const on = fam === 'control' ? !!(this.setup.ps[ch.problem] || {}).grow : !!this.setup.train.grow;
+        label = fam === 'control' ? 'Let evolution grow and prune the network' : 'Let it grow and prune its own layers (the Training tab)';
+        now = on ? 'on' : 'off';
+        ok = on === g.grow;
       } else {
         label = `Keep ${OPT_LABEL[g.opt]} as the optimizer`;
         now = `now ${OPT_LABEL[this.setup.train.opt]}`;

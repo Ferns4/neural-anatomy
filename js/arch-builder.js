@@ -193,7 +193,8 @@
   /* The model to show: the trained one while it matches the setup; otherwise the untrained one the next run
      would start from (same seed, same initialisation), made once per setup. */
   function current(L) {
-    const d = L.dataFor(), chk = L.check || L.recheck(), live = L.model && L.run && !L.stale ? L.model : null;
+    // (a network that evolution has reshaped carries its own blocks and their check)
+    const d = L.dataFor(), live = L.model && L.run && !L.stale ? L.model : null, chk = live && live.evoChk ? live.evoChk : L.check || L.recheck();
     let model = live, err = null;
     if (!live && chk.ok && !d.error) {
       if (!FRESH || FRESH.chk !== chk || FRESH.d !== d) {
@@ -214,7 +215,7 @@
   // ------------------------------------------------------------------ the tree
   function build(L, size) {
     const wide = size.w / size.h >= 1.05, W2 = (w, t) => (wide ? w : t), X = { wide }, Dp = NA.deep;
-    const st = current(L), d = st.d, chk = st.chk, model = st.model, blocks = L.setup.blocks, nb = blocks.length;
+    const st = current(L), d = st.d, chk = st.chk, model = st.model, blocks = st.live && model && model.evoBlocks ? model.evoBlocks : L.setup.blocks, nb = blocks.length;
     const ok = chk.ok && !d.error, P = ok ? st.P : null, nums = !!(P && model);
     const seq = !d.error && d.input && d.input.kind === 'tokens', out = d.output || {}, K = out.kind === 'tokens' ? out.vocab : out.k;
     const names = d.names || [], vocab = d.vocab || [], word = (id) => (vocab[id] !== undefined ? vocab[id] : String(id));

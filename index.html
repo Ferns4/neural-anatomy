@@ -916,6 +916,24 @@ body[data-lab="builder"] #btnFF { display: none; }
 .bd-tpl::before { display: none; }
 .bd-palette { display: flex; flex-direction: column; gap: 12px; }
 .bd-pal-title { margin-bottom: 6px; font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+/* a group of parts folds away: its header is a button */
+.bd-pal-toggle { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 28px; padding: 3px 6px; border: 1px solid transparent; border-radius: 7px; background: transparent; cursor: pointer; text-align: left; font-size: 11px; }
+@media (pointer: coarse) { .bd-pal-toggle { min-height: 40px; } }
+.bd-pal-toggle:hover { color: var(--ink-2); background: var(--panel-2); }
+.bd-pal-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.bd-pal-dot { flex: none; width: 8px; height: 8px; border-radius: 3px; }
+.bd-pal-name { flex: 1; min-width: 0; }
+.bd-pal-n { font: 500 10.5px var(--font-mono); letter-spacing: 0; color: var(--muted); }
+.bd-pal-chev { flex: none; font-size: 11px; transition: transform 0.15s ease; }
+.bd-pal-group.is-folded .bd-pal-chev { transform: rotate(-90deg); }
+.bd-pal-group.is-folded .bd-pal-toggle { margin-bottom: 0; }
+.bd-palette:has(.bd-pal-group.is-folded) { gap: 6px; }
+.bd-evoview { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+/* Try it yourself: the button, the controls, and buttons to hold (a touch screen, or a mouse) */
+.bd-play { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.bd-play .sec-note { margin: 0; flex: 1; min-width: 12em; }
+.bd-pad { display: flex; gap: 8px; margin-top: 8px; }
+.btn.bd-pad-btn { flex: 1; min-height: 44px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .bd-pal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .bd-part { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--panel); color: var(--ink); font: 500 12.5px var(--font-ui); text-align: left; cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease, opacity 0.15s ease; }
 .bd-part:hover { border-color: var(--bk); box-shadow: 0 6px 14px -10px rgba(18, 21, 25, 0.45); transform: translateY(-1px); }
@@ -1825,70 +1843,73 @@ body[data-layout="mobile"][data-lab="transformer"] .lab-stage:not(.arch-stage) .
   </div>
 </div>
 
-<script src="js/core.js?v=a2c3d381ec"></script>
-<script src="js/engine.js?v=a2c3d381ec"></script>
-<script src="js/data.js?v=a2c3d381ec"></script>
-<script src="js/presets.js?v=a2c3d381ec"></script>
-<script src="js/app.js?v=a2c3d381ec"></script>
-<script src="js/ui.js?v=a2c3d381ec"></script>
-<script src="js/network-view.js?v=a2c3d381ec"></script>
-<script src="js/data-view.js?v=a2c3d381ec"></script>
-<script src="js/hidden-space.js?v=a2c3d381ec"></script>
-<script src="js/landscape.js?v=a2c3d381ec"></script>
-<script src="js/charts.js?v=a2c3d381ec"></script>
-<script src="js/growth.js?v=a2c3d381ec"></script>
-<script src="js/insights.js?v=a2c3d381ec"></script>
-<script src="js/inspector.js?v=a2c3d381ec"></script>
-<script src="js/walkthrough.js?v=a2c3d381ec"></script>
-<script src="js/lab.js?v=a2c3d381ec"></script>
-<script src="js/archview.js?v=a2c3d381ec"></script>
-<script src="js/arch-deep.js?v=a2c3d381ec"></script>
-<script src="js/net-deep.js?v=a2c3d381ec"></script>
-<script src="js/circuit.js?v=a2c3d381ec"></script>
-<script src="js/scale-view.js?v=a2c3d381ec"></script>
-<script src="js/lm-data.js?v=a2c3d381ec"></script>
-<script src="js/transformer.js?v=a2c3d381ec"></script>
-<script src="js/lm-weights.js?v=a2c3d381ec"></script>
-<script src="js/arch-transformer.js?v=a2c3d381ec"></script>
-<script src="js/lab-transformer.js?v=a2c3d381ec"></script>
-<script src="js/pinn.js?v=a2c3d381ec"></script>
-<script src="js/pinn-weights.js?v=a2c3d381ec"></script>
-<script src="js/arch-pinn.js?v=a2c3d381ec"></script>
-<script src="js/lab-pinn.js?v=a2c3d381ec"></script>
-<script src="js/diffusion.js?v=a2c3d381ec"></script>
-<script src="js/diffusion-weights.js?v=a2c3d381ec"></script>
-<script src="js/arch-diffusion.js?v=a2c3d381ec"></script>
-<script src="js/lab-diffusion.js?v=a2c3d381ec"></script>
-<script src="js/yolo.js?v=a2c3d381ec"></script>
-<script src="js/arch-yolo.js?v=a2c3d381ec"></script>
-<script src="js/lab-yolo.js?v=a2c3d381ec"></script>
-<script src="js/radar.js?v=a2c3d381ec"></script>
-<script src="js/radar-weights.js?v=a2c3d381ec"></script>
-<script src="js/arch-radar.js?v=a2c3d381ec"></script>
-<script src="js/lab-radar.js?v=a2c3d381ec"></script>
-<script src="js/rl.js?v=a2c3d381ec"></script>
-<script src="js/rl-weights.js?v=a2c3d381ec"></script>
-<script src="js/rl-envs.js?v=a2c3d381ec"></script>
-<script src="js/rl-evolve.js?v=a2c3d381ec"></script>
-<script src="js/arch-rl.js?v=a2c3d381ec"></script>
-<script src="js/lab-rl.js?v=a2c3d381ec"></script>
-<script src="js/builder-engine.js?v=a2c3d381ec"></script>
-<script src="js/builder-rl.js?v=a2c3d381ec"></script>
-<script src="js/classic-ml.js?v=a2c3d381ec"></script>
-<script src="js/builder-tasks.js?v=a2c3d381ec"></script>
-<script src="js/builder-challenges.js?v=a2c3d381ec"></script>
-<script src="js/part-guide.js?v=a2c3d381ec"></script>
-<script src="js/builder-insights.js?v=a2c3d381ec"></script>
-<script src="js/builder-viz.js?v=a2c3d381ec"></script>
-<script src="js/builder-py.js?v=a2c3d381ec"></script>
-<script src="js/arch-builder.js?v=a2c3d381ec"></script>
-<script src="js/lab-builder.js?v=a2c3d381ec"></script>
-<script src="js/mobile.js?v=a2c3d381ec"></script>
-<script src="js/share.js?v=a2c3d381ec"></script>
-<script src="js/glossary.js?v=a2c3d381ec"></script>
-<script src="js/guide.js?v=a2c3d381ec"></script>
-<script src="js/tour.js?v=a2c3d381ec"></script>
-<script src="js/chrome.js?v=a2c3d381ec"></script>
-<script src="pwa.js?v=a2c3d381ec"></script>
+<script src="js/core.js?v=3c3cf29e14"></script>
+<script src="js/engine.js?v=3c3cf29e14"></script>
+<script src="js/data.js?v=3c3cf29e14"></script>
+<script src="js/presets.js?v=3c3cf29e14"></script>
+<script src="js/app.js?v=3c3cf29e14"></script>
+<script src="js/ui.js?v=3c3cf29e14"></script>
+<script src="js/network-view.js?v=3c3cf29e14"></script>
+<script src="js/data-view.js?v=3c3cf29e14"></script>
+<script src="js/hidden-space.js?v=3c3cf29e14"></script>
+<script src="js/landscape.js?v=3c3cf29e14"></script>
+<script src="js/charts.js?v=3c3cf29e14"></script>
+<script src="js/growth.js?v=3c3cf29e14"></script>
+<script src="js/insights.js?v=3c3cf29e14"></script>
+<script src="js/inspector.js?v=3c3cf29e14"></script>
+<script src="js/walkthrough.js?v=3c3cf29e14"></script>
+<script src="js/lab.js?v=3c3cf29e14"></script>
+<script src="js/archview.js?v=3c3cf29e14"></script>
+<script src="js/arch-deep.js?v=3c3cf29e14"></script>
+<script src="js/net-deep.js?v=3c3cf29e14"></script>
+<script src="js/circuit.js?v=3c3cf29e14"></script>
+<script src="js/scale-view.js?v=3c3cf29e14"></script>
+<script src="js/lm-data.js?v=3c3cf29e14"></script>
+<script src="js/transformer.js?v=3c3cf29e14"></script>
+<script src="js/lm-weights.js?v=3c3cf29e14"></script>
+<script src="js/arch-transformer.js?v=3c3cf29e14"></script>
+<script src="js/lab-transformer.js?v=3c3cf29e14"></script>
+<script src="js/pinn.js?v=3c3cf29e14"></script>
+<script src="js/pinn-weights.js?v=3c3cf29e14"></script>
+<script src="js/arch-pinn.js?v=3c3cf29e14"></script>
+<script src="js/lab-pinn.js?v=3c3cf29e14"></script>
+<script src="js/diffusion.js?v=3c3cf29e14"></script>
+<script src="js/diffusion-weights.js?v=3c3cf29e14"></script>
+<script src="js/arch-diffusion.js?v=3c3cf29e14"></script>
+<script src="js/lab-diffusion.js?v=3c3cf29e14"></script>
+<script src="js/yolo.js?v=3c3cf29e14"></script>
+<script src="js/arch-yolo.js?v=3c3cf29e14"></script>
+<script src="js/lab-yolo.js?v=3c3cf29e14"></script>
+<script src="js/radar.js?v=3c3cf29e14"></script>
+<script src="js/radar-weights.js?v=3c3cf29e14"></script>
+<script src="js/arch-radar.js?v=3c3cf29e14"></script>
+<script src="js/lab-radar.js?v=3c3cf29e14"></script>
+<script src="js/rl.js?v=3c3cf29e14"></script>
+<script src="js/rl-weights.js?v=3c3cf29e14"></script>
+<script src="js/rl-envs.js?v=3c3cf29e14"></script>
+<script src="js/rl-worlds.js?v=3c3cf29e14"></script>
+<script src="js/rl-evolve.js?v=3c3cf29e14"></script>
+<script src="js/arch-rl.js?v=3c3cf29e14"></script>
+<script src="js/lab-rl.js?v=3c3cf29e14"></script>
+<script src="js/builder-engine.js?v=3c3cf29e14"></script>
+<script src="js/builder-evo.js?v=3c3cf29e14"></script>
+<script src="js/builder-rl.js?v=3c3cf29e14"></script>
+<script src="js/classic-ml.js?v=3c3cf29e14"></script>
+<script src="js/builder-tasks.js?v=3c3cf29e14"></script>
+<script src="js/builder-challenges.js?v=3c3cf29e14"></script>
+<script src="js/part-guide.js?v=3c3cf29e14"></script>
+<script src="js/builder-insights.js?v=3c3cf29e14"></script>
+<script src="js/builder-viz.js?v=3c3cf29e14"></script>
+<script src="js/builder-py.js?v=3c3cf29e14"></script>
+<script src="js/builder-py-worlds.js?v=3c3cf29e14"></script>
+<script src="js/arch-builder.js?v=3c3cf29e14"></script>
+<script src="js/lab-builder.js?v=3c3cf29e14"></script>
+<script src="js/mobile.js?v=3c3cf29e14"></script>
+<script src="js/share.js?v=3c3cf29e14"></script>
+<script src="js/glossary.js?v=3c3cf29e14"></script>
+<script src="js/guide.js?v=3c3cf29e14"></script>
+<script src="js/tour.js?v=3c3cf29e14"></script>
+<script src="js/chrome.js?v=3c3cf29e14"></script>
+<script src="pwa.js?v=3c3cf29e14"></script>
 </body>
 </html>

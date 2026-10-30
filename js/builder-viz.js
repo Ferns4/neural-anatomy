@@ -5,7 +5,7 @@
    Everything is drawn on a canvas from the live model. */
 (function (NA) {
   'use strict';
-  const { clamp, fmt, fmtPct, theme } = NA;
+  const { clamp, fmt, fmtPct, fmtInt, theme } = NA;
   const BT = NA.builderTasks;
   const V = {};
   const font = (w, px, mono) => `${w} ${px}px ${mono ? getComputedStyle(document.body).getPropertyValue('--font-mono') || 'monospace' : getComputedStyle(document.body).getPropertyValue('--font-ui') || 'sans-serif'}`;
@@ -392,23 +392,57 @@
   }
 
   // ------------------------------------------------------------------ a world, played live
-  const END_TEXT = { goal: 'Reached the goal', pit: 'Fell into a pit', lost: 'Out of time', caught: 'Caught it', missed: 'Missed it', fell: 'The pole fell', up: 'Kept it up to the end', pulled: 'Pulled' };
+  const END_TEXT = { goal: 'Reached the goal', pit: 'Fell into a pit', lost: 'Out of time', caught: 'Caught it', missed: 'Missed it', fell: 'The pole fell', up: 'Kept it up to the end', pulled: 'Pulled',
+    crashed: 'Crashed', finished: 'Drove all 4 laps', time: 'Out of time', cleared: 'Cleared the arena', dead: 'Out of lives', landed: 'Landed', offpad: 'Down, but off the pad', away: 'Flew away' };
+  const GOOD_END = ['goal', 'caught', 'up', 'finished', 'cleared', 'landed'], NEUTRAL_END = ['pulled'];
+  const GHOSTS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'];
+  /* A whole generation replaying from the same start: where each member was at this moment of the replay (from the
+     paths they kept while judged), best last so it is drawn on top; the replay starts again a moment after the last
+     one stops, and with each new generation. */
+  function ghostsNow(L, ev, Wd) {
+    const R = L.replay, mem = ev.last.members, step = 2 * (Wd.demoMs || 50);
+    if (R.gen !== ev.last.gen) { R.gen = ev.last.gen; R.at = L.now; }
+    let longest = 0;
+    for (const m of mem) if (m.trace) longest = Math.max(longest, m.trace.length / 3);
+    let i = (L.now - R.at) / step;
+    if (i > longest + 25) { R.at = L.now; i = 0; }
+    const out = [];
+    mem.forEach((m, k) => { if (!m.trace || m.trace.length < 3) return; const n = m.trace.length / 3, j = Math.min(n - 1, Math.floor(i)); out.push({ k, x: m.trace[3 * j], y: m.trace[3 * j + 1], th: m.trace[3 * j + 2], done: j >= n - 1 ? m.end || 'over' : null }); });
+    return out.reverse();
+  }
   /* L.demo (from the lab): the episode being played, its state (snap), the network's outputs for what it sees now
      (out, or none before training) and the move they pick (a). The world on the left (on top when narrow), the
      outputs as bars beside it. */
   function drawControl(ctx, r, L) {
-    const d = L.data, D = L.demo;
+    const d = L.data, D = L.demo, ev = L.evo, Wd = NA.rlEnvs.WORLDS[d.world] || {};
     if (!D || !D.snap) { drawWorldStill(ctx, r, d); return; }
-    const nA = d.nA, val = D.out && d.output.k > nA, rowH = 22, wide = r.w > 520;
-    const barsW = wide ? Math.min(270, r.w * 0.38) : r.w, barsH = 30 + (nA + (val ? 1 : 0)) * rowH;
-    const top = 22, wr = wide ? { x: r.x, y: r.y + top, w: r.w - barsW - 20, h: r.h - top } : { x: r.x, y: r.y + top, w: r.w, h: Math.max(80, r.h - top - barsH - 10) };
+    L.hits = [];
+    // with evolution, a panel under the outputs: its population, or MAP-Elites' grid of styles
+    const nA = d.nA, val = D.out && d.output.k > nA, wide = r.w > 520, rowH = ev ? 19 : 22, top = 22;
+    let panel = ev ? (ev.archive ? 'grid' : 'pop') : null, bars = true;
+    // a small screen: MAP-Elites' grid has a view of its own (a tap on a cell watches that style)
+    if (!wide && panel === 'grid' && L.evoView === 'grid') { const side = Math.max(60, Math.min(r.w - 22, r.h - 44)); drawGrid(ctx, { x: r.x + Math.max(0, (r.w - side - 22) / 2), y: r.y, w: side + 22, h: r.h }, L, ev, Wd); return; }
+    const barsH0 = 30 + (nA + (val ? 1 : 0)) * rowH, want = panel && !wide ? (panel === 'grid' ? Math.min(r.w * 0.8, 230) + 50 : ev.grow ? 190 : 110) : 0;
+    // you play on a small screen: the world first; the outputs only if they leave it room
+    if (!wide && L.you) { panel = null; if (r.h < top + 140 + 10 + barsH0) bars = false; }
+    // too short for the world, its outputs and the panel: the whole generation's view swaps the outputs for its population; otherwise the panel waits
+    if (!wide && panel && r.h < top + 120 + 10 + barsH0 + want + 14) { if (panel === 'pop' && L.evoView === 'generation') bars = false; else panel = null; }
+    const barsW = wide ? Math.min(panel ? 300 : 270, r.w * (panel ? 0.4 : 0.38)) : r.w, barsH = bars ? barsH0 : 0;
+    const panelH = panel && !wide ? (bars ? want : Math.min(want, Math.max(90, r.h - top - 120 - 14))) : 0;
+    const wr = wide ? { x: r.x, y: r.y + top, w: r.w - barsW - 20, h: r.h - top } : { x: r.x, y: r.y + top, w: r.w, h: Math.max(80, r.h - top - (bars ? barsH + 10 : 0) - (panelH ? panelH + 10 : 0)) };
     const br = wide ? { x: r.x + r.w - barsW, y: r.y + top + 6, w: barsW } : { x: r.x, y: wr.y + wr.h + 10, w: r.w };
-    const ret = D.ret || 0;
-    text(ctx, `Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(D.end === 'goal' || D.end === 'caught' || D.end === 'up' ? 'good' : D.end === 'pulled' ? 'ink-2' : 'critical') : theme.c('ink-2') });
-    NA.rlEnvs.draw(ctx, wr, d.world, D.snap, theme, { k: nA });
+    const ret = D.ret || 0, gen = L.evoView === 'generation' && ev && ev.last && Wd.trace ? ghostsNow(L, ev, Wd) : null;
+    if (gen) text(ctx, `Generation ${fmtInt(ev.last.gen + 1)}: all ${ev.last.members.length} members at once, from the same start`, r.x + 2, r.y + 9, { size: 12, w: 650, color: theme.c('ink-2') });
+    else text(ctx, `${L.you ? 'You play · ' : L.watchCell !== null && L.watchCell !== undefined && ev && ev.archive ? 'One style’s elite · ' : ''}Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(GOOD_END.includes(D.end) ? 'good' : NEUTRAL_END.includes(D.end) ? 'ink-2' : 'critical') : theme.c('ink-2') });
+    NA.rlEnvs.draw(ctx, wr, d.world, D.snap, theme, { k: nA, ghosts: gen || undefined, ghostsOnly: !!gen && d.world !== 'arena', now: L.now });
+    if (panel) {
+      const pr = wide ? { x: br.x, y: br.y + barsH + 4, w: br.w, h: r.y + r.h - (br.y + barsH + 4) } : { x: r.x, y: bars ? br.y + barsH + 4 : wr.y + wr.h + 10, w: r.w, h: panelH };
+      if (panel === 'grid') drawGrid(ctx, pr, L, ev, Wd); else drawPopulation(ctx, pr, L, ev);
+    }
+    if (!bars) return;
     // the outputs: Q-values or scores (signed, around a zero line), or probabilities (0 to 1)
     const M = d.method, probs = D.out && (M === 'pg' || M === 'a2c' || M === 'ppo') ? NA.brl.softmax(D.out, nA) : null;
-    text(ctx, !D.out ? (D.end ? 'Between episodes' : 'Random moves: not trained yet') : M === 'dqn' ? 'Q-values: the reward it expects for each move' : probs ? 'The probability of each move' : 'Its score for each move', br.x, br.y + 4, { size: 11, w: 650, color: theme.c('muted') });
+    text(ctx, L.you ? (D.out ? 'What the network would do here (your move in colour)' : D.end ? 'Between episodes' : 'Your moves (train it to compare)') : !D.out ? (D.end ? 'Between episodes' : 'Random moves: not trained yet') : M === 'dqn' ? 'Q-values: the reward it expects for each move' : probs ? 'The probability of each move' : 'Its score for each move', br.x, br.y + 4, { size: 11, w: 650, color: theme.c('muted') });
     const lab = Math.min(110, br.w * 0.38), bx = br.x + lab + 6, bw = br.w - lab - 6 - 52, y0 = br.y + 18;
     let lo = 0, hi = 1;
     if (D.out && !probs) { for (let k = 0; k < nA; k++) { lo = Math.min(lo, D.out[k]); hi = Math.max(hi, D.out[k]); } if (hi - lo < 1e-9) hi = lo + 1; }
@@ -421,17 +455,74 @@
         const x0 = Math.min(z, X(v)), w = Math.max(2, Math.abs(X(v) - z));
         ctx.fillStyle = theme.c(pick ? 's2' : 's1', pick ? 0.95 : 0.55); NA.rr(ctx, x0, y + 4, w, rowH - 8, 3); ctx.fill();
         text(ctx, probs ? fmtPct(v, 0) : fmt(v, 2), bx + bw + 6, y + rowH / 2, { size: 11, mono: true, color: theme.c(pick ? 'ink' : 'muted') });
-      } else if (pick) text(ctx, 'random', bx + bw + 6, y + rowH / 2, { size: 11, color: theme.c('muted') });
+      } else if (pick) text(ctx, L.you ? 'you' : 'random', bx + bw + 6, y + rowH / 2, { size: 11, color: theme.c('muted') });
     }
     if (D.out && !probs && lo < 0) { ctx.strokeStyle = theme.c('ink-2', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(Math.round(z) + 0.5, y0 + 2); ctx.lineTo(Math.round(z) + 0.5, y0 + nA * rowH - 2); ctx.stroke(); }
     if (val) text(ctx, `The critic’s value of this state: ${fmt(D.out[nA], 2)}`, br.x, y0 + nA * rowH + rowH / 2, { size: 11.5, color: theme.c('ink-2') });
+  }
+  /* A generation, best first: each member's fitness as a bar (in the colours of the replay), how far it has got
+     through judging them, and with grow and prune the best network's shape and its number of weights over the
+     generations. */
+  function drawPopulation(ctx, r, L, ev) {
+    const last = ev.last, prog = L.genProgress;
+    let y = r.y + 6;
+    text(ctx, last ? `Generation ${fmtInt(last.gen + 1)}: ${last.members.length} members, best first` : 'The first generation is playing…', r.x, y, { size: 11, w: 650, color: theme.c('muted') });
+    y += 12;
+    if (prog && prog.of) { ctx.fillStyle = theme.c('line', 0.6); ctx.fillRect(r.x, y, r.w, 3); ctx.fillStyle = theme.c('s2'); ctx.fillRect(r.x, y, (r.w * prog.done) / prog.of, 3); }
+    y += 8;
+    if (!last) return;
+    const M = last.members, n = M.length, fits = M.map((m) => m.fit), lo = Math.min(...fits), hi = Math.max(...fits), sh = Math.max(24, Math.min(54, r.h - (ev.grow ? 150 : 40))), bw = r.w / n;
+    M.forEach((m, k) => { const h = 2 + ((m.fit - lo) / (hi - lo || 1)) * (sh - 2); ctx.fillStyle = theme.c(GHOSTS[k % 8], k === 0 ? 1 : 0.62); ctx.fillRect(r.x + k * bw + (bw > 4 ? 0.6 : 0), y + sh - h, Math.max(1, bw - (bw > 4 ? 1.2 : 0)), h); });
+    text(ctx, `best ${fmt(hi, Math.abs(hi) < 10 ? 2 : 1)}`, r.x, y + sh + 9, { size: 10.5, w: 600, color: theme.c('ink-2') });
+    text(ctx, `worst ${fmt(lo, Math.abs(lo) < 10 ? 2 : 1)}`, r.x + r.w, y + sh + 9, { size: 10.5, align: 'right', color: theme.c('muted') });
+    y += sh + 22;
+    if (!ev.grow || y + 60 > r.y + r.h) return;
+    // the best network's shape: its layers as columns of neurons, from the inputs to the outputs
+    const top = M[0], sz = [ev.io.nIn, ...top.units, ev.io.K], gh = Math.min(70, r.y + r.h - y - 46), cols = sz.length, gap = r.w / cols;
+    text(ctx, `The best: ${top.units.length ? top.units.join(' → ') : 'no hidden layer'} · ${fmtInt(top.weights)} weights`, r.x, y, { size: 11.5, w: 650, color: theme.c('ink') });
+    y += 12;
+    const pts = sz.map((u, c) => { const shown = Math.min(u, 12), x = r.x + gap * (c + 0.5); return NA.range(shown).map((j) => [x, y + (gh * (j + 0.5)) / shown]); });
+    ctx.strokeStyle = theme.c('ink', 0.12); ctx.lineWidth = 1;
+    for (let c = 0; c + 1 < pts.length; c++) for (const a of pts[c]) for (const b of pts[c + 1]) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+    pts.forEach((col, c) => col.forEach(([x, yy]) => { ctx.beginPath(); ctx.arc(x, yy, 2.6, 0, Math.PI * 2); ctx.fillStyle = theme.c(c === 0 ? 's3' : c === cols - 1 ? 's2' : 's1'); ctx.fill(); }));
+    sz.forEach((u, c) => { if (u > 12) text(ctx, `${u}`, r.x + gap * (c + 0.5), y + gh + 7, { size: 10.5, align: 'center', color: theme.c('muted') }); });
+    y += gh + 16;
+    // its weights over the generations
+    const H = ev.history, wh = r.y + r.h - y - 4;
+    if (H.length < 2 || wh < 22) return;
+    const wmax = Math.max(...H.map((h) => h.weights)), X = (i) => r.x + (i / (H.length - 1)) * r.w, Y = (v) => y + wh - (v / (wmax || 1)) * (wh - 12);
+    text(ctx, `weights of the best, generation by generation (up to ${fmtInt(wmax)})`, r.x, y + 4, { size: 10.5, color: theme.c('muted') });
+    ctx.strokeStyle = theme.c('s1'); ctx.lineWidth = 2; ctx.beginPath(); H.forEach((h, i) => (i ? ctx.lineTo(X(i), Y(h.weights)) : ctx.moveTo(X(i), Y(h.weights)))); ctx.stroke();
+  }
+  /* MAP-Elites' grid: 12 × 12 styles (the world's two measures across and up), each cell coloured by its elite's
+     fitness, empty ones faint; the best outlined, the one being watched in the second colour. Cells are hits:
+     a click watches that elite. */
+  function drawGrid(ctx, r, L, ev, Wd) {
+    const G = NA.bevo.GRID, A = ev.archive, axes = ev.axes || Wd.axes || ['', ''], all = [...A.values()];
+    text(ctx, `${A.size} of ${G * G} styles found${ev.last && ev.last.added ? ` · ${ev.last.added} new or better last step` : ''}`, r.x, r.y + 6, { size: 11, w: 650, color: theme.c('muted') });
+    if (L.genProgress && L.genProgress.of) { ctx.fillStyle = theme.c('line', 0.6); ctx.fillRect(r.x, r.y + 16, r.w, 3); ctx.fillStyle = theme.c('s2'); ctx.fillRect(r.x, r.y + 16, (r.w * L.genProgress.done) / L.genProgress.of, 3); }
+    const side = Math.max(60, Math.min(r.w - 22, r.h - 44)), cs = side / G, gx = r.x + 18, gy = r.y + 24;
+    const lo = all.length ? Math.min(...all.map((e) => e.fit)) : 0, hi = all.length ? Math.max(...all.map((e) => e.fit)) : 1;
+    let best = -1, bf = -Infinity;
+    for (const [c, e] of A) if (e.fit > bf) { bf = e.fit; best = c; }
+    for (let c = 0; c < G * G; c++) {
+      const i = c % G, j = Math.floor(c / G), x = gx + i * cs, y = gy + (G - 1 - j) * cs, e = A.get(c);
+      ctx.fillStyle = e ? theme.seqColor(0.18 + (0.82 * (e.fit - lo)) / (hi - lo || 1)) : theme.c('line', 0.32);
+      ctx.fillRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
+      if (e) L.hits.push({ x, y, w: cs, h: cs, cell: c });
+    }
+    const box = (c, tok, w) => { const i = c % G, j = Math.floor(c / G); ctx.strokeStyle = theme.c(tok); ctx.lineWidth = w; ctx.strokeRect(gx + i * cs + w / 2, gy + (G - 1 - j) * cs + w / 2, cs - w, cs - w); };
+    if (best >= 0) box(best, 'ink', 2);
+    if (L.watchCell !== null && L.watchCell !== undefined && A.get(L.watchCell)) box(L.watchCell, 's2', 2.5);
+    text(ctx, `${axes[0]} →`, gx + side / 2, gy + side + 10, { size: 10.5, align: 'center', color: theme.c('muted') });
+    ctx.save(); ctx.translate(r.x + 7, gy + side / 2); ctx.rotate(-Math.PI / 2); text(ctx, `${axes[1]} →`, 0, 0, { size: 10.5, align: 'center', color: theme.c('muted') }); ctx.restore();
   }
   // a world at the start of an episode, for the picker and before anything has played
   function drawWorldStill(ctx, r, d) {
     const w = NA.rlEnvs.make(d.world, d.ws);
     w.reset(new NA.RNG(5));
     if (d.world === 'pole') { w.th = 0.08; w.x = -0.3; }
-    NA.rlEnvs.draw(ctx, r, d.world, w.snap(), theme, { k: d.nA });
+    NA.rlEnvs.draw(ctx, r, d.world, w.snap(), theme, { k: d.nA, small: r.w < 330 });
   }
 
   // ------------------------------------------------------------------ entry points

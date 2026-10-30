@@ -3,10 +3,12 @@
    memory, with a target network. REINFORCE raises the probability of each action by the return that followed it.
    Actor-critic (A2C) adds an output that estimates how good each state is, and learns from the surprise of every
    few steps in 8 copies of the world at once. PPO takes several small steps on each batch of experience, clipped
-   so the policy never moves far from the one that played. A genetic algorithm uses no gradients at all: a
-   population of networks plays, and the next generation is bred from the best of them. Each trains one step at a
-   time (step()) and is scored by how its best moves do, from 0 to 1 (score()). Runs the same in the page and in
-   node. */
+   so the policy never moves far from the one that played. Three methods use no gradients at all (builder-evo.js):
+   a genetic algorithm breeds each generation from the best of the last (and can grow and prune the network
+   itself), evolution strategies nudge one network in many random directions and step toward those that did
+   better, and MAP-Elites keeps the best network of every style of play. Each trains one step at a time (step();
+   the evolutionary ones a generation, spread over several calls when a deadline is given) and is scored by how
+   its best moves do, from 0 to 1 (score()). Runs the same in the page and in node. */
 (function (NA) {
   'use strict';
   const BRL = {};
@@ -17,24 +19,37 @@
     pg: { label: 'REINFORCE (policy gradient)', short: 'REINFORCE', extra: 0, unit: 'update', hint: 'One output per action: softmax turns them into the probability of playing it. After an episode or two, each action’s probability goes up by how much better than usual the return after it was, and down if worse.' },
     a2c: { label: 'Actor-critic (A2C)', short: 'Actor-critic', extra: 1, unit: 'update', hint: 'The policy’s outputs plus one more: how good the current state is (the critic). It plays 8 steps in 8 copies of the world at once, then learns from the advantage: the rewards it got plus the value where it ended up, minus what the critic expected.' },
     ppo: { label: 'PPO (proximal policy optimisation)', short: 'PPO', extra: 1, unit: 'update', hint: 'Like actor-critic, but it plays 128 moves, then takes 16 small steps on them, each clipped so the probability of an action never moves more than 20% from the policy that played. The workhorse of modern RL, from robots to chatbots.' },
-    ga: { label: 'Genetic algorithm', short: 'Genetic algorithm', extra: 0, unit: 'generation', hint: 'No gradients and no learning rate: a population of copies of the network, each a little different, play; the best two pass on unchanged and the rest are children of the better ones (half the weights from each parent) with small random mutations. One step is one generation.' },
+    ga: { label: 'Genetic algorithm', short: 'Genetic algorithm', extra: 0, unit: 'generation', evo: true, hint: 'No gradients and no learning rate: a population of copies of the network, each a little different, play; the best two pass on unchanged and the rest are children of the better ones, mixed and mutated. Turn on Grow and prune and children can also gain or lose neurons and whole layers. One step is one generation.' },
+    es: { label: 'Evolution strategies', short: 'Evolution strategies', extra: 0, unit: 'generation', evo: true, hint: 'One network, nudged in many random directions at once (in pairs: plus a nudge and minus it). How each nudged copy does says which way is uphill: an estimate of the gradient made from scores alone, with no backpropagation. Adam then takes a step that way. One step is one generation.' },
+    me: { label: 'MAP-Elites (many styles)', short: 'MAP-Elites', extra: 0, unit: 'generation', evo: true, hint: 'A grid of 12 × 12 styles of play, from two numbers the world measures (on the race track: how fast it drives and which side of the track it keeps). Each new network goes to the cell of its style and stays if it beats the one there: it finds the best of every style, not one best. One step is one batch of new networks.' },
   };
-  BRL.ORDER = ['dqn', 'pg', 'a2c', 'ppo', 'ga'];
+  BRL.ORDER = ['dqn', 'pg', 'a2c', 'ppo', 'ga', 'es', 'me'];
+  // the methods that breed a population, with no gradients (builder-evo.js)
+  BRL.isEvo = (m) => !!(BRL.METHODS[m] && BRL.METHODS[m].evo);
   BRL.outputs = (method, nA) => nA + (BRL.METHODS[method] || BRL.METHODS.dqn).extra;
   /* Per world: the discount (γ: how much a reward one step later is worth), how many moves DQN explores for (its
-     chance of a random move falls from 1 to 0.05 over them), how many episodes judge a member of the genetic
-     algorithm's population, and how many steps a press of Train runs for each method (a generation is one step
-     of the genetic algorithm, so it needs far fewer). */
+     chance of a random move falls from 1 to 0.05 over them), how many episodes judge a member of an evolving
+     population, how many steps a press of Train runs for each method (a generation is one step of the
+     evolutionary methods, so they need far fewer), the return of a good episode (scale: grow and prune's size
+     penalty is a share of it), the population an evolving method starts with, and its mutations' size (sigma) and
+     way of mixing parents where they differ from the usual. Both measured from the page's own start (the network
+     built with seed 1, runs 1 to 10): on the track, σ 0.5 with copies alone got every run round 4 laps by generation
+     125, most by 75, where σ 0.2 with mixing left 2 of 7 stuck at the esses for 200; on the rocket, copies alone
+     found a landing sooner, by generation 100 in 11 of 20 runs against 2 of 20 with mixing, both about 4 in 5 by 300. */
   BRL.WORLD = {
-    levers: { gamma: 0, explore: 300, gaEpisodes: 8, steps: { dqn: 1000, pg: 300, a2c: 300, ppo: 1000, ga: 300 } },
-    maze: { gamma: 0.97, explore: 4000, gaEpisodes: 1, steps: { dqn: 10000, pg: 1000, a2c: 2000, ppo: 2000, ga: 300 } },
-    pole: { gamma: 0.95, explore: 3000, gaEpisodes: 2, steps: { dqn: 5000, pg: 2000, a2c: 3000, ppo: 3000, ga: 300 } },
-    catch: { gamma: 0.9, explore: 1500, gaEpisodes: 10, steps: { dqn: 5000, pg: 2000, a2c: 3000, ppo: 3000, ga: 300 } },
+    levers: { gamma: 0, explore: 300, gaEpisodes: 8, scale: 1, pop: 24, steps: { dqn: 1000, pg: 300, a2c: 300, ppo: 1000, ga: 300, es: 300, me: 300 } },
+    maze: { gamma: 0.97, explore: 4000, gaEpisodes: 1, scale: 1, pop: 24, steps: { dqn: 10000, pg: 1000, a2c: 2000, ppo: 2000, ga: 300, es: 300, me: 300 } },
+    pole: { gamma: 0.95, explore: 3000, gaEpisodes: 2, scale: 200, pop: 24, steps: { dqn: 5000, pg: 2000, a2c: 3000, ppo: 3000, ga: 300, es: 300, me: 300 } },
+    catch: { gamma: 0.9, explore: 1500, gaEpisodes: 10, scale: 1, pop: 24, steps: { dqn: 5000, pg: 2000, a2c: 3000, ppo: 3000, ga: 300, es: 300, me: 300 } },
+    track: { gamma: 0.99, explore: 20000, gaEpisodes: 1, scale: 40, pop: 48, sigma: 0.5, cross: 'none', steps: { dqn: 30000, pg: 2000, a2c: 10000, ppo: 30000, ga: 150, es: 150, me: 150 } },
+    arena: { gamma: 0.97, explore: 20000, gaEpisodes: 2, scale: 10, pop: 24, steps: { dqn: 30000, pg: 2000, a2c: 6000, ppo: 6000, ga: 80, es: 100, me: 100 } },
+    lander: { gamma: 0.99, explore: 15000, gaEpisodes: 3, scale: 4, pop: 48, sigma: 0.5, cross: 'none', steps: { dqn: 50000, pg: 3000, a2c: 20000, ppo: 30000, ga: 300, es: 200, me: 150 } },
   };
   const W = (world) => BRL.WORLD[world] || BRL.WORLD.pole;
   BRL.stepsFor = (world, method) => W(world).steps[method] || 3000;
   // the learning settings a problem starts with
-  BRL.defaults = (world) => ({ method: 'dqn', gamma: W(world).gamma, explore: W(world).explore, pop: 24, sigma: 0.2 });
+  BRL.defaults = (world) => ({ method: 'dqn', gamma: W(world).gamma, explore: W(world).explore, pop: W(world).pop || 24, sigma: W(world).sigma || 0.2,
+    select: 'tournament', cross: W(world).cross || 'uniform', mutate: 'plain', grow: false, penalty: 'light', newLayer: 'identity', esSigma: 0.05, esLr: 0.03 });
 
   const argmax = (o, base, n) => { let a = 0; for (let k = 1; k < n; k++) if (o[base + k] > o[base + a]) a = k; return a; };
   const softmax = (o, base, n, p) => { let m = -Infinity; for (let k = 0; k < n; k++) m = Math.max(m, o[base + k]); let s = 0; for (let k = 0; k < n; k++) { p[k] = Math.exp(o[base + k] - m); s += p[k]; } for (let k = 0; k < n; k++) p[k] /= s; return p; };
@@ -42,12 +57,14 @@
   BRL.softmax = (o, n) => softmax(o, 0, n, new Float64Array(n));
   BRL.argmax = (o, n) => argmax(o, 0, n);
 
-  /* A trainer: the world (by id and settings), the network built from your blocks, a maker of more networks like
-     it (the target network), the method, its settings (s: gamma, explore, pop, sigma, batch) and a seed. */
+  /* A trainer: the world (by id and settings), the network built from your blocks (and the blocks, for evolution
+     to reshape), a maker of more networks like it (the target network), the method, its settings (s: gamma,
+     explore, batch; pop, sigma and the rest of evolution's) and a seed. */
   class Trainer {
     constructor(o) {
-      Object.assign(this, { worldId: o.world, ws: o.ws || {}, net: o.net, makeNet: o.makeNet, method: BRL.METHODS[o.method] ? o.method : 'dqn', rng: new NA.RNG(o.seed || 1) });
+      Object.assign(this, { worldId: o.world, ws: o.ws || {}, net: o.net, makeNet: o.makeNet, blocks: o.blocks || null, method: BRL.METHODS[o.method] ? o.method : 'dqn', rng: new NA.RNG(o.seed || 1) });
       const s = Object.assign(BRL.defaults(this.worldId), o.s);
+      this.s = s;
       this.gamma = s.gamma; this.explore = s.explore; this.popSize = Math.max(4, Math.round(s.pop)); this.sigma = s.sigma; this.B = Math.max(4, Math.round(s.batch || 32));
       // actor-critic and PPO play in 8 copies of the world at once; the others in one
       const N = this.method === 'a2c' || this.method === 'ppo' ? 8 : 1;
@@ -62,8 +79,8 @@
     get obs() { return this.envs[0].obs; }
     // the network's outputs for one observation (a copy)
     outputs(obs, net = this.net) { this.x1.set(obs); return Float64Array.from(net.forward(this.x1, 1, false).subarray(0, this.K)); }
-    // its best move: the largest Q-value, or the most likely action
-    policy(obs) { const o = this.outputs(obs); return argmax(o, 0, this.nA); }
+    // its best move: the largest Q-value, or the most likely action (net: another network, a member of a population)
+    policy(obs, net = this.net) { this.x1.set(obs); return argmax(net.forward(this.x1, 1, false), 0, this.nA); }
     // judged in a world of its own, so the episode it is training in carries on undisturbed
     score() { this.judge = this.judge || E().make(this.worldId, this.ws); return this.judge.score((obs) => this.policy(obs), new NA.RNG(777)); }
     // one move in a world, learning nothing; ends and starts episodes
@@ -77,12 +94,13 @@
     init() {
       const m = this.method;
       if (m === 'dqn') { this.cap = 10000; this.buf = []; this.next = 0; this.target = this.makeNet(); this.target.setWeights(this.net.getWeights()); }
-      if (m === 'ga') { this.ga = { pop: [], fit: [], gen: 0, size: this.popSize }; const w0 = this.net.getWeights(); for (let k = 0; k < this.ga.size; k++) { const w = Float32Array.from(w0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); this.ga.pop.push(w); } }
+      if (BRL.isEvo(m)) this.evo = new NA.bevo.Evolution(this, this.s, this.blocks);
       if (m === 'ppo') this.queue = [];
     }
-    step(opt) {
-      const r = this.method === 'dqn' ? this.dqn(opt) : this.method === 'pg' ? this.pg(opt) : this.method === 'a2c' ? this.a2c(opt) : this.method === 'ppo' ? this.ppo(opt) : this.ga1();
-      this.updates++;
+    // one step; an evolutionary method given a deadline (in performance.now() ms) may answer { partial } until its generation is judged
+    step(opt, deadline) {
+      const r = this.evo ? this.evo.step(deadline) : this.method === 'dqn' ? this.dqn(opt) : this.method === 'pg' ? this.pg(opt) : this.method === 'a2c' ? this.a2c(opt) : this.ppo(opt);
+      if (!r.partial) this.updates++;
       return r;
     }
 
@@ -215,39 +233,6 @@
         }
         return loss / n;
       }, opt);
-    }
-
-    // ---------------------------------------------------------------- genetic algorithm
-    // fitness: the return of its best moves over a few episodes (the same starts for everyone this generation)
-    fitness(w, seed) {
-      this.net.setWeights(w);
-      const rng = new NA.RNG(seed), n = W(this.worldId).gaEpisodes + (this.ws.random || this.ws.slip ? 2 : 0);
-      let total = 0;
-      for (let k = 0; k < n; k++) {
-        let o = this.world.reset(rng), done = false;
-        while (!done) { const t = this.world.step(this.policy(o), rng); total += t.r; done = t.done; o = t.obs; this.envSteps++; }
-        this.episodes++;
-      }
-      return total / n;
-    }
-    ga1() {
-      const G = this.ga, n = G.size, seed = 1000 + G.gen;
-      G.fit = G.pop.map((w) => this.fitness(w, seed));
-      const order = NA.range(n).sort((a, b) => G.fit[b] - G.fit[a]), best = G.fit[order[0]];
-      let mean = 0; for (const f of G.fit) mean += f / n;
-      this.lastEp = best; this.retEma = mean; this.genBest = best; this.genMean = mean; G.sorted = order.map((i) => G.fit[i]);
-      // the best two carry on unchanged; the rest are children of parents picked by tournament (best of three)
-      const tour = () => { let b = this.rng.int(n); for (let k = 0; k < 2; k++) { const c = this.rng.int(n); if (G.fit[c] > G.fit[b]) b = c; } return G.pop[b]; };
-      const next = [Float32Array.from(G.pop[order[0]]), Float32Array.from(G.pop[order[1]])];
-      while (next.length < n) {
-        const a = tour(), b = tour(), child = new Float32Array(a.length);
-        for (let i = 0; i < child.length; i++) { child[i] = this.rng.next() < 0.5 ? a[i] : b[i]; if (this.rng.next() < 0.1) child[i] += this.rng.gauss(0, this.sigma); }
-        next.push(child);
-      }
-      G.pop = next; G.gen++;
-      // the network on show is the best of the generation just judged
-      this.net.setWeights(G.pop[0]);
-      return { loss: -mean, gradNorm: 0 };
     }
   }
   BRL.Trainer = Trainer;

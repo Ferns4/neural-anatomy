@@ -60,6 +60,9 @@
     { id: 'rlmaze', family: 'control', task: 'maze', label: 'Maze', hint: 'Find the goal and keep out of the pits. It can see the square it is on, the squares around it, or a picture of the whole maze, and train on one maze or a new random one every episode.' },
     { id: 'pole', family: 'control', task: 'pole', label: 'Balance a pole', hint: 'Push a cart left or right to keep a pole upright, the classic control problem. It sees 4 numbers, or only the positions and angles of the last 4 steps.' },
     { id: 'catch', family: 'control', task: 'catch', label: 'Catch', hint: 'Move a paddle to catch a falling, drifting ball. It sees 4 numbers, or pixels: two pictures of the board, now and a step ago.' },
+    { id: 'track', family: 'control', task: 'track', label: 'Race track', hint: 'Drive a car 4 laps without touching the walls: steer, and brake for the tight bends. It sees 7 distances to the walls and its speed, or a camera picture from above. Evolution learns it best: watch a whole generation drive at once.' },
+    { id: 'arena', family: 'control', task: 'arena', label: 'Drone arena (first person)', hint: 'A first-person arena: turn, walk and fire at the glowing drones before they reach you. It sees what each column of its view holds, a radar and its lives; or the picture itself, as agents that learned first-person games did.' },
+    { id: 'lander', family: 'control', task: 'lander', label: 'Land a rocket', hint: 'Fire the main engine and the side thrusters to touch down softly on the pad before the fuel runs out. It sees where it is, how fast it moves, its tilt, spin and fuel.' },
   ];
   BT.byId = Object.fromEntries(BT.PROBLEMS.map((p) => [p.id, p]));
   // the kinds of data whose answer is a number, scored by R² (a table that predicts a number makes curve-like data)
@@ -86,7 +89,7 @@
   // training settings: the defaults, and what each kind of data starts with when you switch to it
   BT.DEFAULT_TRAIN = { opt: 'adam', lr: 0.01, batch: 32, wd: 0, sched: 'const', clip: 0, init: 'auto', seed: 1, steps: 3000 };
   BT.trainFor = (p) => {
-    if (p.family === 'control') return { lr: 0.003, batch: 32, steps: NA.brl.stepsFor(p.task, 'dqn'), clip: 1 };
+    if (p.family === 'control') return { lr: 0.003, batch: 32, steps: NA.brl.stepsFor(p.task, (WORLD_DEFAULTS[p.task] || {}).method || 'dqn'), clip: 1 };
     if (p.family === 'sequence') return { lr: 0.003, batch: p.task === 'language' ? 16 : 32, steps: p.task === 'language' ? 3000 : p.task === 'sentences' ? 1500 : 1000, clip: 1 };
     if (p.family === 'digits') return { lr: 0.003, batch: 32, steps: 1500, clip: 0 };
     if (p.family === 'table') return { lr: 0.01, batch: 32, steps: 2000, clip: 0 };
@@ -410,16 +413,23 @@
     maze: { view: 'around', maze: 'pits', closer: true, random: false, slip: 0, maxSteps: 80, hide: [], noise: 0 },
     pole: { view: 'state', force: 10, poleLen: 1, gravity: 9.8, maxSteps: 200, hide: [], noise: 0 },
     catch: { view: 'numbers', drift: true, hide: [], noise: 0 },
+    // the bigger worlds start with the method that learns them best: evolution for the track and the rocket, PPO for the arena
+    track: { view: 'rays', track: 'esses', maxSteps: 0, hide: [], noise: 0, method: 'ga' },
+    arena: { view: 'rays', map: 'room', drones: 2, speed: 'slow', hide: [], noise: 0, method: 'ppo' },
+    lander: { gravity: 1.62, wind: false, pad: 'middle', fuel: 150, hide: [], noise: 0, method: 'ga' },
   };
   BT.VIEWS = {
     maze: [{ value: 'around', label: 'Around it', title: 'The 24 squares around it (walls, pits, the exit when it is that close, where it has been), and which way the exit is, near or far: 104 inputs. What it learns can carry over to other mazes' }, { value: 'square', label: 'Its square', title: 'Which square it is on, one input per square (48). Nothing tells it where the exit is: like a table, it finds it from the rewards, and learns this maze and no other' }, { value: 'picture', label: 'Picture', title: 'The whole maze as a picture of 5 channels, 6 × 8: walls, pits, the exit, where it is, where it has been. For convolutions' }],
     pole: [{ value: 'state', label: '4 numbers', title: 'The cart’s position and speed, the pole’s angle and how fast it turns' }, { value: 'readings', label: 'Last 4 readings', title: 'Only the cart’s position and the pole’s angle, for the last 4 steps (a sequence of 4 × 2): the speeds have to be worked out from how they change' }],
     catch: [{ value: 'numbers', label: '4 numbers', title: 'Where the ball is, which way it drifts, where the paddle is' }, { value: 'pixels', label: 'Pixels', title: 'Two pictures of the 8 × 5 board, now and a step ago (2 channels): which way the ball drifts is in the difference' }],
+    track: [{ value: 'rays', label: '7 sensors', title: 'How far the wall is at 90°, 50° and 20° to each side and straight ahead (out to 40 m), and its speed: 8 numbers' }, { value: 'camera', label: 'Camera', title: 'A picture from above, 16 × 16, of the track 32 m ahead and 12 m to each side, turned with the car, and its speed as a second channel. For convolutions' }],
+    arena: [{ value: 'rays', label: 'Columns', title: 'For each of 11 columns across its view: how near the wall is and how near a drone is; a radar (which way the nearest drone is) and its lives and gun: 26 numbers' }, { value: 'pixels', label: 'Pixels', title: 'What it sees, 10 × 20 pixels in two channels (walls, brighter when nearer, and drones): learning to aim from the picture. For convolutions' }],
   };
   // the settings the world itself takes (rl-envs.js names): yours where you set them, its own where you did not
   BT.worldSettings = (p, s) => {
     const t = p.task, o = t === 'levers' ? { levers: s.levers, p: s.pRight, q: s.pOther } : t === 'maze' ? { view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0, maxSteps: s.maxSteps }
-      : t === 'pole' ? { view: s.view, force: s.force, length: s.poleLen, gravity: s.gravity, steps: s.maxSteps } : { view: s.view, drift: s.drift !== false };
+      : t === 'pole' ? { view: s.view, force: s.force, length: s.poleLen, gravity: s.gravity, steps: s.maxSteps } : t === 'track' ? { view: s.view, track: s.track, steps: s.maxSteps }
+        : t === 'arena' ? { view: s.view, map: s.map, drones: s.drones, speed: s.speed } : t === 'lander' ? { gravity: s.gravity, wind: !!s.wind, pad: s.pad, fuel: s.fuel } : { view: s.view, drift: s.drift !== false };
     for (const r of NA.rlEnvs.REWARDS[t]) if (typeof s[r.key] === 'number') o[r.key] = s[r.key];
     if (s.rFormula) o.rFormula = s.rFormula;
     if (Array.isArray(s.hide) && s.hide.length) o.hide = s.hide.slice();

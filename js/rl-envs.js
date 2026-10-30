@@ -163,6 +163,8 @@
       return { obs: this.obs(), r, done };
     }
     snap() { return { rows: this.maze.rows, s: this.s, path: this.path.slice(), end: this.end }; }
+    // where its moves stop (across, and up from the bottom row): its style of play, for MAP-Elites
+    behavior() { const W = this.maze.W, H = this.maze.H; return [((this.s % W) + 0.5) / W, 1 - (Math.floor(this.s / W) + 0.5) / H]; }
     /* Its best moves from S: 1 if they reach the goal (a slippery floor: the share of 5 tries). Trained on random
        mazes, the share of 20 new mazes it reaches the goal of (the same 20 every time, none of them trained on). */
     score(policy, rng) {
@@ -203,7 +205,7 @@
     reset(rng) {
       const s = this.start;
       this.rng = rng;
-      this.x = rng.uniform(-this.xStart, this.xStart); this.v = rng.uniform(-s, s); this.th = rng.uniform(-s, s); this.w = rng.uniform(-s, s); this.t = 0; this.a = null;
+      this.x = rng.uniform(-this.xStart, this.xStart); this.v = rng.uniform(-s, s); this.th = rng.uniform(-s, s); this.w = rng.uniform(-s, s); this.t = 0; this.a = null; this.sx = 0; this.sth = 0;
       this.hist = [0, 0, 0].map(() => [this.x / 2.4, this.th / 0.2095]);
       return this.obs();
     }
@@ -221,12 +223,14 @@
       const acc = (this.g * st - ct * tmp) / (this.half * (4 / 3 - (0.1 * ct * ct) / 1.1)), xacc = tmp - (this.pml * acc * ct) / 1.1;
       this.hist.push([this.x / 2.4, this.th / 0.2095]); this.hist.shift();
       this.x += 0.02 * this.v; this.v += 0.02 * xacc; this.th += 0.02 * this.w; this.w += 0.02 * acc;
-      this.t++; this.a = a;
+      this.t++; this.a = a; this.sx += this.x; this.sth += Math.abs(this.th);
       const fell = Math.abs(this.x) > 2.4 || Math.abs(this.th) > 0.2095, deg = 180 / Math.PI;
       const r = this.rf ? this.rf({ x: this.x, v: this.v, angle: this.th * deg, spin: this.w * deg, fell: +fell, push: a === 1 ? 1 : a === 0 ? -1 : 0, t: this.t }) : this.rw.rUp + (fell ? this.rw.rFell : 0);
       return { obs: this.obs(), r, done: fell || this.t >= this.maxSteps, fell };
     }
     snap() { return { x: this.x, th: this.th, a: this.a, t: this.t, len: this.len }; }
+    // where the cart keeps (left to right) and how much the pole sways: its style, for MAP-Elites
+    behavior() { const n = Math.max(1, this.t); return [clamp(0.5 + this.sx / n / 4.8, 0, 1), clamp(Math.sqrt(this.sth / n / 0.2095), 0, 1)]; }
     // how long its best moves keep the pole up, as a share of the episode, over 5 starts
     score(policy) { const r = new NA.RNG(4242); let s = 0; for (let k = 0; k < 5; k++) { let o = this.reset(r), done = false; while (!done) ({ obs: o, done } = this.step(policy(o))); s += this.t; } return s / (5 * this.maxSteps); }
   }
@@ -247,7 +251,7 @@
       this.actions = ['left', 'stay', 'right'];
       this.rw = rewardTable('catch', o); this.rf = E.rewardFormula('catch', o.rFormula); sensors(this, 'catch', o);
     }
-    reset(rng) { this.rng = rng; this.bx = rng.int(this.W); this.by = 0; this.vx = this.drift ? rng.int(3) - 1 : 0; this.px = 2; this.t = 0; this.caught = null; this.prev = null; return this.obs(); }
+    reset(rng) { this.rng = rng; this.bx = rng.int(this.W); this.by = 0; this.vx = this.drift ? rng.int(3) - 1 : 0; this.px = 2; this.t = 0; this.caught = null; this.prev = null; this.moves = 0; return this.obs(); }
     picture(o, at, bx, by, px) { const W = this.W; o[at + by * W + bx] = 1; o[at + (this.H - 1) * W + px] = 1; }
     rawObs() {
       if (this.view === 'numbers') return Float32Array.of(this.bx / (this.W - 1), this.by / (this.H - 1), this.vx, this.px / (this.W - 1));
@@ -264,12 +268,15 @@
       if (this.bx < 0) { this.bx = 1; this.vx = 1; } else if (this.bx > this.W - 1) { this.bx = this.W - 2; this.vx = -1; }
       this.t++;
       const moved = this.px !== this.prev[2], end = this.by >= this.H - 1;
+      if (moved) this.moves++;
       if (end) this.caught = this.bx === this.px;
       const rw = this.rw, r = this.rf ? this.rf({ caught: +(end && this.caught), missed: +(end && !this.caught), moved: +moved, dx: this.bx - this.px, down: this.by, t: this.t })
         : (moved ? rw.rMove : 0) + (end ? (this.caught ? rw.rCatch : rw.rMiss) : 0);
       return { obs: this.obs(), r, done: end };
     }
     snap() { return { bx: this.bx, by: this.by, px: this.px, caught: this.caught }; }
+    // how much the paddle moves and where it ends up: its style, for MAP-Elites
+    behavior() { return [clamp(this.moves / Math.max(1, this.t), 0, 1), this.px / (this.W - 1)]; }
     // the share of 40 balls its best moves catch (the same 40 every time)
     score(policy) { const r = new NA.RNG(4242); let ok = 0; for (let k = 0; k < 40; k++) { let o = this.reset(r), done = false; while (!done) ({ obs: o, done } = this.step(policy(o))); if (this.caught) ok++; } return ok / 40; }
   }
@@ -279,9 +286,9 @@
   // ------------------------------------------------------------------ the catalogue
   E.WORLDS = {
     levers: { name: 'Levers', make: (o) => new Levers(o), what: 'a light, one input per colour', goal: 'pull the lever that matches the light' },
-    maze: { name: 'Maze', make: (o) => new MazeWorld(o), what: 'its square, what is around it, or a picture of the maze', goal: 'reach the goal, keep out of the pits' },
-    pole: { name: 'Balance a pole', make: (o) => new Pole(o), what: 'the cart and the pole: 4 numbers, or the last 4 readings', goal: 'keep the pole upright' },
-    catch: { name: 'Catch', make: (o) => new Catch(o), what: 'the ball and the paddle: 4 numbers, or pixels', goal: 'catch the falling ball' },
+    maze: { name: 'Maze', make: (o) => new MazeWorld(o), what: 'its square, what is around it, or a picture of the maze', goal: 'reach the goal, keep out of the pits', axes: ['where it stops, across', 'where it stops, up'] },
+    pole: { name: 'Balance a pole', make: (o) => new Pole(o), what: 'the cart and the pole: 4 numbers, or the last 4 readings', goal: 'keep the pole upright', axes: ['where the cart keeps', 'how much the pole sways'] },
+    catch: { name: 'Catch', make: (o) => new Catch(o), what: 'the ball and the paddle: 4 numbers, or pixels', goal: 'catch the falling ball', axes: ['how much it moves', 'where it ends up'] },
   };
   E.make = (id, o) => E.WORLDS[id].make(o || {});
   // observations from random play: example inputs for a model (its zoom view opens on one)
@@ -293,13 +300,9 @@
   };
 
   // ------------------------------------------------------------------ pictures
-  /* draw(ctx, r, id, snap, T): a world's state from snap() inside r. T is the theme (NA.theme). */
-  E.draw = function (ctx, r, id, s, T, o = {}) {
-    if (id === 'levers') return drawLevers(ctx, r, s, T, o);
-    if (id === 'maze') return drawMaze(ctx, r, s, T);
-    if (id === 'pole') return drawPole(ctx, r, s, T);
-    return drawCatch(ctx, r, s, T);
-  };
+  /* draw(ctx, r, id, snap, T): a world's state from snap() inside r. T is the theme (NA.theme). Worlds defined
+     elsewhere (rl-worlds.js) add their own pictures to E.DRAW. */
+  E.draw = function (ctx, r, id, s, T, o = {}) { return (E.DRAW[id] || drawCatch)(ctx, r, s, T, o); };
   function drawLevers(ctx, r, s, T, o) {
     const k = o.k || 3, cols = ['s1', 's2', 's4', 's7', 's3'], cw = Math.min(r.w / k, 70), x0 = r.x + (r.w - cw * k) / 2, cy = r.y + r.h * 0.3, rad = Math.min(cw * 0.3, r.h * 0.18);
     ctx.beginPath(); ctx.arc(r.x + r.w / 2, r.y + r.h * 0.12 + rad * 0.5, rad * 0.8, 0, Math.PI * 2); ctx.fillStyle = T.c(cols[s.light]); ctx.fill();
@@ -347,6 +350,8 @@
     ctx.fillStyle = T.c(s.caught ? 'pos' : 's1'); ctx.fillRect(x0 + s.px * cs + cs * 0.08, y0 + (H - 1) * cs + cs * 0.62, cs * 0.84, cs * 0.26);
   }
 
-  Object.assign(E, { Levers, MazeWorld, Pole, Catch });
+  E.DRAW = { levers: drawLevers, maze: drawMaze, pole: drawPole, catch: drawCatch };
+  // for the worlds of rl-worlds.js: reward tables, inputs left out and noise, the same way as here
+  Object.assign(E, { Levers, MazeWorld, Pole, Catch, rewardTable, sensors, sensed });
   NA.rlEnvs = E;
 })(typeof globalThis !== 'undefined' && globalThis.NA ? globalThis.NA : window.NA);

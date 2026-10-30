@@ -389,7 +389,7 @@
     const rnd = (i) => { const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return v - Math.floor(v); };
     const mid = H / 2, pulse = (t % 2) / 2;
     ctx.clearRect(0, 0, W, H);
-    if (String(type).startsWith('rl-')) { drawRL(type, ctx, W, H, t, { c, line, dot, label, rnd, mid }); return; }
+    if (String(type).startsWith('rl-')) { drawRL(type, ctx, W, H, t, { c, line, dot, box, label, rnd, mid }); return; }
     if (type === 'dense' || type === 'neuron' || type === 'gated') {
       const ins = type === 'neuron' ? 3 : 4, outs = type === 'neuron' ? 1 : 3, x0 = W * 0.22, x1 = W * 0.7;
       const yi = (i) => mid + (i - (ins - 1) / 2) * (H / (ins + 1)), yo = (j) => mid + (j - (outs - 1) / 2) * (H / (outs + 1.5));
@@ -500,6 +500,9 @@
     a2c: 'out = model(x)\nlogp = out[:, :n].log_softmax(1)[range(len(a)), a]\nadv = R - out[:, n].detach()                           # rewards + γ·V(where it ended) − V(here)\nloss = -(adv * logp).mean() + 0.25 * ((out[:, n] - R) ** 2).mean()',
     ppo: 'ratio = (logp_new - logp_old).exp()                    # how far the policy has moved\nloss = -torch.min(ratio * adv, ratio.clamp(0.8, 1.2) * adv).mean()',
     ga: 'fit = [play(w) for w in population]                    # each network plays\nparents = [tournament(population, fit) for _ in range(2)]\nchild = torch.where(torch.rand(n) < 0.5, *parents)      # each weight from one parent\nchild += (torch.rand(n) < 0.1) * sigma * torch.randn(n) # a few mutate',
+    grow: 'child = mutate(copy(parent))\nif random.random() < 0.25:                             # a quarter of the children change shape\n    child = random.choice([add_neuron, remove_neuron, add_layer, remove_layer])(child)\nfitness = total_reward - penalty * n_weights / 100     # of two that play as well, the smaller wins',
+    es: 'eps = torch.randn(pairs, n)                            # random directions\nf = [play(theta + sigma * e) - play(theta - sigma * e) for e in eps]   # (ranked, on the page)\ngrad = sum(fk * e for fk, e in zip(f, eps)) / (2 * pairs * sigma)\ntheta += lr * grad                                     # (with Adam, on the page)',
+    me: 'cell = style_cell(play(w))                             # e.g. (average speed, side of the track): one of 12 x 12\nif cell not in archive or fit > archive[cell][0]:\n    archive[cell] = (fit, w)                           # the best of each style is kept\nw = mutate(random.choice(list(archive.values()))[1])   # new ones come from any elite',
   };
   Object.assign(G, {
     'rl-dqn': {
@@ -540,13 +543,40 @@
       code: RL_CODE.ppo, try: 'catch',
     },
     'rl-ga': {
-      what: 'Evolution instead of gradients: 24 copies of your network, each a little different, play. The best two pass on unchanged; every other place goes to a child of two fitter ones, each weight taken from one parent or the other, a few of them mutated. One step is one generation. No loss, no learning rate, no gradient.',
-      how: ['Every network in the population plays the same episodes; its fitness is the reward it collects.', 'Keep the best two as they are (elitism).', 'For each other place, pick two parents, each the fitter of three drawn at random (a tournament).', 'Take each weight from one parent or the other, then move one weight in ten by a random amount (mutation).'],
-      math: ['child = mix(parent a, parent b) + N(0, σ²) on 10% of its weights'],
-      params: 'none of its own; the population is 24 copies of your network’s weights',
+      what: 'Evolution instead of gradients: a population of copies of your network (24, or 48 in the bigger worlds), each a little different, play. The best two pass on unchanged; every other place goes to a child of fitter ones, mixed weight by weight, neuron by neuron or not at all, then mutated: a few weights moved at random, or by safe mutations, which move most the weights the moves depend on least. One step is one generation. No loss, no learning rate, no gradient.',
+      how: ['Every network in the population plays the same episodes; its fitness is the reward it collects.', 'Keep the best two as they are (elitism).', 'For each other place, pick parents: the fitter of three drawn at random (a tournament), one of the top fifth, or by rank.', 'Mix them (or copy one), then move one weight in ten by a random amount (mutation).'],
+      math: ['child = mix(parent a, parent b) + N(0, σ²) on 10% of its weights', 'safe: each nudge ÷ how much the moves depend on that weight'],
+      params: 'none of its own; the population is copies of your network’s weights',
       use: ['Small networks, and goals with no gradient to follow: only a score at the end.', 'Neuroevolution: see Evolution in the RL lab.'],
       watch: ['Thousands of weights make most mutations noise: it is slow on big networks.', 'Each generation plays every member, so a step takes longer.'],
       code: RL_CODE.ga, try: 'pole',
+    },
+    'rl-grow': {
+      what: 'A genetic algorithm that evolves the network itself, not only its weights: a child may gain or lose a neuron, or a whole layer. A new neuron starts with outgoing weights of 0 and a new layer passing its input straight through, so neither changes what the network does until mutation puts it to work; a removed layer is folded into the next. A small size penalty decides between two that play equally well, so networks grow only when growing pays.',
+      how: ['Every network plays; its fitness is its return, less a little for every 100 weights.', 'The best two pass on unchanged; parents are picked, mixed and mutated as in the genetic algorithm.', 'A quarter of the children also change shape: a neuron more (most often) or less, or a layer more or less.', 'Removing a neuron takes the one the next layer listens to least; a removed layer is folded into the next.'],
+      math: ['fitness = return − penalty × weights / 100', 'new neuron: incoming weights random, outgoing 0', 'new layer: W = I, b = 0   (ReLU(I·h) = h when h ≥ 0)', 'removed layer: W = W₂W₁, b = W₂b₁ + b₂'],
+      params: 'none of its own: each member is a network of its own shape (Dense layers, at most 6 of up to 48 neurons)',
+      use: ['To find how big a network a problem needs: start with no hidden layer and watch it grow.', 'Small policies: on the rocket and the track the winners often shrink to a few dozen weights.'],
+      watch: ['Only a model of Dense blocks on a list of numbers can change shape; any other evolves its weights only.', 'With no size penalty, networks drift bigger: growing costs nothing.'],
+      code: RL_CODE.grow, try: 'arena',
+    },
+    'rl-es': {
+      what: 'Evolution strategies: one network, nudged in many random directions at once. Each direction is tried both ways (plus and minus); the directions whose nudge scored better pull the network their way. That is an estimate of the gradient made from scores alone, with no backpropagation, and Adam takes a step along it. In 2017 OpenAI spread it over 1,440 processor cores and taught a simulated humanoid to walk in 10 minutes.',
+      how: ['Draw random directions ε, as many as half the population.', 'Play θ + σε and θ − σε for each, from the same starts.', 'Rank all the scores from −½ to ½, so one lucky score cannot run away with the step.', 'Add up the directions weighted by their score differences: the gradient estimate. Adam steps uphill.'],
+      math: ['g = (1 / 2nσ) Σₖ (uₖ⁺ − uₖ⁻) εₖ', 'θ ← θ + Adam(g)'],
+      params: 'none of its own: it moves the one network you built',
+      use: ['A score only at the end of long episodes, where backpropagating rewards is hard.', 'Many processors: every nudged copy plays on its own.'],
+      watch: ['It follows the slope where it stands: at a bend where nearly every nudge crashes the same way it stalls (try the race track).', 'σ too small: the scores barely differ; too large: the estimate is for some other network.'],
+      code: RL_CODE.es, try: 'track',
+    },
+    'rl-me': {
+      what: 'MAP-Elites: instead of one best network, the best network of every style of play. Two numbers the world measures (on the race track, average speed and which side of the track it keeps) place each network in a grid of 12 × 12 cells, and a new one takes its cell if the cell is empty or it beats the network there. New networks are mutated copies of elites picked at random, so a style that does badly today can lead to one that does well tomorrow.',
+      how: ['At first, random networks fill some cells.', 'Then each step: pick elites at random from the grid and mutate copies of them.', 'Play each; measure its style (two numbers from 0 to 1) and its fitness.', 'It goes into its cell if the cell is empty or it beats the elite there.'],
+      math: ['cell = (⌊12 · style₁⌋, ⌊12 · style₂⌋)', 'archive[cell] ← child   if fitness(child) > fitness(archive[cell])'],
+      params: 'none of its own: the grid keeps up to 144 copies of your network’s weights',
+      use: ['To see the many ways a world can be played, not just one.', 'Deceptive problems, where the way to the best goes through styles that score worse at first.'],
+      watch: ['The best score climbs more slowly than a genetic algorithm’s: the effort is spread over every style.', 'The styles are the world’s own two measures; the levers have none to tell apart.'],
+      code: RL_CODE.me, try: 'track',
     },
   });
 
@@ -587,7 +617,7 @@
   }
   // the methods of learning from rewards, as moving pictures
   function drawRL(type, ctx, W, H, t, k) {
-    const { c, line, dot, label, rnd, mid } = k;
+    const { c, line, dot, box, label, rnd, mid } = k;
     const bars = (x0, w, vals, best, top, bottom, toks) => {
       const n = vals.length, bw = w / n, hi = Math.max(...vals, 1e-9);
       vals.forEach((v, i) => { const h = (bottom - top) * (v / hi); ctx.fillStyle = c(i === best ? 's2' : (toks && toks[i]) || 's1', i === best ? 0.95 : 0.55); ctx.fillRect(x0 + i * bw + 3, bottom - h, bw - 6, h); });
@@ -625,6 +655,42 @@
         dot(x0 + (x1 - x0) * phase, y(rc), 4.5, c('s2'));
         label('steps kept within ±20%', (x0 + x1) / 2, H - 9, { maxW: W * 0.42 });
       }
+    } else if (type === 'rl-grow') {
+      // a network whose shape changes: a new neuron (its outgoing weights 0: dashed), a new layer, one pruned
+      const STEPS = [{ s: [2], op: 'grow and prune: the shape evolves with the weights' }, { s: [3], op: '+1 neuron: its outgoing weights start at 0', at: [1, 2] }, { s: [3, 3], op: '+1 layer: it passes values straight through', at: [2, -1] },
+        { s: [4, 3], op: '+1 neuron', at: [1, 3] }, { s: [4, 2], op: '−1 neuron: the one listened to least' }, { s: [4], op: '−1 layer: folded into the next' }, { s: [3], op: '−1 neuron' }];
+      const st = STEPS[Math.floor(t / 2.2) % STEPS.length], sh = [3, ...st.s, 2], n = sh.length, at = st.at || [-1, -1], fresh = Math.min(1, (t % 2.2) / 1.2);
+      const x = (i) => W * 0.12 + (i / (n - 1)) * W * 0.76, y = (i, j) => mid - 8 + (j - (sh[i] - 1) / 2) * Math.min(15, (H - 44) / 3);
+      const isNew = (i, j) => i === at[0] && (at[1] < 0 || j === at[1]);
+      for (let i = 0; i + 1 < n; i++) for (let a = 0; a < sh[i]; a++) for (let b = 0; b < sh[i + 1]; b++) {
+        const zero = isNew(i, a) && at[1] >= 0;
+        ctx.setLineDash(zero ? [3, 3] : []); line(x(i), y(i, a), x(i + 1), y(i + 1, b), zero ? c('s2', 0.8) : c('line-2'), 1); ctx.setLineDash([]);
+      }
+      sh.forEach((m, i) => { for (let j = 0; j < m; j++) { dot(x(i), y(i, j), 4.5, c(i === 0 ? 's3' : i === n - 1 ? 's2' : 's1', 0.9)); if (isNew(i, j)) { ctx.strokeStyle = c('s2', 1 - 0.6 * fresh); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x(i), y(i, j), 6 + 5 * fresh, 0, Math.PI * 2); ctx.stroke(); } } });
+      label(st.op, W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-es') {
+      // a hill of fitness (its top at the right); nudged copies both ways around θ, better ones green; θ steps uphill
+      const cx = W * 0.8, cy = mid - 4, R = Math.min(W * 0.3, H * 0.5);
+      for (let r = 1; r <= 4; r++) { ctx.strokeStyle = c('line-2'); ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(cx, cy, (R * r) / 4 * 1.6, (R * r) / 4 * 0.75, 0, 0, Math.PI * 2); ctx.stroke(); }
+      dot(cx, cy, 3, c('muted'));
+      const k = Math.floor(t / 1.8) % 6, f = (t % 1.8) / 1.8, P = (j) => { const a = j / 6; return [W * 0.12 + (cx - W * 0.12) * (1 - (1 - a) ** 2), cy + H * 0.24 * (1 - a) * (j % 2 ? 1 : -0.7)]; };
+      const [ax, ay] = P(k), [bx, by] = P(k + 1), mv = Math.max(0, (f - 0.6) / 0.4), px = ax + (bx - ax) * mv, py = ay + (by - ay) * mv;
+      if (f < 0.75) for (let i = 0; i < 4; i++) {
+        const a = rnd(k * 7 + i) * Math.PI * 2, L = 16, ex = Math.cos(a) * L, ey = Math.sin(a) * L * 0.7, d1 = Math.hypot(ax + ex - cx, (ay + ey - cy) * 2), d2 = Math.hypot(ax - ex - cx, (ay - ey - cy) * 2);
+        for (const [sx, sy, good] of [[ex, ey, d1 < d2], [-ex, -ey, d2 <= d1]]) { line(ax, ay, ax + sx, ay + sy, c(good ? 'good' : 'critical', 0.7), 1); dot(ax + sx, ay + sy, 3, c(good ? 'good' : 'critical')); }
+      }
+      dot(px, py, 5, c('s2'));
+      label('nudged both ways; it steps toward the better ones', W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-me') {
+      // the grid of styles filling in, each cell the best network of its style (darker: fitter); new elites ringed
+      const G = 12, side = Math.min(H - 30, W * 0.42), cs = side / G, gx = W * 0.3 - side / 2, gy = 6, cyc = (t % 9) / 9, fill = 0.06 + 0.84 * cyc;
+      for (let cell = 0; cell < G * G; cell++) {
+        const i = cell % G, j = Math.floor(cell / G), u = rnd(cell * 3 + 1) * (0.55 + 0.45 * Math.exp(-((i - 7) ** 2 + (j - 5) ** 2) / 30)), on = u < fill * 0.75;
+        box(gx + i * cs + 0.5, gy + j * cs + 0.5, cs - 1, cs - 1, on ? theme.seqColor(0.2 + 0.8 * rnd(cell + 77) * Math.min(1, fill * 1.4)) : c('line', 0.3));
+        if (on && u > (fill - 0.04) * 0.75) { ctx.strokeStyle = c('s2'); ctx.lineWidth = 1.5; ctx.strokeRect(gx + i * cs + 0.5, gy + j * cs + 0.5, cs - 1, cs - 1); }
+      }
+      label('average speed →', gx + side / 2, gy + side + 9, { maxW: side + 20 });
+      label('144 styles, the best of each kept', W * 0.74, mid, { maxW: W * 0.48 });
     } else {
       // a population of networks by fitness; the best two kept; the next generation bred from the fitter ones
       const n = 10, x0 = W * 0.06, w = W * 0.88, bw = w / n, gen = Math.floor(t / 2);

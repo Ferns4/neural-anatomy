@@ -101,9 +101,10 @@
 
   // learning from rewards: what the run shows, with changes to try
   function diagnoseControl(L, d, add, out) {
-    const run = L.run, s = L.ps(), M = NA.brl.METHODS[s.method], ga = s.method === 'ga', unit = ga ? 'generation' : 'step';
+    const run = L.run, s = L.ps(), M = NA.brl.METHODS[s.method], ga = NA.brl.isEvo(s.method), unit = ga ? 'generation' : 'step';
     const again = (label, fn) => ({ label, run: () => { L.edit(fn); L.reset(); if (!L.training) L.play(); } }), setPs = (fn) => (S) => fn(S.ps[S.problem]);
-    if (!run) { add('info', 'Not trained yet', `Press Train: the network plays in the world, and ${ga ? 'each generation the best players are bred and the rest replaced' : `${M.short} turns what happens into steps on its weights`}. The picture plays it live, with its best moves.`); return; }
+    const how = { ga: 'each generation the best players are bred and the rest replaced', es: 'each generation nudged copies of it play, and it moves toward the ones that did better', me: 'it keeps the best player of every style it finds and breeds new ones from them' }[s.method];
+    if (!run) { add('info', 'Not trained yet', `Press Train: the network plays in the world, and ${how || `${M.short} turns what happens into steps on its weights`}. The picture plays it live, with its best moves.`); return; }
     if (L.stale) { add('info', 'The setup has changed since the last run', 'The pictures show the last run. Train starts a new run with the setup as it is now; the Runs tab keeps the earlier runs to compare.'); return; }
     if (run.status === 'diverged') { add('critical', 'The loss blew up', `At step ${fmtInt(run.step)} the weights ran off to infinity. Learning from rewards is touchy: a smaller learning rate, or clipping, usually cures it.`, [again(`Learning rate ${+(L.setup.train.lr / 10).toPrecision(2)}, new run`, (S) => { S.train.lr = +(S.train.lr / 10).toPrecision(2); })]); return; }
     const c = run.curve.filter((p) => p.vm !== null && p.vm !== undefined), n = c.length, vm = run.last ? run.last.vm : null, best = run.bestVm, ret = run.last ? run.last.ret : null;
@@ -129,7 +130,7 @@
       add('warn', 'A lot of weights to evolve', `A genetic algorithm searches blindly, by mutating weights and keeping what plays better. With ${fmtInt(L.check.params)} weights most mutations are noise, and progress is slow. A smaller network gives each mutation more say.`);
     }
     if (best !== null && best !== undefined && vm !== null && best - vm >= 0.3 && n >= 6) {
-      add('warn', 'It got worse again', `Its best moves scored ${fmtPct(best, 0)} at ${unit} ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Learning from rewards is unstable: the network makes its own data by playing, so a change for the worse also changes what it learns from next. A smaller learning rate steadies it${s.method === 'pg' || s.method === 'a2c' ? '; PPO is built to keep each change small' : ''}.`,
+      add('warn', 'It got worse again', ga ? `Its best moves scored ${fmtPct(best, 0)} at generation ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Each generation is judged on its own episodes, and the fittest of one can do worse from the starts the score uses. Smaller mutations change the best less from one generation to the next.` : `Its best moves scored ${fmtPct(best, 0)} at ${unit} ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Learning from rewards is unstable: the network makes its own data by playing, so a change for the worse also changes what it learns from next. A smaller learning rate steadies it${s.method === 'pg' || s.method === 'a2c' ? '; PPO is built to keep each change small' : ''}.`,
         [ga ? null : again(`Learning rate ${+(L.setup.train.lr / 3).toPrecision(2)}, new run`, (S) => { S.train.lr = +(S.train.lr / 3).toPrecision(2); }), s.method === 'pg' || s.method === 'a2c' ? { label: 'Switch to PPO', run: () => L.setMethod('ppo') } : null]);
     }
     if (!out.some((q) => q.level === 'warn' || q.level === 'critical') && vm !== null && vm >= 0.95) {

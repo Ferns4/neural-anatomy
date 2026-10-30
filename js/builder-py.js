@@ -827,6 +827,9 @@ def story():
     const head = (lines) => [...lines, ...consts];
     const ownLine = f ? [`        r = ${f.py}`] : null;
     const pays = (parts) => (f ? `Its reward is your own: r = ${f.py}` : parts);
+    // the race track, the drone arena and the rocket: builder-py-worlds.js
+    const PW = NA.builderPyWorlds;
+    if (PW && PW.worlds[w]) return PW.worlds[w](d, { num, say, rw, f, sense, head, ownLine, pays, SEEDED, PLAY });
     if (w === 'levers') {
       const k = ws.levers || 3, p = typeof ws.p === 'number' ? ws.p : 0.8, q = typeof ws.q === 'number' ? ws.q : 0.2, pct = (v) => `${Math.round(v * 100)}%`;
       return [...head(['class World:', `    """A light shows one of ${k} colours. The lever of that colour pays ${pct(p)} of the time, any other ${pct(q)}. One`, `    pull per episode. ${pays(`A lever that pays gives ${say(rw.rPay)}.`)}"""`,
@@ -913,8 +916,10 @@ def story():
       ...SEEDED(4242, ['for m in mazes:', '    o, done = self.reset(m), False', '    while not done:', '        o, _, done = self.step(policy(o))', '    reached += self.end == "goal"']).map((l) => '        ' + l), '        return reached / len(mazes)'].filter((l) => l !== null);
   }
   // the method's training loop
-  function methodPy(d, T, steps, every) {
+  function methodPy(d, T, steps, every, setup) {
     const s = d.s, m = d.method, g = flt(s.gamma), B = T.batch;
+    // evolution (a genetic algorithm, evolution strategies, MAP-Elites): builder-py-worlds.js
+    if (NA.brl.isEvo(m)) return NA.builderPyWorlds.method(d, T, steps, { flt, num, big, ACT_FN, setup, every, evolvable: !!NA.bevo && NA.bevo.evolvable(setup.blocks, d.input) });
     const update = ['    opt.zero_grad()', '    loss.backward()', T.clip ? `    torch.nn.utils.clip_grad_norm_(model.parameters(), ${num(T.clip)})   # cap the size of the step` : null, '    opt.step()', T.sched !== 'const' ? '    sched.step()' : null];
     const report = (what) => [`    if step % ${every} == 0:`, `        print(f"step {step:5d}  ${what}  score {judge.score(best_move):.3f}")`];
     // moves in 8 copies of the world, sampled from the policy, the copies as one batch: actor-critic and PPO
@@ -944,37 +949,27 @@ def story():
       '        for _ in range(4):                       # 4 passes over the 128 moves, in shuffled minibatches', '            perm = torch.randperm(len(adv))', '            queue += [perm[i:i + batch] for i in range(0, len(perm), batch)]',
       '    i = queue.pop(0)', '    x, a, old_logp, adv_i, ret_i = (q[i] for q in data)', '    out = model(x)', '    ratio = (out[:, :n_actions].log_softmax(1)[torch.arange(len(i)), a] - old_logp).exp()',
       '    clipped = ratio.clamp(0.8, 1.2)                # no further than 20% from the policy that played', '    loss = -torch.min(ratio * adv_i, clipped * adv_i).mean() + 0.25 * ((out[:, n_actions] - ret_i) ** 2).mean()', ...update, ...report('loss {loss.item():.4f}')];
-    // a genetic algorithm
-    const eps = (NA.brl.WORLD[d.world] || NA.brl.WORLD.pole).gaEpisodes + (d.ws.random || d.ws.slip ? 2 : 0);
-    return ['from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, sigma, episodes = ${s.pop}, ${flt(s.sigma)}, ${eps}`, 'w0 = parameters_to_vector(model.parameters()).detach()',
-      'population = [w0.clone()] + [w0 + 0.5 * torch.randn_like(w0) for _ in range(pop_size - 1)]', '', '',
-      'def fitness(w, seed):', '    """The return of its best moves over a few episodes, from the same starts for everyone in a generation."""', '    vector_to_parameters(w, model.parameters())', '    total = 0.0',
-      ...SEEDED('seed', ['for _ in range(episodes):', '    o, done = env.reset(), False', '    while not done:', '        o, r, done = env.step(best_move(o))', '        total += r']).map((l) => '    ' + l), '    return total / episodes', '', '',
-      'def pick(fit):                                     # a tournament: the best of three at random', '    best = random.randrange(pop_size)', '    for _ in range(2):', '        c = random.randrange(pop_size)', '        if fit[c] > fit[best]:', '            best = c', '    return population[best]', '', '',
-      `for gen in range(${big(steps)}):`, '    fit = [fitness(w, 1000 + gen) for w in population]', '    order = sorted(range(pop_size), key=lambda k: -fit[k])', '    children = [population[order[0]].clone(), population[order[1]].clone()]   # the best two carry on unchanged',
-      '    while len(children) < pop_size:', '        a, b = pick(fit), pick(fit)', '        child = torch.where(torch.rand_like(a) < 0.5, a, b)              # half the weights from each parent', '        mutate = (torch.rand_like(child) < 0.1).float()                 # one weight in ten moves a little',
-      '        children.append(child + mutate * sigma * torch.randn_like(child))', '    population = children', '    vector_to_parameters(population[0], model.parameters())             # on show: the best of the generation',
-      `    if gen % ${every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  score {judge.score(best_move):.3f}")'];
   }
   function controlCode(setup, d, chk) {
-    const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || NA.brl.stepsFor(d.world, d.method), M = NA.brl.METHODS[d.method], ga = d.method === 'ga';
+    const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || NA.brl.stepsFor(d.world, d.method), M = NA.brl.METHODS[d.method], evo = NA.brl.isEvo(d.method), s = d.s;
+    const how = { ga: `a population of ${s.pop}${s.grow && NA.bevo && NA.bevo.evolvable(setup.blocks, d.input) ? ' whose networks grow and shrink' : ''}`, es: `${Math.max(2, Math.round((s.pop || 24) / 2))} pairs of nudged copies a generation`, me: `${s.pop} new networks a generation, kept in a 12 × 12 grid of styles` }[d.method];
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt], every = Math.max(1, Math.round(steps / 10));
     return lines(
       `# Built in Neural Anatomy's model builder: ${p.label}, learning from rewards.`,
       `# Model:     ${summary(setup, d)}`,
       ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
-      `# Learns by: ${M.label}${ga ? `, a population of ${d.s.pop}` : `, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}`}, ${steps.toLocaleString('en')} ${ga ? 'generations' : 'steps'}${T.steps ? '' : ' (the page trains until you pause)'}`,
+      `# Learns by: ${M.label}${evo ? `, ${how}` : `, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}`}, ${steps.toLocaleString('en')} ${evo ? 'generations' : 'steps'}${T.steps ? '' : ' (the page trains until you pause)'}`,
       '# Only torch is needed.', 'import math', 'import random', d.method === 'dqn' ? 'import collections' : null, d.method === 'dqn' ? 'import copy' : null, 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
       `torch.manual_seed(${T.seed})`, `random.seed(${T.seed})`, '',
-      '# ---------------------------------------------------------------- the world', ...worldPy(d), '', '',
+      '# ---------------------------------------------------------------- the world', ...worldPy(d), ...(d.method === 'me' && !NA.builderPyWorlds.worlds[d.world] ? ['', '', ...NA.builderPyWorlds.style(d.world)] : []), '', '',
       'env, judge = World(), World()                     # one to learn in, one to measure its best moves in', 'n_actions = len(World.actions)', '', '',
       '# observations from random play (there are no examples with answers here): the architecture view\'s snippets', '# use the first as "the first validation example"', 'def random_observations(n):', '    w, out = World(), []', '    o = w.reset()', '    while len(out) < n:', '        out.append(o)', '        o, _, done = w.step(random.randrange(n_actions))', '        if done:', '            o = w.reset()', '    return torch.stack(out)', '', '', 'Xva = random_observations(40)', '', '',
       modelCode(setup, d, chk), '', '',
       'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '', '',
       'def outputs(X):                                    # the outputs for a batch of observations, without learning', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', '    model.train()', '    return out', '', '',
       'def best_move(obs):                                # its best move: the largest output', '    return int(outputs(obs[None])[0, :n_actions].argmax())', '', '',
-      ga ? null : ['# ---------------------------------------------------------------- the optimizer', ...optCode(T), '', ''],
-      `# ---------------------------------------------------------------- learning by ${M.label}`, ...methodPy(d, T, steps, every), '',
+      evo ? null : ['# ---------------------------------------------------------------- the optimizer', ...optCode(T), '', ''],
+      `# ---------------------------------------------------------------- learning by ${M.label}`, ...methodPy(d, T, steps, every, setup), '',
       'print(f"done: its best moves score {judge.score(best_move):.3f}")', '',
       '# ---------------------------------------------------------------- watch it play one episode with its best moves', 'o, done, total = env.reset(), False, 0.0', 'while not done:', '    a = best_move(o)', '    o, r, done = env.step(a)', '    total += r', '    print(World.actions[a], end="  ")', 'print(f"\\nreturn {total:.2f}")');
   }
@@ -993,21 +988,30 @@ def story():
     const chk = NA.bx ? NA.bx.check(setup.blocks, d.input, d.output) : { ok: false, shapes: [] };
     if (!chk.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((chk.problem || (chk.shapes.find((s) => s && s.problem) || {}).problem) || { reason: 'See the block marked in red.' }).reason}`);
     if (d.family === 'control') return controlCode(setup, d, chk);
-    const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, needsRandom(p, d) ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
+    const grows = !!T.grow && !!NA.bevo && NA.bevo.evolvable(setup.blocks, d.input), rnd = needsRandom(p, d) || grows; // (grow and prune picks its changes at random)
+    const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, rnd ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
     const lossName = NA.bx.LOSSES[setup.loss.id] ? NA.bx.LOSSES[setup.loss.id].label : setup.loss.id;
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt];
     const evalEvery = Math.max(50, Math.round(steps / 10 / 50) * 50);
+    // grow and prune while it learns (Dense blocks on a list of numbers): 6 networks whose shapes evolve, builder-py-worlds.js
+    const grow = grows, HE = (a) => !!(NA.engine.ACTIVATIONS[a] || {}).he;
+    const lrAt = !T.steps ? null : T.sched === 'cosine' ? ['def lr_at(step):                                 # the learning rate falls along half a cosine', `    return LR * 0.5 * (1 + math.cos(math.pi * step / ${steps}))`]
+      : T.sched === 'step' ? ['def lr_at(step):                                 # a tenth of it after half the steps, a hundredth after three quarters', `    return LR * 0.1 ** ((step >= ${Math.round(steps / 2)}) + (step >= ${Math.round(steps * 0.75)}))`]
+        : T.sched === 'warmup' ? ['def lr_at(step):                                 # warm up, then a cosine', `    warm = ${Math.max(1, Math.round(steps * 0.05))}`, `    return LR * (step / warm if step < warm else 0.5 * (1 + math.cos(math.pi * (step - warm) / (${steps} - warm))))`] : null;
+    const growing = grow && NA.builderPyWorlds.growSupervised({ flt, num, big, ACT_FN, setup, d, evalEvery, clip: T.clip, lrAt,
+      gains: T.init === 'small' ? null : [...setup.blocks.map((b) => (T.init === 'he' || (T.init === 'auto' && HE(b.act)) ? 2 : 1)), 1] });
     return lines(
       `# Built in Neural Anatomy's model builder: ${p.label}.`,
       `# Model:     ${summary(setup, d)}`,
       ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
-      `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}`,
+      `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}${grow ? '; 6 networks side by side, their shapes evolving (grow and prune)' : ''}`,
       ...needs.filter(Boolean), 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
-      `torch.manual_seed(${T.seed})`, needsRandom(p, d) ? `random.seed(${T.seed})` : null, '',
+      `torch.manual_seed(${T.seed})`, rnd ? `random.seed(${T.seed})` : null, '',
       dataCode(setup, d), '', '',
       modelCode(setup, d, chk), '', '',
       'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '',
-      '# ---------------------------------------------------------------- loss, optimizer and measure', lossCode(setup, d), '', scoreCode(d), '', optCode(T), '',
+      '# ---------------------------------------------------------------- loss, optimizer and measure', lossCode(setup, d), '', scoreCode(d), '',
+      grow ? ['', growing] : [optCode(T), '',
       'def evaluate(X, Y):', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', '        loss, s = loss_fn(out, Y).item(), score(out, Y).item()', '    model.train()', '    return loss, s', '',
       '# ---------------------------------------------------------------- training', `batch = ${T.batch}`, 'order, pos = torch.randperm(len(Xtr)), 0',
       `for step in range(${big(steps)}):`,
@@ -1017,7 +1021,7 @@ def story():
       T.clip ? `    torch.nn.utils.clip_grad_norm_(model.parameters(), ${num(T.clip)})   # cap the size of the step` : null,
       '    opt.step()', T.sched !== 'const' ? '    sched.step()' : null,
       `    if step % ${evalEvery} == 0:`, '        val_loss, val_score = evaluate(Xva, Yva)', '        print(f"step {step:5d}  training loss {loss.item():.4f}  validation loss {val_loss:.4f}  score {val_score:.3f}")', '',
-      'val_loss, val_score = evaluate(Xva, Yva)', 'print(f"done: validation loss {val_loss:.4f}, score {val_score:.3f}")',
+      'val_loss, val_score = evaluate(Xva, Yva)', 'print(f"done: validation loss {val_loss:.4f}, score {val_score:.3f}")'],
       afterCode(setup, d));
   };
 

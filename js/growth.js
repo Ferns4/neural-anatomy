@@ -463,8 +463,30 @@
       note: 'The critic learns how good each situation is; the actor makes moves that turned out better than the critic expected more likely. The entropy term H keeps it from becoming sure too soon.' }; },
     ppo(o) { return { title: 'The rule it learns by: PPO', lines: [{ t: 'ρ = π(a | s) / π_old(a | s)', strong: true }, { t: 'L = −min( ρ·A, clip(ρ, 0.8, 1.2)·A ) + ¼·(V − R)²', strong: true }, `γ = ${N(o.gamma, 2)}   λ = 0.95 (advantages, GAE)${o.ret !== undefined ? `   average return now: ${N(o.ret, 3)}` : ''}`],
       note: 'Like actor-critic, but each batch of experience is used for 4 passes, and the clip stops any one update from moving the policy more than 20% away from the one that played.' }; },
-    ga(o) { return { title: 'The rule it evolves by: a genetic algorithm', lines: [{ t: 'fitness(w) = total reward of its episodes', strong: true }, { t: 'child = mix(parent₁, parent₂);  10% of its weights += σ·N(0, 1)', strong: true }, `population ${o.pop}   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`],
-      note: 'No gradients at all: the fittest networks are kept and bred, and random mutations try out changes. The good ones survive into the next generation.' }; },
+    /* o: pop, sigma, best, mean; select (tournament, truncation, rank), cross (uniform, neuron, none), mutate (plain,
+       safe); grow, penalty (taken off the fitness for every 100 weights), units and weights of the best */
+    ga(o) {
+      const mix = { uniform: 'child = mix(parent₁, parent₂), weight by weight', neuron: 'child = mix(parent₁, parent₂), neuron by neuron', none: 'child = a copy of one parent' }[o.cross || 'uniform'];
+      const mut = o.mutate === 'safe' ? '10% of its weights += σ·N(0, 1) / s(w),   s(w) = √Σₐ (∂outputₐ/∂w)²   (safe)' : '10% of its weights += σ·N(0, 1)';
+      const pick = { tournament: 'parents: the best of 3 picked at random', truncation: 'parents: from the top fifth', rank: 'parents: by rank, the better the likelier' }[o.select || 'tournament'];
+      const lines = [{ t: o.grow && o.penalty ? `fitness = total reward − ${N(o.penalty, 3)} × weights/100` : 'fitness(w) = total reward of its episodes', strong: true }, { t: mix, strong: true }, { t: mut, strong: true }, pick];
+      if (o.grow) lines.push({ t: 'a quarter of the children: a neuron or a layer more or less (new ones change nothing at first)', strong: true }, o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights` : null);
+      lines.push(`population ${o.pop}   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`);
+      return { title: o.grow ? 'The rule it evolves by: grow and prune' : 'The rule it evolves by: a genetic algorithm', lines,
+        note: o.grow ? 'The architecture evolves with the weights: a child may gain or lose a neuron or a layer. New neurons start with outgoing weights of 0 and new layers passing values straight through, so a change costs nothing until it proves useful; the size penalty decides between two that play equally well.' : 'No gradients at all: the fittest networks are kept and bred, and random mutations try out changes. The good ones survive into the next generation.' };
+    },
+    // evolution strategies: o: pop (two nudges a pair), sigma, lr, best, mean
+    es(o) { return { title: 'The rule it learns by: evolution strategies', lines: [{ t: 'nudged copies: θ + σ·εₖ and θ − σ·εₖ,   εₖ ~ N(0, I)', strong: true }, { t: 'g = (1 / 2nσ) Σₖ (uₖ⁺ − uₖ⁻)·εₖ      (u: each copy’s rank, from −½ to ½)', strong: true }, { t: 'θ ← θ + Adam(g)      (a step uphill)', strong: true },
+      `${Math.max(2, Math.round((o.pop || 24) / 2))} pairs   σ = ${N(o.sigma, 3)}   step ${N(o.lr, 3)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`],
+      note: 'An estimate of the gradient from scores alone, with no backpropagation: directions whose nudge scored better pull the network their way. It moves one network, so it climbs the slope where it stands; a population, as in a genetic algorithm, can spread out instead.' }; },
+    // MAP-Elites: o: batch, sigma, filled, axes, best
+    me(o) { return { title: 'The rule it searches by: MAP-Elites', lines: [{ t: `style(w) = (${(o.axes || ['measure 1', 'measure 2']).join(', ')}) → one of 12 × 12 cells`, strong: true }, { t: 'child = an elite picked at random, 10% of its weights + σ·N(0, 1)', strong: true }, { t: 'it stays if its cell is empty, or it beats the elite there', strong: true },
+      `${N(o.filled || 0, 0)} of 144 styles found   ${o.batch} new a step   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}` : ''}`],
+      note: 'Quality and diversity: it keeps the best network of every style instead of one best. A style that does badly today can be the stepping stone to one that does well tomorrow.' }; },
+    // grow and prune while learning: o: size, every, penalty, units, weights, score, value (R² rather than accuracy)
+    grow(o) { return { title: 'Its shape evolves: grow and prune', lines: [{ t: `${o.size} networks learn side by side; every ${o.every} steps:`, strong: true }, { t: `fitness = −(validation loss)${o.penalty ? ` − ${N(o.penalty, 3)} × weights/100` : ''}`, strong: true }, { t: 'the worse half ← copies of the better half, each changed by a neuron or a layer more or less', strong: true },
+      o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights${o.score !== undefined && o.score !== null ? `, ${o.value ? `R² ${N(o.score, 3)}` : `${N(100 * o.score, 1)}% right`}` : ''}` : null],
+      note: 'Gradient steps train the weights; selection shapes the architecture. A new neuron starts with outgoing weights of 0 and a new layer as the identity, so a copy starts out as good as its parent and has time to put its new part to use.' }; },
     td(o) { return { title: 'The rule it learns by: temporal difference', lines: [{ t: o.formula || 'V(s) ← V(s) + α·[ V(s′) − V(s) ]      (at the end: the result, 1, 0 or ½)', strong: true }, o.nums || null],
       note: o.note || 'Each position’s value is pulled toward the value of the position after it: the final result flows back, game after game, to the moves that led there.' }; },
   };

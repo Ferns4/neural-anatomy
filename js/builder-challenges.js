@@ -270,8 +270,37 @@
       hint: 'Let it see what is around it: set It sees to Around it, in the Input block’s settings. Walls, pits and the way to the goal look the same in every maze, so what it learns carries over.',
       solution: { ps: { view: 'around' } },
     },
+    {
+      id: 'laps', level: 'Intermediate', topic: 'Rewards', title: 'Four laps', problem: 'track', template: 'mlp', ps: { method: 'dqn' }, free: ['method'],
+      brief: 'The race track, learned by DQN. Its random moves end in a wall at the first bends, so it hardly ever finds out what lies beyond them, and it never gets round.',
+      goals: [{ metric: 0.95 }],
+      hint: 'Let it evolve instead: select the Output block and set Learns by to the genetic algorithm. Every driver of a generation is judged by how far it got, and the ones that got furthest are kept and bred.',
+      solution: { ps: { method: 'ga' } },
+    },
+    {
+      id: 'trigger', level: 'Intermediate', topic: 'Rewards', title: 'Trigger shy', problem: 'arena', template: 'mlp', ps: { method: 'ppo', rShot: -1 }, free: ['rShot'],
+      brief: 'The drone arena, with every shot costing as much as a hit pays, to save ammunition. A miss now loses a point and a hit gains nothing, so firing never pays: it learns to stop shooting, and the drones get through.',
+      goals: [{ metric: 0.9 }],
+      hint: 'The agent only chases the reward it is given. In the Input block’s reward, set Firing a shot back to 0 (or a small cost such as −0.05): a hit must be worth more than the shots it takes.',
+      solution: { ps: { rShot: 0 } },
+    },
+    {
+      id: 'styles', level: 'Advanced', topic: 'Rewards', title: 'Many ways to drive', problem: 'track', template: 'mlp', ps: { method: 'ga' }, free: ['method'],
+      brief: 'A genetic algorithm finds one good way round the track, and its population soon looks all alike. Find at least 80 different styles of driving instead (fast or slow, keeping left or right), each with the best driver of that style.',
+      goals: [{ styles: 80 }],
+      hint: 'Set Learns by to MAP-Elites on the Output block. It keeps the best driver of every style in a grid of 12 × 12, and breeds new ones from any of them; a click on a cell of the grid watches that style drive.',
+      solution: { ps: { method: 'me' } },
+    },
+    {
+      id: 'growup', level: 'Expert', topic: 'Layers', title: 'Grow your own', problem: 'spiral', template: 'linear', train: { steps: 6000 },
+      brief: 'Two spirals and no hidden layer: a straight line cannot follow them. This time, let evolution find the network instead of adding layers yourself.',
+      goals: [{ metric: 0.95 }, { grow: true }],
+      hint: 'Open the Training tab and turn on Grow and prune: 6 networks learn side by side, and every 150 steps the worse half are replaced by copies of the better half with a neuron or a layer more or less.',
+      solution: { train: { grow: true } },
+    },
   );
   const byId = Object.fromEntries(LIST.map((c) => [c.id, c]));
+  const FAM_OF = (ch) => NA.builderTasks.byId[ch.problem].family;
   const isClassic = (type) => !!(NA.cml && NA.cml.isClassic(type));
   const TABLE_NAMES = {};
   const tableName = (id) => TABLE_NAMES[id] || (TABLE_NAMES[id] = NA.builderTasks.SAMPLES[id].make().name);
@@ -299,6 +328,10 @@
       if (g.steps !== undefined) { const v = run ? run.step : null; return { goal: g, ok: v !== null && v !== undefined && v <= g.steps, now: v }; }
       if (g.classic !== undefined) { const v = cfg ? blocks.some((b) => isClassic(b.type)) : null; return { goal: g, ok: v === g.classic, now: v }; }
       if (g.dense !== undefined) { const v = cfg ? blocks.filter((b) => b.type === 'dense').length : null; return { goal: g, ok: v !== null && v >= g.dense, now: v }; }
+      // MAP-Elites: how many styles of play its grid holds
+      if (g.styles !== undefined) { const v = run && run.styles !== undefined ? run.styles : null; return { goal: g, ok: v !== null && v >= g.styles, now: v }; }
+      // grow and prune on: evolution's (learning from rewards) or while it learns (the Training tab)
+      if (g.grow !== undefined) { const v = cfg ? !!(FAM_OF(ch) === 'control' ? ((cfg.ps || {})[ch.problem] || {}).grow : cfg.train.grow) : null; return { goal: g, ok: v === g.grow, now: v }; }
       return { goal: g, ok: false, now: null };
     });
     out.push({ goal: { data: true }, ok: !!cfg && sameData(ch, cfg), now: null });
@@ -307,7 +340,7 @@
   const passed = (ch, run) => !!run && run.cfg.problem === ch.problem && progress(ch, run).every((p) => p.ok);
   // a goal in a few words, for tools and short lists
   const describe = (g) => (g.metric !== undefined ? `score ≥ ${g.metric}` : g.params !== undefined ? `≤ ${g.params} params` : g.opt !== undefined ? `optimizer ${g.opt}` : g.method !== undefined ? `learns by ${g.method}` : g.steps !== undefined ? `within ${g.steps} steps`
-    : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `≥ ${g.dense} dense layers` : g.data ? 'its own data' : '?');
+    : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `≥ ${g.dense} dense layers` : g.grow !== undefined ? 'grow and prune on' : g.styles !== undefined ? `≥ ${g.styles} styles` : g.data ? 'its own data' : '?');
 
   // The setup a challenge starts from (blocks without ids), or with solved, its known solution.
   function setup(ch, solved) {
