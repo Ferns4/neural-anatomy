@@ -152,6 +152,20 @@
         me: 'MAP-Elites mutates weights and keeps the best network of each style of play', novelty: 'Novelty search mutates weights and keeps what behaves in new ways', erl: 'Evolution mutates weights and keeps what plays better, with a DQN joining it now and then' }[s.method] || 'A genetic algorithm searches blindly, by mutating weights and keeping what plays better';
       add('warn', 'A lot of weights to evolve', `${how}. With ${fmtInt(L.check.params)} weights, ${est ? 'what a few dozen tries can tell it about each one is mostly noise' : 'most mutations are noise'}, and progress is slow. A smaller network gives each ${est ? 'try' : 'mutation'} more say.`);
     }
+    /* grow and prune: new shapes that keep losing. The best has kept one shape for 40 generations or more while other
+       shapes played beside it (the generations' shape counts), and it has not learned the world yet. */
+    const ev = L.agent && L.agent.evo;
+    if (ga && run.grow && ev && ev.grow && ev.history.length >= 40 && low) {
+      const H = ev.history, now = H[H.length - 1].units, same = (u) => u.length === now.length && u.every((x, i) => x === now[i]);
+      let k = H.length - 1;
+      while (k > 0 && same(H[k - 1].units)) k--;
+      const stuck = H.length - k, tried = Math.max(1, ...H.slice(k).map((h) => h.shapes || 1)), g = ev.gopt;
+      if (stuck >= 40 && tried > 1) {
+        add('info', 'New shapes keep losing', `For ${fmtInt(stuck)} generations the best network has kept the shape ${now.length ? now.join(' → ') : 'with no hidden layer'}, though up to ${tried} shapes played in a generation. A new shape usually starts a little worse (${g.neuron === 'random' ? 'a new neuron joins in at random' : 'a new neuron does nothing yet'}, a new layer is a bottleneck), so it is thrown out before mutations can tune it${g.penalty === 'strong' ? ', and a strong size penalty makes every bigger shape start further behind' : ''}. ${g.protect ? 'New shapes are protected already: this shape may simply be the right size for the world.' : 'Protecting new shapes keeps the best of each new one for 5 generations, so it gets time to catch up.'}`,
+          [g.protect ? null : again('Protect new shapes, new run', setPs((q) => { q.growProtect = true; })), g.penalty === 'strong' ? again('Light size penalty, new run', setPs((q) => { q.penalty = 'light'; })) : null,
+            g.neuron === 'random' ? again('Silent new neurons, new run', setPs((q) => { q.growNeuron = 'silent'; })) : null].filter(Boolean));
+      }
+    }
     if (best !== null && best !== undefined && vm !== null && best - vm >= 0.3 && n >= 6) {
       add('warn', 'It got worse again', ga ? `Its best moves scored ${fmtPct(best, 0)} at generation ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Each generation is judged on its own episodes, and the fittest of one can do worse from the starts the score uses. Smaller mutations change the best less from one generation to the next.` : `Its best moves scored ${fmtPct(best, 0)} at ${unit} ${fmtInt(run.bestAt)} and ${fmtPct(vm, 0)} now. Learning from rewards is unstable: the network makes its own data by playing, so a change for the worse also changes what it learns from next. A smaller learning rate steadies it${s.method === 'pg' || s.method === 'a2c' ? '; PPO is built to keep each change small' : ''}.`,
         [ga ? null : again(`Learning rate ${+(L.setup.train.lr / 3).toPrecision(2)}, new run`, (S) => { S.train.lr = +(S.train.lr / 3).toPrecision(2); }), s.method === 'pg' || s.method === 'a2c' ? { label: 'Switch to PPO', run: () => L.setMethod('ppo') } : null]);

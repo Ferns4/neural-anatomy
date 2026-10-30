@@ -668,11 +668,28 @@ def mutate(w, sens):
 
   /* The operations on a network whose shape can change: its outputs, its size, a neuron more or less, a layer more
      (size: how wide a new layer starts, 'one', 'some' or 'whole', as builder-evo.js), a layer less ('whole': at
-     once; otherwise when its last neuron goes). */
-  function netOps(acts, newLayer, ACT_FN, size = 'one') {
-    const used = [...new Set([...acts, 'relu'])], whole = size === 'whole', rnd = newLayer === 'random';
+     once; otherwise when its last neuron goes), a new activation, and the one change of shape a child is born with,
+     by the odds and limits of o (EV.growOptions). The older call (acts, newLayer, ACT_FN, size) still works. */
+  // a docstring's text in lines of at most 116 characters, the first after its opening quotes, the rest indented 4
+  function wrapDoc(text) {
+    const out = [];
+    let line = '';
+    for (const w of text.split(' ')) { const room = out.length ? 112 : 109; if (line && line.length + 1 + w.length > room) { out.push(line); line = w; } else line = line ? `${line} ${w}` : w; }
+    out.push(line);
+    return out.join('\n    ');
+  }
+  function netOps(acts, o, ACT_FN, size) {
+    if (!o || typeof o !== 'object') o = NA.bevo.growOptions({ newLayer: o, layerSize: size || 'one' });
+    const whole = o.size === 'whole', rnd = o.mode === 'random', W = o.weights, act = W.act > 0, used = [...new Set([...acts, 'relu', ...(act ? NA.bevo.ACTS : [])])];
+    const where = o.where === 'first' ? '0' : o.where === 'last' ? 'n' : 'random.randrange(n + 1)', w = (v) => String(+v.toFixed(3));
+    // the changes allowed, with their odds (a change it cannot make here is left out)
+    const odds = [W['neuron+'] ? `"neuron+": ${w(W['neuron+'])} if n else 0` : null, W['neuron-'] ? `"neuron-": ${w(W['neuron-'])} if n else 0` : null, W['layer+'] ? `"layer+": ${w(W['layer+'])} if n < MOST_LAYERS else 0` : null,
+      W['layer-'] ? `"layer-": ${w(W['layer-'])} if n else 0` : null, act ? `"act": ${w(W.act)} if n else 0` : null].filter(Boolean);
+    const say = [W['neuron+'] ? 'a neuron more' : null, W['neuron-'] ? 'a neuron less' : null, W['layer+'] ? 'a layer more' : null, W['layer-'] ? 'a layer less' : null, act ? 'a new activation' : null].filter(Boolean);
+    // change_shape's docstring, wrapped as the page's other docstrings are
+    const shapeDoc = wrapDoc(`One change to its shape: ${say.length > 1 ? `${say.slice(0, -1).join(', ')} or ${say[say.length - 1]}` : say[0] || 'none'}, by these odds${W['layer+'] ? ` (a new layer of ${o.size === 'one' ? 'one neuron' : o.size === 'some' ? 'a few' : 'the width it reads'}, ${o.where === 'first' ? 'straight after the input' : o.where === 'last' ? 'just before the output' : 'anywhere'})` : ''}${whole || !W['neuron-'] ? '' : '; a layer goes when its last neuron does'}.`);
     return rows(String.raw`ACT = {${used.map((a) => `"${a}": ${ACT_FN[a] || 'F.relu'}`).join(', ')}}
-MOST_LAYERS, MOST_UNITS = 6, 48
+MOST_LAYERS, MOST_UNITS = ${o.maxLayers}, ${o.maxUnits}                   # the largest it may grow: hidden layers, neurons in a layer
 
 
 def forward(net, x):                               # its outputs: its layers in turn, the hidden ones with their activation
@@ -693,25 +710,24 @@ def shape(net):                                    # its hidden layers' widths
 
 
 def add_neuron(net, h):
-    """A neuron more in hidden layer h: its incoming weights at random, its outgoing ones 0, so it computes exactly
-    what it did, and later mutations can put the new neuron to work."""
+    """A neuron more in hidden layer h: its incoming weights at random, ${o.neuron === 'random' ? 'and its outgoing ones too, so it joins in at once,\n    for better or worse.' : 'its outgoing ones 0, so it computes exactly\n    what it did, and later mutations can put the new neuron to work.'}"""
     w = list(net["w"])
     W, b, W2 = w[2 * h], w[2 * h + 1], w[2 * h + 2]
     if W.shape[0] >= MOST_UNITS:
         return None
     w[2 * h] = torch.cat([W, torch.randn(1, W.shape[1]) * math.sqrt(2 / W.shape[1])])
     w[2 * h + 1] = torch.cat([b, torch.zeros(1)])
-    w[2 * h + 2] = torch.cat([W2, torch.zeros(W2.shape[0], 1)], 1)
+    w[2 * h + 2] = torch.cat([W2, ${o.neuron === 'random' ? 'torch.randn(W2.shape[0], 1) * math.sqrt(1 / (W.shape[0] + 1))' : 'torch.zeros(W2.shape[0], 1)'}], 1)
     return {"w": w, "acts": net["acts"]}
 
 
 def remove_neuron(net, h):
-    """The neuron of hidden layer h that the next layer listens to least (the smallest outgoing weights), taken out.${whole ? '' : '\n    The last neuron of a layer takes the layer with it, folded into the next.'}"""
+    """${o.prune === 'random' ? 'A neuron of hidden layer h, picked at random, taken out.' : 'The neuron of hidden layer h that the next layer listens to least (the smallest outgoing weights), taken out.'}${whole ? '' : '\n    The last neuron of a layer takes the layer with it, folded into the next.'}"""
     w = list(net["w"])
     W, b, W2 = w[2 * h], w[2 * h + 1], w[2 * h + 2]
     if W.shape[0] <= 1:
         return ${whole ? 'None' : 'remove_layer(net, h)'}
-    j = int(W2.abs().sum(0).argmin())
+    j = ${o.prune === 'random' ? 'random.randrange(W.shape[0])' : 'int(W2.abs().sum(0).argmin())'}
     keep = [i for i in range(W.shape[0]) if i != j]
     w[2 * h], w[2 * h + 1], w[2 * h + 2] = W[keep], b[keep], W2[:, keep]
     return {"w": w, "acts": net["acts"]}
@@ -727,8 +743,8 @@ ${whole ? `def add_layer(net, p):
     w[2 * p:2 * p] = [${rnd ? 'torch.randn(U, U) * math.sqrt(2 / U)' : 'torch.eye(U)'}, torch.zeros(U)]
     acts.insert(p, acts[p - 1] if p > 0 else acts[0] if acts else "relu")
     return {"w": w, "acts": acts}` : `def add_layer(net, p):
-    """A new hidden layer at position p (0: straight after the input) of ${size === 'one' ? 'one neuron' : 'a few neurons (1 to one less than the width it reads,\n    at random)'}: it passes on ${size === 'one' ? 'the signal' : 'the signals'} the next layer leans on most (the largest column${size === 'one' ? '' : 's'} of its weights),
-    ${rnd ? 'its own weights at random' : `each neuron picking one with a weight of 1`}, and the next layer reads ${size === 'one' ? 'it' : 'them'} with ${size === 'one' ? 'that same column' : 'those same columns'}. The rest
+    """A new hidden layer at position p (0: straight after the input) of ${o.size === 'one' ? 'one neuron' : 'a few neurons (1 to one less than the width it reads,\n    at random)'}: it passes on ${o.size === 'one' ? 'the signal' : 'the signals'} the next layer leans on most (the largest column${o.size === 'one' ? '' : 's'} of its weights),
+    ${rnd ? 'its own weights at random' : `each neuron picking one with a weight of 1`}, and the next layer reads ${o.size === 'one' ? 'it' : 'them'} with ${o.size === 'one' ? 'that same column' : 'those same columns'}. The rest
     is cut off: a bottleneck, so unlike a new neuron it changes what the network does, until "+1 neuron" widens it."""
     acts = list(net["acts"])
     if len(acts) >= MOST_LAYERS:
@@ -736,7 +752,7 @@ ${whole ? `def add_layer(net, p):
     w = list(net["w"])
     W2 = w[2 * p]                                  # the next layer's weights: it will read the new layer instead
     I = W2.shape[1]                                # the width of what the new layer reads
-    U = ${size === 'one' ? '1' : 'random.randint(1, max(1, min(I - 1, MOST_UNITS)))'}
+    U = ${o.size === 'one' ? '1' : 'random.randint(1, max(1, min(I - 1, MOST_UNITS)))'}
     lean = W2.abs().sum(0).tolist()
     keep = sorted(range(I), key=lambda j: -lean[j])[:U]   # the inputs the next layer leans on most
 ${rnd ? '    new = torch.randn(U, I) * math.sqrt(2 / I)' : '    new = torch.zeros(U, I)\n    for k, j in enumerate(keep):                   # each neuron passes one of them on\n        new[k, j] = 1.0'}
@@ -754,13 +770,24 @@ def remove_layer(net, h):
     W1, b1, W2, b2 = w[2 * h:2 * h + 4]
     w[2 * h:2 * h + 4] = [W2 @ W1, W2 @ b1 + b2]
     return {"w": w, "acts": net["acts"][:h] + net["acts"][h + 1:]}
+${act ? String.raw`
+
+NEW_ACTS = ${JSON.stringify(NA.bevo.ACTS)}
+
+
+def change_activation(net, h):
+    """Hidden layer h switched to another activation: its weights stay, what it computes changes."""
+    acts = list(net["acts"])
+    acts[h] = random.choice([a for a in NEW_ACTS if a != acts[h]])
+    return {"w": net["w"], "acts": acts}` : ''}
 
 
 def change_shape(net):
-    """One change to its shape: a neuron more (most often) or less, or a layer more${whole ? ' or less."""' : ` (of ${size === 'one' ? 'one neuron' : 'a few'}); a layer goes when
-    its last neuron does."""`}
+    """${shapeDoc}"""
     n = len(net["acts"])
-    ops = {"neuron+": 3 if n else 0, "neuron-": 2 if n else 0, "layer+": 1.4 if n < MOST_LAYERS else 0${whole ? ', "layer-": 1 if n else 0' : ''}}
+    ops = {${odds.join(', ')}}
+    if not any(ops.values()):
+        return net
     for _ in range(8):
         op = random.choices(list(ops), weights=list(ops.values()))[0]
         if op == "neuron+":
@@ -768,30 +795,42 @@ def change_shape(net):
         elif op == "neuron-":
             r = remove_neuron(net, random.randrange(n))
         elif op == "layer+":
-            r = add_layer(net, random.randrange(n + 1))
-        else:
+            r = add_layer(net, ${where})
+        elif op == "layer-":
             r = remove_layer(net, random.randrange(n))
+        else:
+            r = change_activation(net, random.randrange(n))
         if r:
             return r
     return net`);
   }
   const actsOf = (blocks) => blocks.filter((b) => b.type === 'dense').map((b) => b.act || 'relu');
-  // how wide new layers start (one neuron unless set), and the change of shape that says
-  const layerSizeOf = (v) => (['one', 'some', 'whole'].includes(v) ? v : 'one');
-  const SHAPE_SAY = { one: 'gain a new layer of one neuron (a layer goes when its last neuron does)', some: 'gain a new layer of a few neurons (a layer goes when its last neuron does)', whole: 'gain or lose a whole layer' };
+  // the changes of shape a child can be born with, in words (o: EV.growOptions)
+  function shapeSay(o) {
+    const W = o.weights, n = W['neuron+'] && W['neuron-'] ? 'gain or lose a neuron' : W['neuron+'] ? 'gain a neuron' : W['neuron-'] ? 'lose a neuron' : null;
+    const l = W['layer+'] ? `gain a new layer of ${o.size === 'one' ? 'one neuron' : o.size === 'some' ? 'a few neurons' : 'the width it reads'}` : null;
+    const list = [n, l, W['layer-'] ? 'lose a whole layer' : null, W.act ? 'switch a layer to another activation' : null].filter(Boolean);
+    return (list.length > 1 ? `${list.slice(0, -1).join(', ')} or ${list[list.length - 1]}` : list[0] || 'not change at all') + (W['neuron-'] && o.size !== 'whole' ? '; a layer goes when its last neuron does' : '');
+  }
   const START = 'start = {"w": [t.detach().clone() for m in model.modules() if isinstance(m, nn.Linear) for t in (m.weight, m.bias)], "acts": ACTS}';
+  const START_SMALL = ['first = nn.Linear(Xva.shape[1], n_actions)          # the smallest network: no hidden layer, the inputs straight to the outputs', 'start = {"w": [first.weight.detach().clone(), first.bias.detach().clone()], "acts": []}'];
 
   // a genetic algorithm whose networks grow and shrink
   function growPy(d, steps, x) {
     const s = d.s, sel = PICK[s.select] ? s.select : 'tournament', cross = ['uniform', 'neuron', 'none'].includes(s.cross) ? s.cross : 'uniform', safe = s.mutate === 'safe';
-    const W = NA.brl.WORLD[d.world] || NA.brl.WORLD.pole, pen = (NA.bevo ? NA.bevo.PENALTY[s.penalty] ?? NA.bevo.PENALTY.light : 0.0005) * (W.scale || 1), size = layerSizeOf(s.layerSize);
+    const o = NA.bevo.growOptions(s), W = NA.brl.WORLD[d.world] || NA.brl.WORLD.pole, pen = NA.bevo.PENALTY[o.penalty] * (W.scale || 1), small = o.start === 'small', prot = o.protect, P = NA.bevo.PROTECT;
+    const rate = o.rate >= 1 ? null : o.rate === 0.25 ? 'a quarter of the children' : o.rate === 0.5 ? 'half the children' : o.rate === 0.1 ? 'one child in ten' : `${Math.round(o.rate * 100)}% of the children`;
+    // a child born with a new shape (protecting new shapes: its shape's age starts again)
+    const reshape = (ind) => (prot ? [`${ind}new = change_shape(child)`, `${ind}if new is not child:`, `${ind}    child = dict(new, since=gen + 1)   # a new shape: protected for ${P.gens} generations`] : [`${ind}child = change_shape(child)`]);
     return [
-      '# Each member is a network of its own: its Dense layers as a list [W1, b1, W2, b2, ..., W_out, b_out] and an', `# activation for each hidden layer. Its shape can change: a child may gain or lose a neuron, or ${SHAPE_SAY[size]}.`,
-      `ACTS = ${JSON.stringify(actsOf(x.setup.blocks))}`, ...netOps(actsOf(x.setup.blocks), s.newLayer, x.ACT_FN, size), '', '',
+      '# Each member is a network of its own: its Dense layers as a list [W1, b1, W2, b2, ..., W_out, b_out] and an', ...`# ${wrapDoc(`activation for each hidden layer. Its shape can change: a child may ${shapeSay(o)}.`)}`.split('\n').map((l, i) => (i ? `# ${l.trim()}` : l)),
+      `ACTS = ${JSON.stringify(actsOf(x.setup.blocks))}`, ...netOps(actsOf(x.setup.blocks), o, x.ACT_FN), '', '',
       `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`,
       `penalty = ${x.num(pen)}                                  # taken off the fitness for every 100 weights: of two that play as well, the smaller wins`,
-      START, '# the first generation: the network you built and copies of it, each moved at random',
-      'population = [start] + [{"w": [t + 0.5 * torch.randn_like(t) for t in start["w"]], "acts": ACTS} for _ in range(pop_size - 1)]', '', '',
+      rate ? `grow_rate = ${x.flt(o.rate)}                                # the share of children born with a change of shape` : null,
+      ...(small ? START_SMALL : [START]), small ? '# the first generation: the smallest network and copies of it, each moved at random: every neuron and layer it ends with is one evolution added' : '# the first generation: the network you built and copies of it, each moved at random',
+      'population = [start] + [{"w": [t + 0.5 * torch.randn_like(t) for t in start["w"]], "acts": start["acts"]} for _ in range(pop_size - 1)]', '', '',
+      ...(prot ? ['def kind(net):                                     # a shape: its hidden layers\' widths and activations', '    return tuple(shape(net)), tuple(net["acts"])', '', ''] : []),
       'def moves_of(net):                                 # a member\'s best move: its largest output', '    return lambda o: int(forward(net, o[None])[0, :n_actions].argmax())', '', '',
       ...PLAY('net', 'move = moves_of(net)', 'move', false, safe), '', '', ...PICK[sel], '', '',
       ...(cross === 'none' ? [] : cross === 'neuron' ? ['def mix(a, b):                                     # each neuron whole (its weights and its bias) from one parent or the other', '    w = []', '    for W1, b1, W2, b2 in zip(a["w"][::2], a["w"][1::2], b["w"][::2], b["w"][1::2]):', '        take = torch.rand(W1.shape[0]) < 0.5', '        w += [torch.where(take[:, None], W1, W2), torch.where(take, b1, b2)]', '    return {"w": w, "acts": a["acts"]}', '', '']
@@ -817,11 +856,15 @@ def mutate(net, sens):
     return {"w": [t + q * scale for t, q in zip(net["w"], d)], "acts": net["acts"]}`) : ['def mutate(net):                                   # one weight in ten nudged by sigma at random', '    return {"w": [t + (torch.rand_like(t) < 0.1) * sigma * torch.randn_like(t) for t in net["w"]], "acts": net["acts"]}']), '', '',
       `for gen in range(${x.big(steps)}):`, `    results = [play(net, 1000 + gen${safe ? ', keep=True' : ''}) for net in population]`, '    fit = [r[0] for r in results]',
       '    adj = [f - penalty * size(net) / 100 for f, net in zip(fit, population)]   # the fitness it is chosen by', '    order = sorted(range(pop_size), key=lambda k: -adj[k])',
-      '    children = [population[order[0]], population[order[1]]]   # the best two carry on unchanged', safe ? '    sens = {}' : null,
+      '    children = [population[order[0]], population[order[1]]]   # the best two carry on unchanged',
+      ...(prot ? [`    # protect new shapes: the best of each shape that appeared in the last ${P.gens} generations carries on unchanged too`, '    kept = {kind(c) for c in children}', '    for k in order:', `        if len(children) >= 2 + min(${P.most}, pop_size - 3):`, '            break',
+        '        net = population[k]', `        if gen - net.get("since", -99) < ${P.gens} and kind(net) not in kept:`, '            kept.add(kind(net))', '            children.append(net)'] : []),
+      safe ? '    sens = {}' : null,
       '    while len(children) < pop_size:', '        i = pick(order, adj)', '        child = population[i]',
       ...(cross === 'none' ? [] : ['        j = pick(order, adj)', '        if j != i and shape(population[j]) == shape(child) and population[j]["acts"] == child["acts"]:   # only parents of one shape mix', '            child = mix(child, population[j])']),
       ...(safe ? ['        if i not in sens:', '            sens[i] = sensitivity(population[i], results[i][2])', '        child = mutate(child, sens[i]) if shape(child) == shape(population[i]) else child'] : ['        child = mutate(child)']),
-      `        if random.random() < 0.25:                 # a quarter of the children: ${size === 'whole' ? 'a neuron or a layer more or less' : 'a neuron more or less, or a new layer'}`, '            child = change_shape(child)', '        children.append(child)',
+      prot ? '        child = dict(child, since=population[i].get("since", -99))   # its shape is as old as its parent\'s' : null,
+      ...(rate ? [`        if random.random() < grow_rate:            # ${rate}: one change to their shape`, ...reshape('            ')] : ['        # every child: one change to its shape', ...reshape('        ')]), '        children.append(child)',
       '    population = children', '    best_move = moves_of(population[0])           # on show: the best of the generation',
       `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  shape {shape(population[0])}, {size(population[0])} weights  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
   }
@@ -955,25 +998,29 @@ def mutate(net, sens):
       `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  DQN loss {rl_loss:.4f}  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
   }
 
-  /* Grow and prune while it learns from examples: 6 networks learn side by side from the same batches; every 150
-     steps each is judged on the validation examples and the worse half replaced by copies of the better half, each
-     with one change to its shape. x: { flt, num, big, ACT_FN, setup, d, evalEvery, gains (each layer's starting
-     gain, or null for "tiny"), clip, lrAt (the schedule's lines, or null) } */
+  /* Grow and prune while it learns from examples: 6 networks (unless set) learn side by side from the same batches;
+     every 150 steps (unless set) each is judged on the validation examples and the worse half replaced by copies of
+     the better half, each with one change to its shape, by the odds and limits set (EV.growOptions). x: { flt, num,
+     big, ACT_FN, setup, d, evalEvery, gains (each layer's starting gain, or null for "tiny"), clip, lrAt (the
+     schedule's lines, or null) } */
   PW.growSupervised = function (x) {
-    const T = x.setup.train, steps = T.steps || 3000, every = T.growEvery || 150, pen = NA.bevo ? NA.bevo.PENALTY_EX[T.growPenalty] ?? NA.bevo.PENALTY_EX.light : 0.004, acts = actsOf(x.setup.blocks), size = layerSizeOf(T.growWidth);
+    const T = x.setup.train, o = NA.bevo.growOptions(T, true), steps = T.steps || 3000, every = o.every, N = o.members, pen = NA.bevo.PENALTY_EX[o.penalty], acts = actsOf(x.setup.blocks), small = o.start === 'small';
     const opt = { sgd: 'torch.optim.SGD(groups, lr=LR)', momentum: 'torch.optim.SGD(groups, lr=LR, momentum=0.9)', adam: 'torch.optim.Adam(groups, lr=LR)', adamw: 'torch.optim.AdamW(groups, lr=LR)' }[T.opt] || 'torch.optim.Adam(groups, lr=LR)';
     return [
       '# ---------------------------------------------------------------- grow and prune while it learns',
-      `# ${x.size || 6} networks learn side by side from the same batches, each a list of Dense layers [W1, b1, ..., W_out, b_out]`, `# whose shape can change. Every ${every} steps each is judged on the validation examples (its loss there, plus`,
-      `# ${x.num(pen)} for every 100 weights) and the worse half replaced by copies of the better half, each with one change`, `# to its shape (a neuron more or less, or ${SHAPE_SAY[size]}): population-based training, with the`, '# architecture evolving instead of the learning rate.',
-      `ACTS = ${JSON.stringify(acts)}`, ...netOps(acts, T.growNew, x.ACT_FN, size), '', '',
+      `# ${N} networks learn side by side from the same batches, each a list of Dense layers [W1, b1, ..., W_out, b_out]`, `# whose shape can change. Every ${every} steps each is judged on the validation examples (its loss there, plus`,
+      `# ${x.num(pen)} for every 100 weights) and the worse half replaced by copies of the better half, each born with one`, ...`# ${wrapDoc(`change to its shape (it may ${shapeSay(o)}):`)}`.split('\n').map((l, i) => (i ? `# ${l.trim()}` : l)), '# population-based training, with the architecture evolving instead of the learning rate.',
+      `ACTS = ${JSON.stringify(acts)}`, ...netOps(acts, o, x.ACT_FN), '', '',
       `LR, WD, PENALTY = ${x.flt(T.lr)}, ${x.flt(T.wd || 0)}, ${x.num(pen)}`, '', '',
       'def member(w, acts):                               # a network that learns: its weights and its own optimizer', '    w = [t.detach().clone().requires_grad_() for t in w]',
       '    groups = [{"params": w[::2], "weight_decay": WD}, {"params": w[1::2], "weight_decay": 0.0}]   # decay on the weights, not the biases', `    return {"w": w, "acts": acts, "opt": ${opt}}`, '', '',
       `GAINS = ${x.gains ? JSON.stringify(x.gains) : 'None'}${x.gains ? '                              # each layer\'s starting-weight gain, as on the page' : '                                   # "tiny" starting weights'}`,
       'def fresh():                                       # a new network of the shape you built, started as on the page', '    m = Model()', '    layers = [l for l in m.modules() if isinstance(l, nn.Linear)]',
       '    for k, layer in enumerate(layers):', `        ${x.gains ? 'init_(layer, GAINS[k])' : 'init_(layer)'}`, '    return [t for l in layers for t in (l.weight, l.bias)]', '', '',
-      'mine = [t for l in model.modules() if isinstance(l, nn.Linear) for t in (l.weight, l.bias)]', `members = [member(mine if k == 0 else fresh(), ACTS) for k in range(${x.size || 6})]`, 'best = members[0]', '', '',
+      ...(small ? ['def smallest():                                    # the smallest network: no hidden layer, the inputs straight to the outputs', '    out = [l for l in Model().modules() if isinstance(l, nn.Linear)][-1].out_features',
+        '    layer = nn.Linear(Xtr.shape[1], out)', `    ${x.gains ? 'init_(layer, GAINS[-1])' : 'init_(layer)'}`, '    return [layer.weight, layer.bias]', '', '',
+        `members = [member(smallest(), []) for k in range(${N})]   # every one starts small: each neuron and layer is one evolution added`]
+        : ['mine = [t for l in model.modules() if isinstance(l, nn.Linear) for t in (l.weight, l.bias)]', `members = [member(mine if k == 0 else fresh(), ACTS) for k in range(${N})]`]), 'best = members[0]', '', '',
       ...(x.lrAt ? [...x.lrAt, '', ''] : []),
       'def generation():', '    """Each judged on the validation examples; the worse half replaced by copies of the better half, weights and all,', '    each with one change to its shape."""', '    global best',
       '    with torch.no_grad():', '        for m in members:', '            m["fit"] = -loss_fn(forward(m, Xva), Yva).item() - PENALTY * size(m) / 100', '    members.sort(key=lambda m: -m["fit"])', '    best, half = members[0], (len(members) + 1) // 2',

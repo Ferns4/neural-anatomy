@@ -429,7 +429,15 @@
     seed: { what: 'random seed', range: [0, 999999], int: true }, clip: { what: 'gradient clipping', list: [0, 0.5, 1, 5] }, wd: { what: 'weight decay', list: [0, 0.0001, 0.001, 0.01, 0.05] },
     init: { what: 'starting weights', opts: ['auto', 'he', 'xavier', 'small'], labels: () => ({ auto: 'automatic', he: 'He', xavier: 'Xavier', small: 'tiny' }) },
     grow: { what: 'grow and prune', def: false }, growEvery: { what: 'steps between reshapes', range: [10, 5000], int: true, def: 150 },
-    growPenalty: { what: 'size penalty', opts: ['off', 'light', 'strong'], def: 'light' }, growNew: { what: 'how new layers start', opts: ['identity', 'random'], def: 'identity' },
+    growPenalty: { what: 'size penalty', opts: ['off', 'light', 'strong'], def: 'light', labels: () => PS_LABELS.penalty }, growNew: { what: 'how new layers start', opts: ['identity', 'random'], def: 'identity', labels: () => PS_LABELS.newLayer },
+    // (grow and prune's newer settings; "−1 layer" is on by default with whole layers: its default follows the others)
+    growWidth: { what: 'width of new layers', opts: ['one', 'some', 'whole'], def: 'one', labels: () => PS_LABELS.layerSize }, growSize: { what: 'networks side by side', range: [2, 12], int: true, def: 6 },
+    growStart: { what: 'starting network', opts: ['built', 'small'], def: 'built', labels: () => ({ built: 'the network you built', small: 'no hidden layer' }) },
+    growAddNeuron: { what: 'adding neurons', def: true }, growCutNeuron: { what: 'pruning neurons', def: true }, growAddLayer: { what: 'adding layers', def: true },
+    growCutLayer: { what: 'removing whole layers', def: (T) => NA.bevo.growOptions(T, true).ops['layer-'] }, growAct: { what: 'changing activations', def: false },
+    growLean: { what: 'leaning', opts: ['grow', 'even', 'prune'], def: 'even', labels: () => PS_LABELS.growLean }, growWhere: { what: 'place of new layers', opts: ['any', 'first', 'last'], def: 'any', labels: () => PS_LABELS.growWhere },
+    growNeuron: { what: 'start of new neurons', opts: ['silent', 'random'], def: 'silent', labels: () => PS_LABELS.growNeuron }, growPrune: { what: 'neuron pruning takes', opts: ['weak', 'random'], def: 'weak', labels: () => PS_LABELS.growPrune },
+    growMaxLayers: { what: 'most hidden layers', range: [1, 12], int: true, def: 6 }, growMaxUnits: { what: 'most neurons in a layer', range: [1, 128], int: true, def: 48 },
   };
   const LOSS = { id: { what: 'loss' }, smooth: { what: 'label smoothing', range: [0, 0.3] }, delta: { what: 'Huber δ', range: [0.05, 1] } };
   const BLOCK_WORDS = { units: 'units', act: 'activation', p: 'dropout rate', filters: 'filters', k: 'filter size', stride: 'stride', size: 'patch size', heads: 'heads', mlp: 'MLP size', causal: 'causal mask', residual: 'residual',
@@ -446,15 +454,23 @@
     'position.mode': () => ['learned', 'sine'], 'seqpool.mode': () => ['last', 'max', 'mean'], 'forest.features': () => ['sqrt', 'third', 'all'] };
   // kinds of block that take the same settings, so one can become the other (a max pool an average pool)
   const SWAPS = [['pool', 'avgpool'], ['gap', 'gmp']];
-  const FLOAT_KEYS = new Set(['p', 'sigma', 'scale', 'width', 'lambda', 'eta', 'gamma', 'subsample', 'colsample', 'noise', 'lr', 'clip', 'wd', 'smooth', 'delta', 'slip', 'pRight', 'pOther', 'force', 'poleLen', 'gravity', 'esSigma', 'esLr', 'explore']);
+  const FLOAT_KEYS = new Set(['p', 'sigma', 'scale', 'width', 'lambda', 'eta', 'gamma', 'subsample', 'colsample', 'noise', 'lr', 'clip', 'wd', 'smooth', 'delta', 'slip', 'pRight', 'pOther', 'force', 'poleLen', 'gravity', 'esSigma', 'esLr', 'explore', 'growRate']);
   const PS_WORDS = { noise: 'noise', n: 'examples', len: 'sequence length', embed: 'embedding size', window: 'window', method: 'way of learning', view: 'what it sees', closer: 'closer bonus', random: 'random mazes', gamma: 'discount γ',
     explore: 'exploration steps', pop: 'population', sigma: 'mutation size', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'odds the matching lever pays',
     pOther: 'odds another lever pays', levers: 'levers', rFormula: 'reward formula', select: 'way of choosing parents', cross: 'way of mixing parents', mutate: 'kind of mutation', grow: 'grow and prune', penalty: 'size penalty',
-    newLayer: 'how new layers start', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', maze: 'maze', formula: 'formula', text: 'text', target: 'column it predicts' };
-  const PS_RANGE = { noise: [0, 2], window: [1, 64], len: [2, 8], embed: [4, 128], gamma: [0, 1], explore: [0, 1e6], pop: [4, 500], sigma: [0.001, 5], slip: [0, 0.9], esSigma: [0.001, 5], esLr: [0.0001, 1], pRight: [0, 1], pOther: [0, 1], maxSteps: [0, 1e5] };
+    newLayer: 'how new layers start', layerSize: 'width of new layers', growStart: 'starting network', growAddNeuron: 'adding neurons', growCutNeuron: 'pruning neurons', growAddLayer: 'adding layers', growCutLayer: 'removing whole layers',
+    growAct: 'changing activations', growLean: 'leaning', growRate: 'share of children that change shape', growWhere: 'place of new layers', growNeuron: 'start of new neurons', growPrune: 'neuron pruning takes',
+    growMaxLayers: 'most hidden layers', growMaxUnits: 'most neurons in a layer', growProtect: 'protection of new shapes', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', maze: 'maze', formula: 'formula', text: 'text', target: 'column it predicts' };
+  const PS_RANGE = { noise: [0, 2], window: [1, 64], len: [2, 8], embed: [4, 128], gamma: [0, 1], explore: [0, 1e6], pop: [4, 500], sigma: [0.001, 5], slip: [0, 0.9], esSigma: [0.001, 5], esLr: [0.0001, 1], pRight: [0, 1], pOther: [0, 1], maxSteps: [0, 1e5],
+    growRate: [0.01, 1], growMaxLayers: [1, 12], growMaxUnits: [1, 128] };
   const N_RANGE = { plane: [100, 1500], curve: [20, 1000], digits: [300, 4000], surface: [200, 3000], series: [400, 4000], seqclass: [500, 5000], sequence: [300, 6000] };
-  const INT_KEYS = new Set(['n', 'len', 'window', 'embed', 'pop', 'maxSteps', 'levers', 'drones', 'chasers', 'sheep', 'length', 'target', 'units', 'filters', 'k', 'stride', 'size', 'heads', 'mlp', 'features', 'dim', 'dilation', 'depth', 'minLeaf', 'trees', 'rounds', 'state', 'pieces', 'experts', 'top', 'shift']);
-  const PS_OPTS = { method: () => NA.brl.ORDER, select: () => ['tournament', 'truncation', 'rank'], cross: () => ['uniform', 'neuron', 'none'], mutate: () => ['plain', 'safe'], penalty: () => Object.keys((NA.bevo && NA.bevo.PENALTY) || { off: 0, light: 0, strong: 0 }), newLayer: () => ['identity', 'random'] };
+  const INT_KEYS = new Set(['n', 'len', 'window', 'embed', 'pop', 'maxSteps', 'growMaxLayers', 'growMaxUnits', 'levers', 'drones', 'chasers', 'sheep', 'length', 'target', 'units', 'filters', 'k', 'stride', 'size', 'heads', 'mlp', 'features', 'dim', 'dilation', 'depth', 'minLeaf', 'trees', 'rounds', 'state', 'pieces', 'experts', 'top', 'shift']);
+  const PS_OPTS = { method: () => NA.brl.ORDER, select: () => ['tournament', 'truncation', 'rank'], cross: () => ['uniform', 'neuron', 'none'], mutate: () => ['plain', 'safe'], penalty: () => Object.keys((NA.bevo && NA.bevo.PENALTY) || { off: 0, light: 0, strong: 0 }), newLayer: () => ['identity', 'random'],
+    layerSize: () => ['one', 'some', 'whole'], growStart: () => ['built', 'small'], growLean: () => ['grow', 'even', 'prune'], growWhere: () => ['any', 'first', 'last'], growNeuron: () => ['silent', 'random'], growPrune: () => ['weak', 'random'] };
+  // grow and prune's choices in words (for the note that says what was applied)
+  const PS_LABELS = { growStart: { built: 'your network', small: 'no hidden layer' }, growLean: { grow: 'to grow', even: 'even', prune: 'to prune' }, growWhere: { any: 'anywhere', first: 'after the input', last: 'before the output' },
+    growNeuron: { silent: 'silent', random: 'at random' }, growPrune: { weak: 'the weakest', random: 'one at random' }, layerSize: { one: 'one neuron', some: 'a few, at random', whole: 'a whole layer' },
+    penalty: { off: 'none', light: 'light', strong: 'strong' }, newLayer: { identity: 'passing values on', random: 'at random' } };
   const callOr = (v) => (typeof v === 'function' ? v() : v);
   const partName = (type) => { const P = NA.builderLab && NA.builderLab.PARTS && NA.builderLab.PARTS.find((q) => q.type === type); return P ? P.name : (NA.bx.BLOCKS[type] || {}).label || (NA.cml && NA.cml.KINDS && NA.cml.KINDS[type] ? NA.cml.KINDS[type].label : type); };
   const blockWhat = (b, key) => (key === 'units' && b.type === 'dense' ? 'neurons' : key === 'k' && b.type === 'knn' ? 'neighbours' : key === 'k' && b.type === 'conv1d' ? 'window' : key === 'size' && b.type === 'patches' ? 'patch size'
@@ -468,7 +484,8 @@
     const num = (id, where, what, path, o) => out.push(Object.assign({ id, kind: 'num', where, what, get: (s) => getAt(s, path), set: (s, v) => setAt(s, path, v) }, o));
     // training
     for (const key of new Set([...Object.keys(TRAIN), ...Object.keys(S.train)])) {
-      const T = TRAIN[key] || {}, v = S.train[key] !== undefined ? S.train[key] : T.def, k = { id: 'train.' + key, where: '', what: T.what || key, get: (s) => (s.train[key] !== undefined ? s.train[key] : T.def), set: (s, x) => { s.train[key] = x; } };
+      const T = TRAIN[key] || {}, dv = (s) => (typeof T.def === 'function' ? T.def(s.train) : T.def), v = S.train[key] !== undefined ? S.train[key] : dv(S);
+      const k = { id: 'train.' + key, where: '', what: T.what || key, get: (s) => (s.train[key] !== undefined ? s.train[key] : dv(s)), set: (s, x) => { s.train[key] = x; } };
       if (key === 'steps' && ctl && d && !d.error && NA.brl.isEvo(d.method)) k.what = 'generations';
       if (typeof v === 'number') out.push(Object.assign(k, { kind: 'num', range: T.range || [-1e4, 1e4], list: T.list, int: !!T.int }));
       else if (typeof v === 'boolean') out.push(Object.assign(k, { kind: 'bool' }));
@@ -484,12 +501,14 @@
     const ps = S.ps[S.problem] || BT.defaults(p), keys = new Set([...Object.keys(BT.defaults(p)), ...Object.keys(ps)]), rw = ctl && NA.rlEnvs.REWARDS[p.task] ? NA.rlEnvs.REWARDS[p.task] : [];
     rw.forEach((r) => keys.add(r.key));
     if (ctl && NA.rlEnvs.REWARD_VARS[p.task]) keys.add('rFormula');
+    // grow and prune's "−1 layer": on by default only with whole layers, so a knob with that default
+    if (ctl && NA.bevo) out.push({ id: 'ps.growCutLayer', kind: 'bool', where: '', what: PS_WORDS.growCutLayer, get: (s) => NA.bevo.growOptions(s.ps[s.problem] || BT.defaults(p)).ops['layer-'], set: (s, v) => { (s.ps[s.problem] || (s.ps[s.problem] = BT.defaults(p))).growCutLayer = v; } });
     const own = (s) => s.ps[s.problem] || (s.ps[s.problem] = BT.defaults(p));
     for (const key of keys) {
       const r = rw.find((q) => q.key === key), base = { id: 'ps.' + key, where: '', what: r ? `reward for ${r.label.toLowerCase().replace(/ \(.*\)$/, '')}` : PS_WORDS[key] || key };
       const get = (s) => { const q = s.ps[s.problem] || BT.defaults(p); return q[key] !== undefined ? q[key] : r ? r.def : undefined; }, set = (s, v) => { own(s)[key] = v; };
       const v = get(S);
-      if (key === 'hide' || key === 'kind' || (key === 'target' && fam === 'table')) continue;
+      if (key === 'hide' || key === 'kind' || key === 'growCutLayer' || (key === 'target' && fam === 'table')) continue;
       if (key === 'rFormula' || (key === 'formula' && p.custom && fam === 'curve')) {
         const vars = key === 'rFormula' ? (NA.rlEnvs.REWARD_VARS[p.task] || []).map((q) => q[0]) : ['x'];
         if (vars.length) out.push(Object.assign(base, { kind: 'formula', vars, scalar: key === 'rFormula', get: (s) => get(s) || '', set }));
@@ -498,7 +517,7 @@
       else if (typeof v === 'boolean') out.push(Object.assign(base, { kind: 'bool', get, set }));
       else if (typeof v === 'string') {
         const opts = PS_OPTS[key] ? PS_OPTS[key]() : key === 'view' && BT.VIEWS[p.task] ? BT.VIEWS[p.task].map((q) => q.value) : key === 'maze' && p.task === 'maze' ? NA.rl.MAZE_SET.map((m) => m.id) : [v];
-        out.push(Object.assign(base, { kind: 'enum', opts, get, set, labels: key === 'method' ? Object.fromEntries(Object.entries(NA.brl.METHODS).map(([k, m]) => [k, m.label])) : key === 'view' && BT.VIEWS[p.task] ? Object.fromEntries(BT.VIEWS[p.task].map((q) => [q.value, q.label])) : null }));
+        out.push(Object.assign(base, { kind: 'enum', opts, get, set, labels: key === 'method' ? Object.fromEntries(Object.entries(NA.brl.METHODS).map(([k, m]) => [k, m.label])) : key === 'view' && BT.VIEWS[p.task] ? Object.fromEntries(BT.VIEWS[p.task].map((q) => [q.value, q.label])) : PS_LABELS[key] || null }));
       }
     }
     // points you placed: read back by their value only (there can be hundreds)
@@ -989,7 +1008,7 @@
   PE.equivalent = (a, b) => equivalent(statements(a).lines[0], statements(b).lines[0]);
 
   // ------------------------------------------------------------------ the tab
-  const UNDERSTOOD = 'Numbers and names the page has a setting for: the learning rate, batch size, steps, optimizer, schedule, seed, clipping and weight decay; each block’s size, activation and settings (dropout rates, filters, heads…); the data; the world; reward amounts and the reward formula, as Python (r = 10 * goal - wall); evolution settings (population, mutation size…). It also reads a block whose lines you delete as that block removed. It does not keep comments or spacing: the page writes the script again from the model.';
+  const UNDERSTOOD = 'Numbers and names the page has a setting for: the learning rate, batch size, steps, optimizer, schedule, seed, clipping and weight decay; each block’s size, activation and settings (dropout rates, filters, heads…); the data; the world; reward amounts and the reward formula, as Python (r = 10 * goal - wall); evolution settings (population, mutation size, and grow and prune’s: the changes it can make, their odds, the largest network…). It also reads a block whose lines you delete as that block removed. It does not keep comments or spacing: the page writes the script again from the model.';
   const label = (lab) => (lab.isClassicSetup() ? `Python · ${lab.setup.blocks.some((b) => b.type === 'boost') ? 'XGBoost' : 'scikit-learn'}` : 'Python · PyTorch');
   // the script as lines of highlighted tokens (a docstring over several lines is split, keeping its colour)
   function lineNodes(src) {
@@ -1037,16 +1056,35 @@
     }
     if (st.shown !== undefined && st.shown !== code) { st.changed = null; if (st.note && st.note.kind !== 'no') st.note = null; } // the model changed since: old marks and notes no longer apply
     st.shown = code;
-    const el = NA.el, lines = lineNodes(code), changed = st.changed || new Set();
-    const pre = el('pre', { class: 'code bd-pe-code', tabindex: '0', 'aria-label': 'The script' }, el('code', { class: 'bd-pe-lines' }, ...lines.map((ns, k) => el('span', { class: 'bd-pe-line' + (changed.has(k + 1) ? ' is-new' : '') }, ...ns))));
-    const edit = el('button', { class: 'btn btn-quiet code-copy bd-pe-edit', type: 'button', title: 'Change the script: the page reads your changes back into the model', onclick: () => PE.startEdit(lab) }, 'Edit');
+    const el = NA.el, lines = lineNodes(code), changed = st.changed || new Set(), tap = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || (NA.mobile && NA.mobile.mobile);
+    const pre = el('pre', { class: 'code bd-pe-code', tabindex: '0', 'aria-label': 'The script', title: `${tap ? 'Double-tap' : 'Double-click'} a line to edit the script there` }, el('code', { class: 'bd-pe-lines' }, ...lines.map((ns, k) => el('span', { class: 'bd-pe-line' + (changed.has(k + 1) ? ' is-new' : '') }, ...ns))));
+    const edit = el('button', { class: 'btn btn-primary code-copy bd-pe-edit', type: 'button', title: 'Change the script: the page reads your changes back into the model', onclick: () => PE.startEdit(lab) }, '✎ Edit');
     const box = el('div', { class: 'code-box bd-pe-box' + (st.wide ? ' is-wide' : '') }, el('div', { class: 'code-head' }, el('span', { text: label(lab) }), el('span', { class: 'bd-pe-tools' }, edit, copyButton(() => code), downloadButton(lab, () => code))), pre);
     box.querySelector('.bd-pe-tools').append(wideButton(lab, box));
-    NA.clear(root).append(noteEl(lab, st), box);
+    // a double-click (or double-tap) on a line edits the script there, the word under it selected
+    pre.addEventListener('dblclick', (e) => { const at = placeOf(pre, e); if (at) PE.startEdit(lab, undefined, at); });
+    const intro = el('p', { class: 'sec-note bd-pe-intro' }, 'You can change this script: press ', el('strong', { text: 'Edit' }), ` or ${tap ? 'double-tap' : 'double-click'} a line, change a number or a name, then `, el('strong', { text: 'Apply' }),
+      '. The model changes to match. If the page cannot follow a change, it says which line and why, and puts the script back as it was.');
+    NA.clear(root).append(noteEl(lab, st), intro, box);
   };
-  PE.startEdit = function (lab, text) {
+  // the line (from 0) and column a pointer is on in the script shown
+  function placeOf(pre, e) {
+    const lineEl = e.target && e.target.closest ? e.target.closest('.bd-pe-line') : null;
+    if (!lineEl) return null;
+    const line = [...pre.querySelectorAll('.bd-pe-line')].indexOf(lineEl);
+    let col = 0;
+    const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null, p = !r && document.caretPositionFromPoint ? document.caretPositionFromPoint(e.clientX, e.clientY) : null;
+    const node = r ? r.startContainer : p ? p.offsetNode : null, off = r ? r.startOffset : p ? p.offset : 0;
+    if (node && lineEl.contains(node)) {
+      const walk = document.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT);
+      for (let t = walk.nextNode(); t; t = walk.nextNode()) { if (t === node) { col += off; break; } col += t.textContent.length; }
+    }
+    return { line: Math.max(0, line), col };
+  }
+  // the editor; text: an edit to show again (Show my edit); at: { line, col } to put the caret on, its word selected
+  PE.startEdit = function (lab, text, at) {
     const st = stateOf(lab), code = NA.builderPy.code(lab.setup, lab.dataFor());
-    Object.assign(st, { mode: 'edit', base: text !== undefined && st.base ? st.base : code, baseSnap: text !== undefined && st.baseSnap ? st.baseSnap : lab.snapshot(), text: text !== undefined ? text : code, marks: text !== undefined ? st.marks : null, note: text !== undefined ? st.note : null, focus: true });
+    Object.assign(st, { mode: 'edit', base: text !== undefined && st.base ? st.base : code, baseSnap: text !== undefined && st.baseSnap ? st.baseSnap : lab.snapshot(), text: text !== undefined ? text : code, marks: text !== undefined ? st.marks : null, note: text !== undefined ? st.note : null, focus: true, at: at || null });
     lab.pyDirty = true; lab.inspDirty = true;
     if (lab.parts && lab.parts.code) { NA.clear(lab.parts.code); PE.render(lab, lab.parts.code); }
   };
@@ -1186,11 +1224,19 @@
     paint();
     if (st.focus) {
       st.focus = false;
-      const first = (st.marks || [])[0];
+      const first = (st.marks || [])[0], place = st.at;
+      st.at = null;
       setTimeout(() => {
         ta.focus({ preventScroll: true });
         if (first) { const v = ta.value.split('\n'), at = v.slice(0, first.line - 1).join('\n').length + (first.line > 1 ? 1 : 0); ta.setSelectionRange(at, at); showCaret(); }
-        else box.scrollIntoView({ block: 'nearest' });
+        else if (place) {
+          // the line double-clicked, the word (a number, a name) under the pointer selected, ready to type over
+          const v = ta.value.split('\n'), row = Math.min(place.line, v.length - 1), base = v.slice(0, row).join('\n').length + (row > 0 ? 1 : 0), s = v[row] || '';
+          let a = Math.min(place.col, s.length), b = a;
+          while (a > 0 && /[\w.]/.test(s[a - 1])) a--;
+          while (b < s.length && /[\w.]/.test(s[b])) b++;
+          ta.setSelectionRange(base + a, base + b); showCaret();
+        } else box.scrollIntoView({ block: 'nearest' });
       }, 0);
     }
   }

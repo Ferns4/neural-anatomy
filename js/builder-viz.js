@@ -461,7 +461,8 @@
     }
     const ret = D.ret || 0, gen = view === 'generation' && ev && ev.last && Wd.trace ? ghostsNow(L, ev, Wd) : null;
     if (gen) text(ctx, fit(ctx, `Generation ${fmtInt(ev.last.gen + 1)}: all ${ev.last.members.length} members at once, from the same start`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: theme.c('ink-2') });
-    else text(ctx, fit(ctx, `${L.you ? 'You play · ' : L.watchCell !== null && L.watchCell !== undefined && ev && ev.archive ? 'One style’s elite · ' : view === 'generation' && ev ? 'The best of the last generation · ' : ''}Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(GOOD_END.includes(D.end) ? 'good' : NEUTRAL_END.includes(D.end) ? 'ink-2' : 'critical') : theme.c('ink-2') });
+    // (who has the controls: you since you jumped in, the network since you handed back)
+    else text(ctx, fit(ctx, `${L.you ? (D.took ? `You took over at move ${fmtInt(D.took)} · ` : 'You play · ') : D.gave ? `The network again from move ${fmtInt(D.gave)} · ` : L.watchCell !== null && L.watchCell !== undefined && ev && ev.archive ? 'One style’s elite · ' : view === 'generation' && ev ? 'The best of the last generation · ' : ''}Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(GOOD_END.includes(D.end) ? 'good' : NEUTRAL_END.includes(D.end) ? 'ink-2' : 'critical') : theme.c('ink-2') });
     // under the world, where the episode's return came from, term by term (for worlds whose steps report the reward table's parts)
     const rewH = BD && !gen && BD.hasRewards(L) && wr.h >= (wide ? 200 : 170) ? 58 : 0, world = rewH ? { x: wr.x, y: wr.y, w: wr.w, h: wr.h - rewH - 8 } : wr;
     NA.rlEnvs.draw(ctx, world, d.world, D.snap, theme, { k: nA, ghosts: gen || undefined, ghostsOnly: !!gen && d.world !== 'arena', now: L.now });
@@ -514,10 +515,11 @@
   /* A generation, best first: each member's fitness as a bar (in the colours of the replay; hover one for what it
      is), how far it has got through judging them, how varied the population is generation by generation, and with
      grow and prune the best network's shape and its number of weights over the generations. */
+  const actName = (a) => ((NA.engine.ACTIVATIONS[a] || {}).label || a);
   function drawPopulation(ctx, r, L, ev) {
     const last = ev.last, prog = L.genProgress, BD = NA.builderDepth && L.depth ? NA.builderDepth : null;
     let y = r.y + 6;
-    text(ctx, fit(ctx, last ? `Generation ${fmtInt(last.gen + 1)}: ${last.members.length} members, best first` : 'The first generation is playing…', r.w, 11, 650), r.x, y, { size: 11, w: 650, color: theme.c('muted') });
+    text(ctx, fit(ctx, last ? `Generation ${fmtInt(last.gen + 1)}: ${last.members.length} members, best first${last.shapes ? ` · ${last.shapes} shape${last.shapes === 1 ? '' : 's'}` : ''}` : 'The first generation is playing…', r.w, 11, 650), r.x, y, { size: 11, w: 650, color: theme.c('muted') });
     y += 12;
     if (prog && prog.of) { ctx.fillStyle = theme.c('line', 0.6); ctx.fillRect(r.x, y, r.w, 3); ctx.fillStyle = theme.c('s2'); ctx.fillRect(r.x, y, (r.w * prog.done) / prog.of, 3); }
     y += 8;
@@ -529,7 +531,7 @@
     if (L.hits) L.hits.push({ x: r.x, y: y0, w: r.w, h: sh, tip: (px) => {
       const k = clamp(Math.floor((px - r.x) / bw), 0, n - 1), m = M[k], tt = (s) => NA.el('div', { class: 'tt-title', text: s }), row = (a, b) => NA.el('div', { class: 'tt-row' }, NA.el('span', { class: 'tt-k', text: a }), NA.el('span', { class: 'tt-v', text: b }));
       return [tt(k ? `Member ${k + 1} of ${n} by fitness` : `The best of ${n}`), row('fitness', fmt(m.fit, 2)), m.adj !== undefined && m.adj !== m.fit ? row('less the size penalty', fmt(m.adj, 2)) : null, m.nov !== undefined && Number.isFinite(m.nov) ? row('novelty', fmt(m.nov, 3)) : null,
-        m.op ? row('what changed', String(m.op)) : null, m.born !== undefined ? row('born in generation', fmtInt(m.born + 1)) : null, ev.grow && m.units ? row('its shape', m.units.length ? m.units.join(' → ') : 'no hidden layer') : null, m.end ? row('its first episode', END_TEXT[m.end] || m.end) : null];
+        m.op ? row('what changed', String(m.op)) : m.prot ? row('what changed', 'nothing: kept as a new shape, protected') : null, m.born !== undefined ? row('born in generation', fmtInt(m.born + 1)) : null, ev.grow && m.units ? row('its shape', m.units.length ? m.units.join(' → ') + (m.acts ? ` (${m.acts.map(actName).join(', ')})` : '') : 'no hidden layer') : null, m.end ? row('its first episode', END_TEXT[m.end] || m.end) : null];
     } });
     text(ctx, `best ${fmt(hi, Math.abs(hi) < 10 ? 2 : 1)}`, r.x, y + sh + 9, { size: 10.5, w: 600, color: theme.c('ink-2') });
     text(ctx, `worst ${fmt(lo, Math.abs(lo) < 10 ? 2 : 1)}`, r.x + r.w, y + sh + 9, { size: 10.5, align: 'right', color: theme.c('muted') });
@@ -539,7 +541,7 @@
     if (!ev.grow || y + 60 > r.y + r.h) return;
     // the best network's shape: its layers as columns of neurons, from the inputs to the outputs
     const top = M[0], sz = [ev.io.nIn, ...top.units, ev.io.K], gh = Math.min(70, r.y + r.h - y - 46), cols = sz.length, gap = r.w / cols;
-    text(ctx, `The best: ${top.units.length ? top.units.join(' → ') : 'no hidden layer'} · ${fmtInt(top.weights)} weights`, r.x, y, { size: 11.5, w: 650, color: theme.c('ink') });
+    text(ctx, fit(ctx, `The best: ${top.units.length ? top.units.join(' → ') + (top.acts ? ` (${top.acts.map(actName).join(', ')})` : '') : 'no hidden layer'} · ${fmtInt(top.weights)} weights`, r.w, 11.5, 650), r.x, y, { size: 11.5, w: 650, color: theme.c('ink') });
     y += 12;
     const pts = sz.map((u, c) => { const shown = Math.min(u, 12), x = r.x + gap * (c + 0.5); return NA.range(shown).map((j) => [x, y + (gh * (j + 0.5)) / shown]); });
     ctx.strokeStyle = theme.c('ink', 0.12); ctx.lineWidth = 1;

@@ -476,13 +476,14 @@
       note: 'Like actor-critic, but each batch of experience is used for 4 passes, and the clip stops any one update from moving the policy more than 20% away from the one that played.' }; },
     /* o: pop, sigma, best, mean; select (tournament, truncation, rank), cross (uniform, neuron, none), mutate (plain,
        safe); grow, penalty (taken off the fitness for every 100 weights), units and weights of the best, layerSize
-       (how wide a new layer starts: one, some, whole) */
+       (how wide a new layer starts: one, some, whole), changes (the changes of shape set, in a line: builder-evo.js
+       EV.describe) */
     ga(o) {
       const mix = { uniform: 'child = mix(parent₁, parent₂), weight by weight', neuron: 'child = mix(parent₁, parent₂), neuron by neuron', none: 'child = a copy of one parent' }[o.cross || 'uniform'];
       const mut = o.mutate === 'safe' ? '10% of its weights += σ·N(0, 1) / s(w),   s(w) = √Σₐ (∂outputₐ/∂w)²   (safe)' : '10% of its weights += σ·N(0, 1)';
       const pick = { tournament: 'parents: the best of 3 picked at random', truncation: 'parents: from the top fifth', rank: 'parents: by rank, the better the likelier' }[o.select || 'tournament'];
       const lines = [{ t: o.grow && o.penalty ? `fitness = total reward − ${N(o.penalty, 3)} × weights/100` : 'fitness(w) = total reward of its episodes', strong: true }, { t: mix, strong: true }, { t: mut, strong: true }, pick];
-      if (o.grow) lines.push({ t: GROW_LINE[o.layerSize] || GROW_LINE.one, strong: true }, o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights` : null);
+      if (o.grow) lines.push({ t: o.changes || GROW_LINE[o.layerSize] || GROW_LINE.one, strong: true }, o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights` : null);
       lines.push(`population ${o.pop}   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`);
       return { title: o.grow ? 'The rule it evolves by: grow and prune' : 'The rule it evolves by: a genetic algorithm', lines,
         note: o.grow ? `The architecture evolves with the weights. ${GROW_NOTE[o.layerSize] || GROW_NOTE.one} The size penalty decides between two that play equally well.` : 'No gradients at all: the fittest networks are kept and bred, and random mutations try out changes. The good ones survive into the next generation.' };
@@ -510,7 +511,7 @@
       note: 'Quality and diversity: it keeps the best network of every style instead of one best. A style that does badly today can be the stepping stone to one that does well tomorrow.' }; },
     // grow and prune while learning: o: size, every, penalty, units, weights, score, value (R² rather than accuracy), layerSize
     grow(o) { return { title: 'Its shape evolves: grow and prune', lines: [{ t: `${o.size} networks learn side by side; every ${o.every} steps:`, strong: true }, { t: `fitness = −(validation loss)${o.penalty ? ` − ${N(o.penalty, 3)} × weights/100` : ''}`, strong: true },
-      { t: `the worse half ← copies of the better half, each changed by a neuron more or less, or a new layer${o.layerSize === 'whole' ? ' or one less' : ` (of ${o.layerSize === 'some' ? 'a few neurons' : 'one neuron'})`}`, strong: true },
+      { t: o.changes ? `the worse half ← copies of the better half; ${o.changes}` : `the worse half ← copies of the better half, each changed by a neuron more or less, or a new layer${o.layerSize === 'whole' ? ' or one less' : ` (of ${o.layerSize === 'some' ? 'a few neurons' : 'one neuron'})`}`, strong: true },
       o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights${o.score !== undefined && o.score !== null ? `, ${o.value ? `R² ${N(o.score, 3)}` : `${N(100 * o.score, 1)}% right`}` : ''}` : null],
       note: `Gradient steps train the weights; selection shapes the architecture. ${o.layerSize === 'whole' ? 'A new neuron starts with outgoing weights of 0 and a new layer as the identity, so a copy starts out as good as its parent and has time to put its new part to use.' : 'A new neuron starts with outgoing weights of 0, so it changes nothing. A new layer starts narrow, passing on only what the next layer leans on most: a bottleneck that costs the copy something at first, which its gradient steps then teach it to use, and later new neurons widen.'}` }; },
     td(o) { return { title: 'The rule it learns by: temporal difference', lines: [{ t: o.formula || 'V(s) ← V(s) + α·[ V(s′) − V(s) ]      (at the end: the result, 1, 0 or ½)', strong: true }, o.nums || null],

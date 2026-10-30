@@ -4,6 +4,19 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
 
 **Live site:** https://ferns4.github.io/neural-anatomy/
 
+## New in version 30
+
+- **Grow and prune, fully set:** on the Output block (and in the Training tab for problems with answers), every part of it can be chosen, with what each choice does written beside it:
+  - start from the network you built or from **no hidden layer at all**, as NEAT does;
+  - the changes it can make, each on or off: a neuron more or less, a new layer, a whole layer out at once, and a **new activation** (ReLU, tanh, sigmoid, leaky ReLU, ELU); whether it leans to grow or to prune, with the odds of each change worked out; and how many children change shape;
+  - how a new layer starts (one neuron, a few, or a whole layer; passing values on or at random) and **where it goes** (anywhere, after the input, before the output); whether a new neuron starts silent or joins in at random; whether pruning takes the weakest neuron or one at random;
+  - the largest network, the size penalty, and **protecting new shapes**: for 5 generations the best member of a new shape carries on unchanged, so mutations get time to tune it (a simple form of NEAT's speciation). Learning from examples, how many networks learn side by side and how often they are reshaped.
+
+  The whole generation's view counts its shapes, the line under the results gives each layer's activation, the run list names every change, and the Python writes all of it (and reads edits of it back).
+- **Full screen results:** a button at the top right of the results puts the picture over the whole screen, with Train beside it; Esc (or the button) puts it back.
+- **Jump in:** takes the controls of the episode on show where it is, the network's move scores still beside your moves; **Let it play** hands them back and the network carries on from where you left it. In full screen a key of the world's jumps in at once, and on a touch screen the buttons to hold sit under the picture.
+- **Editing the Python is easier to find:** a clear Edit button, a line above the script that says how it works, and a double-click (or double-tap) on any line opens the editor there with the number under the pointer selected.
+
 ## New in version 29
 
 - **Eleven new worlds to learn from rewards**, and the model builder's problem list groups all 18 by level:
@@ -12,7 +25,7 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
   - *Advanced:* the race track and the drone arena, and now the **Deceptive maze** (the reward for getting closer leads into a wall; novelty search, its own method, gets round).
   - *Expert:* landing a rocket, and now **Escape the chaser** (running straight away ends in a corner) and **Herd the sheep**.
 
-  Each starts with the method that learns it best and has its own settings, inputs and reward table, and Try it yourself puts you at its controls. Its **What is happening** notes play the network's best moves again and say what they get stuck on, with the numbers (a room that overshoots, a lamp it cannot remember, a cart that never reaches the flag, a robot pressed against the wall under the goal, a runner caught in a corner) and the setting that helps.
+  Each starts with the method that learns it best and has its own settings, inputs and reward table, and Jump in puts you at its controls. Its **What is happening** notes play the network's best moves again and say what they get stuck on, with the numbers (a room that overshoots, a lamp it cannot remember, a cart that never reaches the flag, a robot pressed against the wall under the goal, a runner caught in a corner) and the setting that helps.
 - **Three more ways to learn:** novelty search (Lehman and Stanley), which breeds the networks that behave least like anything seen before and gets out of the deceptive maze; the cross-entropy method; and evolutionary RL (Khadka and Tumer), a genetic algorithm and a DQN sharing one replay memory.
 - **Grow and prune, a neuron at a time:** a new hidden layer starts with a single neuron instead of arriving whole, later neurons widen it, and a layer goes only when its last neuron is pruned.
 - **Inside a run:** the results switch between views. **It plays** shows its best moves live, with its outputs and, under the picture, the episode's return term by term (which part of the reward paid what). **What it looked at** nudges each input a little and shows how much that changes the move it picks. For evolution there are also **The whole generation** (every member playing at once, and how varied the population is from generation to generation), the **Family line** of the best (each ancestor with what changed and its score) and the **Styles of play** it has found. MAP-Elites' grid of styles has a key to its colours, and PPO shows how often its updates were clipped.

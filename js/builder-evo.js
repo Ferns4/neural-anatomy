@@ -10,7 +10,10 @@
      bottleneck that passes on only the signals the next layer leans on most, so unlike a new neuron it changes
      what the network does, and selection keeps it only if the child still does well; later "+1 neuron" changes
      widen it without changing anything. A layer goes when its last neuron is pruned, folded into the next. A size
-     penalty (the fitness less a little for every 100 weights) keeps them small.
+     penalty (the fitness less a little for every 100 weights) keeps them small. Each of these can be set
+     (EV.growOptions): which changes are allowed (a whole layer out at once and a new activation too), their odds,
+     how many children change, where new layers go, how new neurons start, which neuron pruning takes, the largest
+     network, starting from no hidden layer, and protecting new shapes for a few generations.
    · novelty search (Lehman and Stanley, 2011): the same breeding, but a member is judged by how different its
      behaviour is (where it ended up, how it played: two numbers each world measures) from its nearest neighbours
      in its generation and in an archive of behaviours met before, optionally mixed with the reward. It never aims
@@ -46,6 +49,8 @@
             network), [id] (a mutated copy) or [id, id] (two parents mixed); an elite passed on unchanged keeps its id
        op: what made it ('mutated', 'mixed and mutated', '+1 neuron in layer 2', …; null: unchanged)
        nov (novelty search): its novelty; fromRL (ERL): true for the DQN's network copied into the population
+       grow and prune: prot (carried on unchanged as a new shape, protected), acts (its hidden layers' activations,
+       when they can change); evo.last.shapes and history[k].shapes: how many shapes the generation has
    · evo.lineage(id = the best): the line of first parents from the oldest ancestor still known to that member,
        oldest first: [{ id, gen, fit, op, units }] (gen: the generation it was first judged in, fit: its fitness
        then). A map of records is kept, pruned to the ancestors of the current population (and the network on
@@ -57,10 +62,53 @@
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
   // ------------------------------------------------------------------ architectures that grow and shrink
-  EV.LIMITS = { layers: 6, units: 48 };
+  EV.LIMITS = { layers: 6, units: 48 }; // the defaults: a run can set its own (growMaxLayers, growMaxUnits)
   // how wide a new hidden layer starts: one neuron (the default), a few at random, or as wide as what it reads
   EV.LAYER_SIZE = { one: 'One neuron', some: 'A few, at random', whole: 'A whole layer' };
   EV.layerSize = (v) => (EV.LAYER_SIZE[v] ? v : 'one');
+  /* The changes to a network's shape, each of which can be turned off, and their odds by leaning: toward growing,
+     even (the default, as before these could be set), or toward pruning. '−1 layer' takes a whole layer out at once,
+     folded into the next; 'act' switches a hidden layer to another of EV.ACTS (its weights stay). */
+  EV.CHANGES = { 'neuron+': '+1 neuron', 'neuron-': '−1 neuron', 'layer+': '+1 layer', 'layer-': '−1 layer', act: 'New activation' };
+  EV.LEAN = { grow: { 'neuron+': 4, 'neuron-': 1, 'layer+': 2, 'layer-': 0.5, act: 1 }, even: { 'neuron+': 3, 'neuron-': 2, 'layer+': 1.4, 'layer-': 1, act: 1 }, prune: { 'neuron+': 1.5, 'neuron-': 4, 'layer+': 0.7, 'layer-': 2, act: 1 } };
+  EV.ACTS = ['relu', 'tanh', 'sigmoid', 'leaky', 'elu'];
+  EV.PROTECT = { gens: 5, most: 3 }; // a new shape's best carries on unchanged for 5 generations; at most 3 such a generation
+  const clampInt = (v, lo, hi, def) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : def);
+  /* Grow and prune's settings as one object, from a reward problem's settings (s: penalty, layerSize, newLayer and the
+     grow… keys) or, with sup, from the training settings of a problem with answers (growPenalty, growWidth, growNew
+     and the same grow… keys): how wide new layers start and their weights (size, mode), where they go, how a new
+     neuron starts, which neuron pruning takes, the changes allowed and their odds (weights), the limits, how many
+     children change shape (rate: the genetic algorithm), whether a new shape is protected for a few generations,
+     whether it starts from no hidden layer (start: 'small'), and while it learns from examples the networks side
+     by side (members) and the steps between generations (every). Missing settings are the defaults; "−1 layer"
+     is on by default only with whole layers, as it was before it could be set. */
+  EV.growOptions = function (s, sup) {
+    s = s || {};
+    const size = EV.layerSize(sup ? s.growWidth : s.layerSize), on = (k, def) => (typeof s[k] === 'boolean' ? s[k] : def), lean = EV.LEAN[s.growLean] ? s.growLean : 'even';
+    const ops = { 'neuron+': on('growAddNeuron', true), 'neuron-': on('growCutNeuron', true), 'layer+': on('growAddLayer', true), 'layer-': on('growCutLayer', size === 'whole'), act: on('growAct', false) };
+    const weights = {};
+    for (const k of Object.keys(ops)) weights[k] = ops[k] ? EV.LEAN[lean][k] : 0;
+    const pen = sup ? s.growPenalty : s.penalty;
+    return { size, mode: (sup ? s.growNew : s.newLayer) === 'random' ? 'random' : 'identity', where: s.growWhere === 'first' || s.growWhere === 'last' ? s.growWhere : 'any',
+      neuron: s.growNeuron === 'random' ? 'random' : 'silent', prune: s.growPrune === 'random' ? 'random' : 'weak', lean, ops, weights,
+      maxLayers: clampInt(s.growMaxLayers, 1, 12, EV.LIMITS.layers), maxUnits: clampInt(s.growMaxUnits, 1, 128, EV.LIMITS.units),
+      rate: typeof s.growRate === 'number' && s.growRate > 0 ? Math.min(1, s.growRate) : 0.25, protect: !!s.growProtect, start: s.growStart === 'small' ? 'small' : 'built',
+      penalty: EV.PENALTY[pen] !== undefined ? pen : 'light', members: clampInt(s.growSize, 2, 12, 6), every: clampInt(s.growEvery, 10, 5000, 150) };
+  };
+  /* The changes of shape in a line, for the Growth view's math: who changes (the genetic algorithm: a share of the
+     children; while it learns from examples: every copy), and the changes allowed. */
+  EV.describe = function (o, sup) {
+    const W = o.weights, rate = { 0.1: 'one child in ten', 0.25: 'a quarter of the children', 0.5: 'half the children', 1: 'every child' }[o.rate] || `${Math.round(100 * o.rate)}% of the children`;
+    const n = W['neuron+'] && W['neuron-'] ? 'a neuron more or less' : W['neuron+'] ? 'a neuron more' : W['neuron-'] ? 'a neuron less' : null;
+    const l = W['layer+'] && W['layer-'] ? 'a layer more or less' : W['layer+'] ? `a new layer of ${o.size === 'one' ? 'one neuron' : o.size === 'some' ? 'a few neurons' : 'the width it reads'}` : W['layer-'] ? 'a layer less' : null;
+    const list = [n, l, W.act ? 'a new activation' : null].filter(Boolean);
+    return `${sup ? 'each copy' : rate}: ${list.length > 1 ? `${list.slice(0, -1).join(', ')} or ${list[list.length - 1]}` : list[0] || 'no change (every change is off)'}`;
+  };
+  // how likely each change is, as a share of all of them, for a network with hidden layers (none: a new layer is all it can do)
+  EV.changeOdds = function (o, n = 1) {
+    const w = Object.assign({}, o.weights, n ? {} : { 'neuron+': 0, 'neuron-': 0, 'layer-': 0, act: 0 }, n >= o.maxLayers ? { 'layer+': 0 } : {}), total = Object.values(w).reduce((a, b) => a + b, 0);
+    return Object.fromEntries(Object.keys(w).map((k) => [k, total ? w[k] / total : 0]));
+  };
   // a model evolution can reshape: Dense blocks only (one activation each, no shortcut), on a list of numbers
   EV.evolvable = (blocks, input) => !!input && input.kind === 'vector' && blocks.every((b) => b.type === 'dense' && !b.residual && !Array.isArray(b.acts) && !b.grp);
   const unitsOf = (blocks) => blocks.map((b) => Math.max(1, Math.round(b.units) || 1));
@@ -81,17 +129,25 @@
     return w;
   }
   const withUnits = (b, units) => Object.assign({}, b, { units });
-  /* A neuron more in hidden layer h: its incoming weights at random, its outgoing ones 0, so the network computes
-     exactly what it did, and later mutations can put the new neuron to work. */
-  function addNeuron(g, h, rng, io) {
+  /* A neuron more in hidden layer h: its incoming weights at random, its outgoing ones 0 (o.neuron 'silent', the
+     default), so the network computes exactly what it did and later mutations can put the new neuron to work; or
+     its outgoing weights at random too ('random'), so it joins in at once, for better or worse. */
+  function addNeuron(g, h, rng, io, o) {
     const L = split(EV.sizes(g.blocks, io.nIn, io.K), g.w), q = L[h], nx = L[h + 1], I = q.I, U = q.U;
-    if (U >= EV.LIMITS.units) return null;
+    if (U >= (o ? o.maxUnits : EV.LIMITS.units)) return null;
     const W = new Float32Array((U + 1) * I), b = new Float32Array(U + 1), W2 = new Float32Array(nx.U * (U + 1)), sd = Math.sqrt(2 / I);
     W.set(q.W); b.set(q.b);
     for (let i = 0; i < I; i++) W[U * I + i] = rng.gauss(0, sd);
     for (let r = 0; r < nx.U; r++) W2.set(nx.W.subarray(r * U, r * U + U), r * (U + 1));
+    if (o && o.neuron === 'random') { const so = Math.sqrt(1 / (U + 1)); for (let r = 0; r < nx.U; r++) W2[r * (U + 1) + U] = rng.gauss(0, so); }
     L[h] = { W, b, U: U + 1, I }; L[h + 1] = { W: W2, b: nx.b, U: nx.U, I: U + 1 };
     return { blocks: g.blocks.map((x, i) => (i === h ? withUnits(x, U + 1) : x)), w: join(L), op: `+1 neuron in layer ${h + 1}` };
+  }
+  // hidden layer h switched to another activation (its weights stay, what it computes changes)
+  const actLabel = (a) => ((NA.engine && NA.engine.ACTIVATIONS && NA.engine.ACTIVATIONS[a]) || {}).label || a;
+  function changeAct(g, h, rng) {
+    const cur = g.blocks[h].act || 'relu', other = EV.ACTS.filter((a) => a !== cur), to = other[rng.int(other.length)];
+    return { blocks: g.blocks.map((x, i) => (i === h ? Object.assign({}, x, { act: to }) : x)), w: Float32Array.from(g.w), op: `layer ${h + 1}: ${actLabel(cur)} → ${actLabel(to)}` };
   }
   // the neuron of layer h the next layer listens to least (the smallest outgoing weights)
   function weakest(g, h, io) {
@@ -115,11 +171,12 @@
      next layer leans on most (the inputs whose columns of the next layer's weights are largest, in absolute size):
      each of its neurons picks one of them (a weight of 1; or its weights at random), and the next layer reads them
      with those same columns. What it leaves out is lost, so it changes what the network does: a bottleneck. */
-  function addLayer(g, p, mode, rng, io, size = 'whole') {
-    if (g.blocks.length >= EV.LIMITS.layers) return null;
+  function addLayer(g, p, mode, rng, io, size = 'whole', o = null) {
+    const most = o ? o.maxUnits : EV.LIMITS.units;
+    if (g.blocks.length >= (o ? o.maxLayers : EV.LIMITS.layers)) return null;
     const sz = EV.sizes(g.blocks, io.nIn, io.K), I = sz[p], L = split(sz, g.w), nx = L[p];
-    const U = size === 'whole' ? I : size === 'some' ? 1 + rng.int(Math.max(1, Math.min(I - 1, EV.LIMITS.units))) : 1;
-    if (U > EV.LIMITS.units) return null;
+    const U = size === 'whole' ? I : size === 'some' ? 1 + rng.int(Math.max(1, Math.min(I - 1, most))) : 1;
+    if (U > most) return null;
     const W = new Float32Array(U * I), b = new Float32Array(U);
     if (size === 'whole') {
       if (mode === 'random') { const sd = Math.sqrt(2 / U); for (let i = 0; i < W.length; i++) W[i] = rng.gauss(0, sd); }
@@ -155,26 +212,32 @@
   }
   // the last neuron of hidden layer h pruned: the layer goes, folded into the next
   function pruneLast(g, h, io) { const r = removeLayer(g, h, io); if (r) r.op = `−1 neuron: layer ${h + 1} gone`; return r; }
-  /* One change to the architecture: a neuron more (most often) or less, a layer more. size: how wide a new layer
-     starts ('one', 'some' or 'whole'). With 'whole' a whole layer can also go at once (folded into the next);
-     otherwise a layer goes only when its last neuron is pruned. */
-  EV.mutateArch = function (g, rng, mode, io, size = 'one') {
-    const n = g.blocks.length, whole = size === 'whole', units = unitsOf(g.blocks);
-    const ops = [['neuron+', n ? 3 : 0], ['neuron-', n ? 2 : 0], ['layer+', n < EV.LIMITS.layers ? 1.4 : 0], ['layer-', n && whole ? 1 : 0]];
-    const total = ops.reduce((s, o) => s + o[1], 0);
+  /* One change to the architecture, picked by the odds of o.weights (EV.growOptions): by default a neuron more (most
+     often) or less, or a layer more. A new layer goes anywhere, straight after the input or just before the output
+     (o.where), and starts as wide as o.size says. Pruning takes the weakest neuron, or one at random (o.prune); a
+     layer goes when its last neuron is pruned, except with whole layers, which go at once ("−1 layer"). The older
+     call (g, rng, mode, io, size) still works. */
+  EV.mutateArch = function (g, rng, o, io, size) {
+    if (!o || typeof o !== 'object') o = EV.growOptions({ newLayer: o, layerSize: size || 'one' });
+    const n = g.blocks.length, whole = o.size === 'whole', units = unitsOf(g.blocks), W = o.weights;
+    // (in this order, so the default odds draw exactly as before the changes could be set)
+    const ops = [['neuron+', n ? W['neuron+'] : 0], ['neuron-', n ? W['neuron-'] : 0], ['layer+', n < o.maxLayers ? W['layer+'] : 0], ['layer-', n ? W['layer-'] : 0], ['act', n ? W.act : 0]];
+    const total = ops.reduce((s, q) => s + q[1], 0), last = ops.filter((q) => q[1] > 0).pop();
+    if (!(total > 0)) return null;
     for (let tries = 0; tries < 8; tries++) {
-      let u = rng.next() * total, op = ops[0][0];
-      for (const [name, wgt] of ops) { u -= wgt; if (u <= 0) { op = name; break; } }
+      let u = rng.next() * total, op = last[0];
+      for (const [name, wgt] of ops) { u -= wgt; if (u <= 0 && wgt > 0) { op = name; break; } }
       let r;
-      if (op === 'neuron+') r = addNeuron(g, rng.int(n), rng, io);
-      else if (op === 'neuron-') { const h = rng.int(n); r = units[h] <= 1 && !whole ? pruneLast(g, h, io) : removeNeuron(g, h, weakest(g, h, io), io); }
-      else if (op === 'layer+') r = addLayer(g, rng.int(n + 1), mode, rng, io, size);
-      else r = removeLayer(g, rng.int(n), io);
+      if (op === 'neuron+') r = addNeuron(g, rng.int(n), rng, io, o);
+      else if (op === 'neuron-') { const h = rng.int(n); r = units[h] <= 1 && !whole ? pruneLast(g, h, io) : removeNeuron(g, h, o.prune === 'random' ? rng.int(units[h]) : weakest(g, h, io), io); }
+      else if (op === 'layer+') r = addLayer(g, o.where === 'first' ? 0 : o.where === 'last' ? n : rng.int(n + 1), o.mode, rng, io, o.size, o);
+      else if (op === 'layer-') r = removeLayer(g, rng.int(n), io);
+      else r = changeAct(g, rng.int(n), rng);
       if (r) return r;
     }
     return null;
   };
-  Object.assign(EV, { split, join, addNeuron, removeNeuron, addLayer, removeLayer, pruneLast, weakest });
+  Object.assign(EV, { split, join, addNeuron, removeNeuron, addLayer, removeLayer, pruneLast, weakest, changeAct });
 
   // ------------------------------------------------------------------ networks for every architecture met
   class Nets {
@@ -235,9 +298,9 @@
       this.blocks = blocks || net.evoBlocks || [];
       this.size = Math.max(4, Math.round(s.pop) || 24); this.sigma = s.sigma > 0 ? s.sigma : 0.2;
       this.select = EV.SELECT[s.select] ? s.select : 'tournament'; this.cross = EV.CROSS[s.cross] ? s.cross : 'uniform'; this.mutation = EV.MUTATE[s.mutate] ? s.mutate : 'plain';
-      // grow and prune: the genetic algorithm's alone
-      this.grow = this.kind === 'ga' && !!s.grow && EV.evolvable(this.blocks, net.input); this.penalty = this.grow ? EV.PENALTY[s.penalty] ?? EV.PENALTY.light : 0;
-      this.newLayer = s.newLayer === 'random' ? 'random' : 'identity'; this.layerSize = EV.layerSize(s.layerSize);
+      // grow and prune: the genetic algorithm's alone (its settings in this.gopt: EV.growOptions)
+      this.grow = this.kind === 'ga' && !!s.grow && EV.evolvable(this.blocks, net.input); this.gopt = EV.growOptions(s);
+      this.penalty = this.grow ? EV.PENALTY[this.gopt.penalty] : 0; this.newLayer = this.gopt.mode; this.layerSize = this.gopt.size;
       const W = (NA.brl.WORLD[T.worldId] || {});
       this.episodes = (W.gaEpisodes || 2) + (T.ws.random || T.ws.slip || (T.worldId === 'track' && T.ws.track === 'random') ? 2 : 0); this.scale = W.scale || 1;
       const w0 = net.getWeights();
@@ -251,8 +314,11 @@
         this.cemSigma = s.cemSigma > 0 ? s.cemSigma : 0.3; this.cemElite = s.cemElite > 0 && s.cemElite < 1 ? s.cemElite : 0.2; this.cemFloor = s.cemFloor >= 0 ? s.cemFloor : 0.05;
         this.mu = Float32Array.from(w0); this.sd = new Float32Array(w0.length).fill(this.cemSigma);
       } else {
-        // the first generation: the network you built and copies of it, each moved at random (the same architecture)
-        this.pop = NA.range(this.size).map((k) => { const w = Float32Array.from(w0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); return { blocks: this.blocks, w, op: k ? 'a copy moved at random' : 'the network you built', born: 0, id: this.newId(), parents: [] }; });
+        /* the first generation: the network you built and copies of it, each moved at random (the same architecture);
+           with grow and prune starting small, a network with no hidden layer (the inputs straight to the outputs)
+           and copies of it, so every neuron and layer it ends with is one evolution added */
+        const small = this.grow && this.gopt.start === 'small', b0 = small ? [] : this.blocks, s0 = small ? this.nets.get([]).getWeights() : w0;
+        this.pop = NA.range(this.size).map((k) => { const w = Float32Array.from(s0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); return { blocks: b0, w, op: k ? 'a copy moved at random' : small ? 'no hidden layer: the smallest network' : 'the network you built', born: 0, id: this.newId(), parents: [] }; });
         // novelty search: judged by how new its behaviour is (a world that measures none: by its return, as the genetic algorithm)
         this.novel = this.kind === 'novelty' && typeof this.world.behavior === 'function';
         if (this.novel) { this.novArchive = []; this.novK = Math.max(1, Math.round(s.novK) || 10); this.novMix = EV.NOVELTY[s.novMix] ? s.novMix : 'novelty'; this.novAdd = Math.max(1, Math.round(s.novAdd) || 2); this.champ = null; }
@@ -314,11 +380,29 @@
       const shown = this.novel ? NA.range(n).sort((a, b) => fit[b] - fit[a]) : order, same = P.filter((g) => Nets.key(g.blocks) === Nets.key(best.blocks)).map((g) => g.w);
       if (this.novel) this.keepNovel(J.res, nov);
       if (this.kind === 'erl') this.learnRL();
-      this.record(shown.map((k) => ({ id: P[k].id, parents: P[k].parents, fit: fit[k], adj: adj[k], units: unitsOf(P[k].blocks), weights: this.weightsOf(P[k].blocks), beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: P[k].op, born: P[k].born, nov: nov ? nov[k] : undefined, fromRL: P[k].fromRL || undefined })),
-        fit[shown[0]], mean, this.novel ? null : best, this.kind === 'erl' ? { divW: spreadOf(same), rlLoss: this.rlLoss } : { divW: spreadOf(same) });
+      // (grow and prune: how many shapes the generation has, and each member's activations when they can change)
+      const extra = this.kind === 'erl' ? { divW: spreadOf(same), rlLoss: this.rlLoss } : { divW: spreadOf(same) };
+      if (this.grow) extra.shapes = new Set(P.map((g) => Nets.key(g.blocks))).size;
+      this.record(shown.map((k) => ({ id: P[k].id, parents: P[k].parents, fit: fit[k], adj: adj[k], units: unitsOf(P[k].blocks), weights: this.weightsOf(P[k].blocks), beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: P[k].op, born: P[k].born, nov: nov ? nov[k] : undefined, fromRL: P[k].fromRL || undefined,
+        prot: P[k].prot || undefined, acts: this.grow && this.gopt.ops.act ? P[k].blocks.map((b) => b.act || 'relu') : undefined })),
+        fit[shown[0]], mean, this.novel ? null : best, extra);
+      if (this.grow) this.last.shapes = extra.shapes;
       if (this.novel) this.champion(P[shown[0]], fit[shown[0]]);
       // the next generation: the best two unchanged (op null: passed on as they were), then children
       const next = [best, P[order[1]]].map((g) => Object.assign(this.copy(g), { op: null })), sens = new Map();
+      /* Protect new shapes: a new shape usually starts a little worse (its new neuron does nothing yet, its new
+         layer is a bottleneck), so the best member of each shape that appeared in the last few generations carries
+         on unchanged too, and mutations get time to tune it before it has to beat the rest (a simple form of NEAT's
+         speciation). A shape's age is its member's: the generation its shape last changed. */
+      if (this.grow && this.gopt.protect) {
+        const have = new Set(next.map((g) => Nets.key(g.blocks))), most = Math.max(0, Math.min(EV.PROTECT.most, n - 3));
+        for (const k of order) {
+          if (next.length >= 2 + most) break;
+          const g = P[k], key = Nets.key(g.blocks);
+          if (have.has(key) || g.shapeGen === undefined || this.gen - g.shapeGen >= EV.PROTECT.gens) continue;
+          have.add(key); next.push(Object.assign(this.copy(g), { op: null, prot: true }));
+        }
+      }
       while (next.length < n) {
         const ia = this.pick(order, adj), a = P[ia];
         let child = this.copy(a), mixed = false;
@@ -327,7 +411,8 @@
         if (this.mutation === 'safe' && !sens.has(ia)) sens.set(ia, this.sensitivity(a, J.res[ia].seen));
         this.mutate(child.w, this.mutation === 'safe' ? sens.get(ia) : null);
         child.op = mixed ? 'mixed and mutated' : 'mutated';
-        if (this.grow && this.rng.next() < 0.25) { const r = EV.mutateArch(child, this.rng, this.newLayer, this.io, this.layerSize); if (r) Object.assign(child, r); }
+        // grow and prune: some of the children (a quarter unless set) are born with one change to their shape
+        if (this.grow && this.rng.next() < this.gopt.rate) { const r = EV.mutateArch(child, this.rng, this.gopt, this.io); if (r) Object.assign(child, r, { shapeGen: this.gen + 1 }); }
         next.push(child);
       }
       // ERL: every few generations the DQN's network takes the place of the worst
@@ -335,7 +420,7 @@
       this.pop = next; this.gen++;
       return { loss: -mean, gradNorm: 0 };
     }
-    copy(g) { return { blocks: g.blocks, w: Float32Array.from(g.w), op: g.op, born: g.born, id: g.id, parents: g.parents, fromRL: g.fromRL }; }
+    copy(g) { return { blocks: g.blocks, w: Float32Array.from(g.w), op: g.op, born: g.born, id: g.id, parents: g.parents, fromRL: g.fromRL, shapeGen: g.shapeGen }; }
     // a parent, by the selection chosen (order: the population best first; adj: their fitness)
     pick(order, adj) {
       const n = order.length, rng = this.rng;
@@ -617,13 +702,16 @@
      architecture evolving instead of the learning rate. The best network so far is the one on show. */
   EV.PENALTY_EX = { off: 0, light: 0.004, strong: 0.015 }; // added to the validation loss for every 100 weights
   class Grower {
-    // o: blocks, input, output, seed, init, size, every (steps a generation), penalty, newLayer, layerSize, judge(model) → { score, loss }
+    /* o: blocks, input, output, seed, init, judge(model) → { score, loss }, and the settings: opts (EV.growOptions(train
+       settings, true): changes, odds, limits, start, members, every) or, as before, size, every, penalty, newLayer,
+       layerSize. Starting small, every member starts with no hidden layer (the network you built is not one of them). */
     constructor(o) {
-      Object.assign(this, { input: o.input, output: o.output, init: o.init, every: Math.max(10, o.every || 150), judge: o.judge, rng: new NA.RNG((o.seed || 1) * 7907 + 3), t: 0, gen: 0, history: [] });
-      this.penalty = EV.PENALTY_EX[o.penalty] ?? EV.PENALTY_EX.light; this.newLayer = o.newLayer === 'random' ? 'random' : 'identity'; this.layerSize = EV.layerSize(o.layerSize);
+      const opt = o.opts || EV.growOptions({ growPenalty: o.penalty, growNew: o.newLayer, growWidth: o.layerSize, growSize: o.size, growEvery: o.every }, true);
+      Object.assign(this, { input: o.input, output: o.output, init: o.init, every: Math.max(10, opt.every), judge: o.judge, rng: new NA.RNG((o.seed || 1) * 7907 + 3), t: 0, gen: 0, history: [], gopt: opt });
+      this.penalty = EV.PENALTY_EX[opt.penalty] ?? EV.PENALTY_EX.light; this.newLayer = opt.mode; this.layerSize = opt.size;
       this.io = { nIn: o.input.dim, K: o.output.kind === 'classes' ? o.output.k : o.output.k || 1 };
-      const n = Math.max(2, o.size || 6);
-      this.members = NA.range(n).map((k) => ({ blocks: o.blocks, model: k === 0 && o.model ? o.model : this.make(o.blocks, (o.seed || 1) * 31 + k), born: 0, op: null, score: null, fit: null }));
+      const n = Math.max(2, opt.members), small = opt.start === 'small', b0 = small ? [] : o.blocks;
+      this.members = NA.range(n).map((k) => ({ blocks: b0, model: k === 0 && o.model && !small ? o.model : this.make(b0, (o.seed || 1) * 31 + k), born: 0, op: small ? 'no hidden layer' : null, score: null, fit: null }));
       this.best = this.members[0];
     }
     make(blocks, seed) { const m = NA.bx.build(blocks, this.input, this.output, { seed, init: this.init }); m.evoBlocks = blocks; m.evoChk = NA.bx.check(blocks, this.input, this.output); return m; }
@@ -644,7 +732,7 @@
       this.history.push({ gen: this.gen, step: this.t, score: this.best.score, loss: this.best.loss, weights: this.best.weights, units: unitsOf(this.best.blocks), members: order.map((m) => ({ score: m.score, loss: m.loss, weights: m.weights, units: unitsOf(m.blocks), op: m.op })) });
       // the worse half: copies of the better half, each with one change to its architecture
       for (let k = half; k < order.length; k++) {
-        const parent = order[k - half], g = { blocks: parent.blocks, w: parent.model.getWeights() }, r = EV.mutateArch(g, this.rng, this.newLayer, this.io, this.layerSize) || g;
+        const parent = order[k - half], g = { blocks: parent.blocks, w: parent.model.getWeights() }, r = EV.mutateArch(g, this.rng, this.gopt, this.io) || g;
         const child = order[k];
         child.blocks = r.blocks; child.model = this.make(r.blocks, 1); child.model.setWeights(r.w); child.op = r.op || 'a copy'; child.born = this.gen + 1; child.score = null;
       }

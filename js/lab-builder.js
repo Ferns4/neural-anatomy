@@ -214,6 +214,7 @@
     rbf: ['M2 20h20', 'M3 19c4 0 5-12 9-12s5 12 9 12', 'C12 7 1.5', 'M12 9v10'],
     maxout: ['M3 19L21 9', 'M3 9l18 10', 'M3 5l9 5 9-5'],
     moe: ['C5 12 2', 'M7 12l4-7', 'M7 12h4', 'M7 12l4 7', 'M12 3h8v4h-8z', 'M12 10h8v4h-8z', 'M12 17h8v4h-8z'],
+    full: ['M4 9V4h5', 'M15 4h5v5', 'M20 15v5h-5', 'M9 20H4v-5'], unfull: ['M9 4v5H4', 'M15 4v5h5', 'M20 15h-5v5', 'M4 15h5v5'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -451,7 +452,7 @@
     if (this.agent) { run.method = d.method; run.bestVm = null; run.grow = !!(this.agent.evo && this.agent.evo.grow); this.demo = null; this.watchCell = null; this.genReplay = null; }
     // grow and prune while it learns (problems with answers): a few networks side by side, reshaped every generation
     this.grower = !this.agent && !classic && T.grow && NA.bevo.evolvable(cfg.blocks, d.input) && d.output.kind !== 'tokens'
-      ? new NA.bevo.Grower({ blocks: cfg.blocks, model, input: d.input, output: d.output, seed: T.seed, init: T.init, every: T.growEvery || 150, penalty: T.growPenalty || 'light', newLayer: T.growNew || 'identity', layerSize: T.growWidth || 'one', judge: (m) => this.judgeModel(m) }) : null;
+      ? new NA.bevo.Grower({ blocks: cfg.blocks, model, input: d.input, output: d.output, seed: T.seed, init: T.init, opts: NA.bevo.growOptions(T, true), judge: (m) => this.judgeModel(m) }) : null;
     if (this.grower) run.grow = true;
     this.order = null; this.epochPos = 0; this.rng = new NA.RNG(T.seed * 977 + n);
     if (this.seqView) this.seqView.cont = null; // written by the new model once it has trained a little
@@ -539,12 +540,12 @@
           : m === 'cem' && ev ? G.cem({ pop: ev.size, elite: Math.max(2, Math.round(ev.size * ev.cemElite)), spread: h && h.spread, floor: ev.cemFloor, best: x.best })
             : m === 'novelty' && ev && ev.novel ? G.novelty({ pop: ev.size, k: ev.novK, mix: ev.novMix, archive: ev.novArchive.length, best: x.best })
               : m === 'erl' && ev ? G.erl({ pop: ev.size, sigma: ev.sigma, steps: ev.erlSteps, every: ev.erlEvery, loss: ev.rlLoss, best: x.best })
-                : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean, select: ps.select, cross: ps.cross, mutate: ps.mutate, grow: run.grow, penalty: ev ? ev.penalty * ev.scale : 0, units: h && h.units, weights: h && h.weights, layerSize: ps.layerSize });
+                : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean, select: ps.select, cross: ps.cross, mutate: ps.mutate, grow: run.grow, penalty: ev ? ev.penalty * ev.scale : 0, units: h && h.units, weights: h && h.weights, layerSize: ps.layerSize, changes: run.grow ? NA.bevo.describe(NA.bevo.growOptions(ps)) : null });
       return [pays, rule, NA.brl.isEvo(m) ? null : step];
     }
     if (run.grow && this.grower) {
       const gw = this.grower, h = gw.history.length ? gw.history[gw.history.length - 1] : null;
-      return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step, G.grow({ size: gw.members.length, every: gw.every, penalty: gw.penalty, units: h && h.units, weights: h && h.weights, score: h && h.score, value: BT.isValue(d.family), layerSize: gw.layerSize })];
+      return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step, G.grow({ size: gw.members.length, every: gw.every, penalty: gw.penalty, units: h && h.units, weights: h && h.weights, score: h && h.score, value: BT.isValue(d.family), layerSize: gw.layerSize, changes: NA.bevo.describe(gw.gopt, true) })];
     }
     return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step,
       before ? G.change('step', { step: before.step, v: before.x && before.x.loss, moved: moved(before) }, { step: f.step, v: x.loss, moved: moved(f) }, 'L') : null];
@@ -698,7 +699,8 @@
     // you play (Try it yourself): your moves, the network's outputs beside them
     const P = this.youPlay ? PLAY[d.world] : null;
     if (this.youPlay && !P) this.playYourself(false);
-    const live = this.run && !this.stale && this.agent ? this.agent : null, key = JSON.stringify([d.world, d.ws, d.method, !!live, this.watchCell === undefined ? null : this.watchCell, !!P]);
+    // (who plays is not part of the key: you jump into the episode where it is, and hand it back the same way)
+    const live = this.run && !this.stale && this.agent ? this.agent : null, key = JSON.stringify([d.world, d.ws, d.method, !!live, this.watchCell === undefined ? null : this.watchCell]);
     let D = this.demo;
     if (!D || D.key !== key) D = this.demo = { key, world: NA.rlEnvs.make(d.world, d.ws), rng: new NA.RNG(99), ep: 0, at: 0 };
     // a whole generation replaying: the picture moves every frame
@@ -708,7 +710,7 @@
     if (now - D.at < (D.end ? 1000 : P ? P.ms || 0 : W.demoMs || 150)) return;
     if (P && P.turn && D.obs && !D.end && !this.playQueue.length) return;
     D.at = now;
-    if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; D.parts = null; }
+    if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; D.parts = null; D.took = null; D.gave = null; }
     else {
       const a = P ? (P.turn ? this.playQueue.shift() : heldMove(P, this.playHeld)) : D.a, t = D.world.step(a, D.rng);
       D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a, r: t.r, parts: t.parts || null };
@@ -761,15 +763,77 @@
     herd: { idle: 4, ms: 50, keys: { ArrowUp: 0, ArrowDown: 1, ArrowLeft: 2, ArrowRight: 3 }, help: 'the arrow keys move the dog', pad: [[2, '◀'], [0, '▲'], [1, '▼'], [3, '▶']] },
   };
   const heldMove = (P, held) => (held && held.length ? held[held.length - 1] : P.idle); // the key pressed last wins
+  /* Jump in: you take the controls of the episode on show where it is (the move it has reached, its return so far);
+     Let it play hands them back the same way, and the network carries on from where you left it. Between episodes, a
+     new one starts. */
   BL.playYourself = function (on) {
     const d = this.dataFor(), P = PLAY[d.world];
     if (on && (d.family !== 'control' || !P)) return;
+    if (!!on === !!this.youPlay) return;
     if (on && this.training) this.pause();
-    this.youPlay = !!on; this.playHeld = []; this.playQueue = []; this.demo = null;
+    this.youPlay = !!on; this.playHeld = []; this.playQueue = [];
+    const D = this.demo;
+    if (D && !D.end && D.t) { if (on) D.took = D.t; else D.gave = D.t; } // (an episode that has ended: the next one starts as usual)
     if (on) this.evoView = 'best';
     this.listenPlay(this.youPlay);
     this._headKey = null; this.resultsDirty = true;
-    if (on) NA.ui.toast.show(`Your turn: ${NA.mobile && NA.mobile.mobile ? 'press and hold the buttons above the picture' : P.help}.${this.run && !this.stale ? ' The bars show what the network would do.' : ''}`);
+    const touchy = (NA.mobile && NA.mobile.mobile) || (window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    if (on) NA.ui.toast.show(`Your turn${D && D.took ? `, from move ${fmtInt(D.took)}` : ''}: ${touchy ? `press and hold the buttons ${this.full ? 'under' : 'above'} the picture` : P.help}.${this.run && !this.stale ? ' The bars show what the network would do.' : ''}`);
+  };
+  // the keys of a world, for the hint (the arrows it uses, the number keys)
+  const keysOf = (P) => { const A = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓' }, k = Object.keys(P.keys); return [...k.filter((x) => A[x]).map((x) => A[x]), ...(k.some((x) => /^\d$/.test(x)) ? ['1–' + k.filter((x) => /^\d$/.test(x)).length] : [])].join(' '); };
+  /* While the network plays, a key of the world's jumps in at once, the key itself the first move: in full screen, or
+     with the picture (or nothing) focused. Not the space bar: it trains. */
+  BL.listenJump = function (on) {
+    if (this._jumpKey) { document.removeEventListener('keydown', this._jumpKey, true); this._jumpKey = null; }
+    if (!on) return;
+    this._jumpKey = (e) => {
+      if (this.youPlay || e.ctrlKey || e.metaKey || e.altKey || e.key === ' ' || NA.labHost.lab !== this || this.family() !== 'control') return;
+      const a0 = document.activeElement, mine = !a0 || a0 === document.body || a0 === document.documentElement || this.results.contains(a0);
+      if (!mine || /^(INPUT|SELECT|TEXTAREA)$/.test(a0 && a0.tagName) || (a0 && a0.isContentEditable) || (!this.full && !this.resCanvas.offsetParent)) return;
+      const d = this.dataFor(), P = PLAY[d.world], a = P && P.keys[e.key];
+      if (d.error || a === undefined || a >= d.nA) return;
+      e.preventDefault(); e.stopPropagation();
+      this.playYourself(true);
+      if (P.turn) this.playQueue.push(a); else if (!this.playHeld.includes(a)) this.playHeld.push(a);
+    };
+    document.addEventListener('keydown', this._jumpKey, true);
+  };
+  /* Full screen: the results over the whole page (and the browser's own full screen where it allows it, not inside a
+     frame that forbids it), the picture as big as the screen with the run's line, Train, Jump in and the buttons to
+     hold. Esc, or the button, puts them back where they were. */
+  BL.setFull = function (on) {
+    on = !!on;
+    if (on === !!this.full) return;
+    this.full = on;
+    const R = this.results, doc = document, fsEl = () => doc.fullscreenElement || doc.webkitFullscreenElement;
+    if (on) {
+      this._fullHome = { parent: R.parentElement, next: R.nextSibling };
+      doc.body.append(R);
+      R.classList.add('is-full'); doc.body.classList.add('bd-full-on');
+      // (the page under it out of reach: Tab, clicks and screen readers stay in full screen; dialogs and toasts sit outside it)
+      const app = doc.getElementById('app');
+      if (app) app.inert = true;
+      this._fullWent = false;
+      const de = doc.documentElement;
+      try { const q = de.requestFullscreen ? de.requestFullscreen({ navigationUI: 'hide' }) : de.webkitRequestFullscreen ? de.webkitRequestFullscreen() : null; if (q && q.catch) q.catch(() => {}); } catch (e) { /* the page's own full screen is enough */ }
+      // the browser's full screen ending (its Esc, its own button) ends this one too
+      this._fullChange = () => { if (fsEl()) this._fullWent = true; else if (this._fullWent && this.full) this.setFull(false); };
+      doc.addEventListener('fullscreenchange', this._fullChange); doc.addEventListener('webkitfullscreenchange', this._fullChange);
+      this._fullEsc = (e) => { if (e.key === 'Escape' && this.full && !e.defaultPrevented && !doc.querySelector('.modal:not([hidden])')) { e.preventDefault(); this.setFull(false); } };
+      doc.addEventListener('keydown', this._fullEsc);
+      setTimeout(() => { if (this.full && !R.contains(doc.activeElement)) this.resCanvas.focus({ preventScroll: true }); }, 0);
+    } else {
+      R.classList.remove('is-full'); doc.body.classList.remove('bd-full-on');
+      const app = doc.getElementById('app');
+      if (app) app.inert = false;
+      const h = this._fullHome;
+      if (h && h.parent && h.parent.isConnected) h.parent.insertBefore(R, h.next && h.next.parentElement === h.parent ? h.next : null); else R.remove();
+      doc.removeEventListener('fullscreenchange', this._fullChange); doc.removeEventListener('webkitfullscreenchange', this._fullChange); doc.removeEventListener('keydown', this._fullEsc);
+      if (fsEl()) { try { const q = (doc.exitFullscreen || doc.webkitExitFullscreen).call(doc); if (q && q.catch) q.catch(() => {}); } catch (e) { /* already out */ } }
+    }
+    clear(this.resPad); this.resPad.hidden = true;
+    this._headKey = null; this.resultsDirty = true; this.layoutCenter();
   };
   // the keys while you play (taken before the page's own shortcuts; never while typing in a field)
   BL.listenPlay = function (on) {
@@ -791,13 +855,14 @@
     this._playKeys = { down, up, blur };
     document.addEventListener('keydown', down, true); document.addEventListener('keyup', up, true); window.addEventListener('blur', blur);
   };
-  // the row under the results' title: Try it yourself, and while you play the controls and buttons to hold
+  // the row under the results' title: Jump in, and while you play the controls and the buttons to hold ({ row, pad })
   BL.playRow = function (d) {
-    const P = PLAY[d.world], on = !!this.youPlay, touch = (NA.mobile && NA.mobile.mobile) || (window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    const P = PLAY[d.world], on = !!this.youPlay, touch = (NA.mobile && NA.mobile.mobile) || (window.matchMedia && matchMedia('(pointer: coarse)').matches), keys = keysOf(P);
     const row = el('div', { class: 'bd-play' },
-      el('button', { class: on ? 'btn' : 'btn btn-quiet', type: 'button', onclick: () => this.playYourself(!on) }, on ? 'Let it play' : 'Try it yourself'),
-      el('span', { class: 'sec-note', text: on ? `${touch ? 'Press and hold the buttons' : P.help[0].toUpperCase() + P.help.slice(1)}.${this.run && !this.stale ? ' The bars: what the network would do.' : ''}` : 'Take the controls yourself, then watch how the network does it.' }));
-    if (!on) return row;
+      el('button', { class: on ? 'btn' : 'btn btn-primary', type: 'button', title: on ? 'Hand the controls back: the network carries on from here' : 'Take the controls of this episode where it is', onclick: () => this.playYourself(!on) }, on ? 'Let it play' : 'Jump in'),
+      el('span', { class: 'sec-note', text: on ? `${touch ? 'Press and hold the buttons' : P.help[0].toUpperCase() + P.help.slice(1)}.${this.run && !this.stale ? ' The bars: what the network would do.' : ''} Let it play hands back the controls where you are.`
+        : `Take the controls where it is now${touch ? '' : ` (or press ${keys}${this.full ? '' : ' with the picture clicked'})`}, then hand back and watch how the network carries on from there.` }));
+    if (!on) return { row, pad: null };
     const pad = el('div', { class: 'bd-pad', role: 'group', 'aria-label': 'Your controls' }, ...(P.pad || d.actions.map((a, i) => [i, a])).filter(([a]) => a < d.nA).map(([a, label]) => {
       const b = el('button', { class: 'btn bd-pad-btn', type: 'button', text: label, 'aria-label': d.actions[a] || label });
       const release = () => { this.playHeld = this.playHeld.filter((q) => q !== a); };
@@ -806,7 +871,7 @@
       b.addEventListener('keydown', (e) => { if (P.turn && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); this.playQueue.push(a); } });
       return b;
     }));
-    return el('div', null, row, pad);
+    return { row, pad };
   };
   // grow and prune: how a network does on the validation examples (its loss, and its accuracy or R²)
   BL.judgeModel = function (m) {
@@ -855,8 +920,10 @@
     const out = [], P = (id) => BT.byId[id].label, val = (k, v) => JSON.stringify(k === 'branches' && Array.isArray(v) ? v.map((l) => l.map(cleanSpec)) : v);
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
-      const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
-      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', select: 'choosing parents', cross: 'mixing parents', mutate: 'mutation kind', grow: 'grow and prune', penalty: 'size penalty', newLayer: 'new layers’ weights', layerSize: 'new layers start with', esSigma: 'nudge size', esLr: 'step size', novK: 'nearest behaviours', novMix: 'chosen for', novAdd: 'behaviours kept a generation', cemElite: 'refit to', cemSigma: 'starting spread', cemFloor: 'spread floor', erlSteps: 'DQN steps a generation', erlEvery: 'DQN joins every', erlLr: 'DQN learning rate', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', climate: 'weather', insulation: 'insulation', schedule: 'warm', obstacles: 'course', length: 'corridor', engine: 'engine', motor: 'motor', pattern: 'traffic', ground: 'ground', maze: 'maze', chasers: 'chasers', sheep: 'sheep', normReward: 'normalised rewards', keepBest: 'keep the best network', waves: 'waves', most: 'up to', sizes: 'dot sizes', dirs: 'directions', colour: 'colour', edges: 'edges', rhythm: 'rhythm', digits: 'digits', ...REWARD_WORDS })[k] || k} ${psVal(k, pa[k], BT.byId[a.problem])} → ${psVal(k, pb[k], BT.byId[b.problem])}`);
+      const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {}, ga = NA.bevo.growOptions(pa), gb = NA.bevo.growOptions(pb), va = growVals(ga), vb = growVals(gb);
+      // (grow and prune's settings as it uses them: one missing from an older setup is its default, and the derived "−1 layer" counts)
+      for (const k of Object.keys(GROW_WORDS)) if (JSON.stringify(va[k]) !== JSON.stringify(vb[k])) out.push(`${GROW_WORDS[k]} ${fmtVal(k, va[k])} → ${fmtVal(k, vb[k])}`);
+      for (const k of Object.keys(pb)) if (!GROW_WORDS[k] && JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', select: 'choosing parents', cross: 'mixing parents', mutate: 'mutation kind', grow: 'grow and prune', penalty: 'size penalty', newLayer: 'new layers’ weights', layerSize: 'new layers start with', esSigma: 'nudge size', esLr: 'step size', novK: 'nearest behaviours', novMix: 'chosen for', novAdd: 'behaviours kept a generation', cemElite: 'refit to', cemSigma: 'starting spread', cemFloor: 'spread floor', erlSteps: 'DQN steps a generation', erlEvery: 'DQN joins every', erlLr: 'DQN learning rate', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', climate: 'weather', insulation: 'insulation', schedule: 'warm', obstacles: 'course', length: 'corridor', engine: 'engine', motor: 'motor', pattern: 'traffic', ground: 'ground', maze: 'maze', chasers: 'chasers', sheep: 'sheep', normReward: 'normalised rewards', keepBest: 'keep the best network', waves: 'waves', most: 'up to', sizes: 'dot sizes', dirs: 'directions', colour: 'colour', edges: 'edges', rhythm: 'rhythm', digits: 'digits', ...REWARD_WORDS })[k] || k} ${psVal(k, pa[k], BT.byId[a.problem])} → ${psVal(k, pb[k], BT.byId[b.problem])}`);
       if (a.problem === 'draw' && JSON.stringify(a.custom.points) !== JSON.stringify(b.custom.points)) out.push(`points: ${a.custom.points.length} → ${b.custom.points.length}`);
     }
     // blocks: match by type in order (longest common subsequence), then compare settings
@@ -875,15 +942,25 @@
     if (a.loss.id !== b.loss.id) out.push(`loss ${NA.bx.LOSSES[a.loss.id].label} → ${NA.bx.LOSSES[b.loss.id].label}`);
     if ((a.loss.smooth || 0) !== (b.loss.smooth || 0)) out.push(`label smoothing ${a.loss.smooth || 0} → ${b.loss.smooth || 0}`);
     // (grow and prune's settings, missing from older setups, count as their defaults)
-    const TN = { opt: 'optimizer', lr: 'learning rate', batch: 'batch', wd: 'weight decay', sched: 'schedule', clip: 'clipping', init: 'initialisation', seed: 'seed', steps: 'steps', grow: 'grow and prune', growPenalty: 'size penalty', growWidth: 'new layers start with', growNew: 'new layers’ weights' };
-    const TD = { grow: false, growPenalty: 'light', growWidth: 'one', growNew: 'identity' };
-    for (const k of Object.keys(TN)) { const va = a.train[k] ?? TD[k], vb = b.train[k] ?? TD[k]; if (va !== vb) out.push(`${TN[k]} ${fmtVal(k, va)} → ${fmtVal(k, vb)}`); }
+    const TN = Object.assign({ opt: 'optimizer', lr: 'learning rate', batch: 'batch', wd: 'weight decay', sched: 'schedule', clip: 'clipping', init: 'initialisation', seed: 'seed', steps: 'steps', grow: 'grow and prune', growPenalty: 'size penalty', growWidth: 'new layers start with', growNew: 'new layers’ weights', growSize: 'networks side by side', growEvery: 'a generation every' }, GROW_WORDS);
+    // (each as grow and prune uses it: a setting missing from an older setup is its default)
+    const eff = (T, k) => { const g = NA.bevo.growOptions(T, true); return { grow: !!T.grow, growPenalty: g.penalty, growWidth: g.size, growNew: g.mode, growSize: g.members, growEvery: g.every, ...growVals(g) }[k] ?? T[k]; };
+    for (const k of Object.keys(TN)) { const va = eff(a.train, k), vb = eff(b.train, k); if (JSON.stringify(va) !== JSON.stringify(vb)) out.push(`${TN[k]} ${fmtVal(k, va)} → ${fmtVal(k, vb)}`); }
     const count = new Map();
     for (const c of out) count.set(c, (count.get(c) || 0) + 1);
     return out.length ? [...count].map(([c, k]) => (k > 1 ? `${c} ×${k}` : c)) : ['same setup, fresh weights'];
   }
   const OPT_LABEL = { sgd: 'SGD', momentum: 'Momentum', adam: 'Adam', adamw: 'AdamW' }, SCHED_LABEL = { const: 'constant', cosine: 'cosine', step: 'step', warmup: 'warm-up + cosine' };
+  // grow and prune's settings in the run list's words, and their values as grow and prune uses them (EV.growOptions)
+  const GROW_WORDS = { growStart: 'starts from', growAddNeuron: '+1 neuron', growCutNeuron: '−1 neuron', growAddLayer: '+1 layer', growCutLayer: '−1 layer', growAct: 'new activations', growLean: 'leaning', growRate: 'children that change shape',
+    growWhere: 'new layers go', growNeuron: 'new neurons start', growPrune: 'pruning takes', growMaxLayers: 'most hidden layers', growMaxUnits: 'most neurons a layer', growProtect: 'protect new shapes' };
+  const growVals = (g) => ({ growStart: g.start, growAddNeuron: g.ops['neuron+'], growCutNeuron: g.ops['neuron-'], growAddLayer: g.ops['layer+'], growCutLayer: g.ops['layer-'], growAct: g.ops.act, growLean: g.lean, growRate: g.rate,
+    growWhere: g.where, growNeuron: g.neuron, growPrune: g.prune, growMaxLayers: g.maxLayers, growMaxUnits: g.maxUnits, growProtect: g.protect });
+  const GROW_SAY = { growStart: { built: 'your network', small: 'no hidden layer' }, growLean: { grow: 'to grow', even: 'even', prune: 'to prune' }, growWhere: { any: 'anywhere', first: 'after the input', last: 'before the output' },
+    growNeuron: { silent: 'silent', random: 'at random' }, growPrune: { weak: 'the weakest', random: 'one at random' } };
   function fmtVal(k, v) {
+    if (GROW_SAY[k] && GROW_SAY[k][v]) return GROW_SAY[k][v];
+    if (k === 'growRate') return GROW_PCT(v);
     if (k === 'act') return (ACTS[v] || {}).label || v;
     if (k === 'opt') return OPT_LABEL[v] || v;
     if (k === 'sched') return SCHED_LABEL[v] || v;
@@ -935,6 +1012,7 @@
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
+    this.listenJump(true); // (a world's key jumps in while the network plays)
     // (the Reward tab only for problems that learn from rewards: syncTabs)
     this.tabs = UI.tabs(ui.right, [{ id: 'block', label: 'Part' }, { id: 'reward', label: 'Reward' }, { id: 'train', label: 'Training' }, { id: 'runs', label: 'Runs' }, { id: 'python', label: 'Python' }], (id, body) => this.buildTab(id, body), this.tabId);
     this.syncTabs();
@@ -946,6 +1024,8 @@
     this.resultsDirty = true;
   };
   BL.deactivate = function () {
+    if (this.full) this.setFull(false);
+    this.listenJump(false);
     document.body.classList.remove('builder-on');
     if (this.offTheme) this.offTheme();
     if (this.resizeObs) this.resizeObs.disconnect();
@@ -1325,12 +1405,14 @@
       return `Results on ${p.label.toLowerCase()}: ${run ? `run ${run.n}, ${this.metricText(run)} after ${fmtInt(run.step)} steps` : 'the data, before training'}.`;
     });
     this.resBox = el('div', { class: 'bd-res-box' }, this.resCanvas);
+    // (full screen: the buttons to hold go under the picture, where thumbs are)
+    this.resPad = el('div', { class: 'bd-res-pad', hidden: '' });
     this.lossCanvas = el('canvas');
     this.lossChart = new NA.charts.LineChart(this.lossCanvas, { height: 104, logY: true, format: (v) => fmt(v, 4), xLabel: 'Step' });
     this.retCanvas = el('canvas');
     this.retChart = new NA.charts.LineChart(this.retCanvas, { height: 104, format: (v) => fmt(v, 2), xLabel: 'Step' });
     this.resFoot = el('div', { class: 'bd-res-foot' });
-    this.results = el('div', { class: 'bd-results' }, this.resHead, this.resBox, this.resFoot);
+    this.results = el('div', { class: 'bd-results', role: 'region', 'aria-label': 'Results' }, this.resHead, this.resBox, this.resPad, this.resFoot);
     this.lossBox = el('div', { class: 'chart-box' }, this.lossCanvas); this.retBox = el('div', { class: 'chart-box', hidden: '' }, this.retCanvas);
     this.lossKey = el('div', { class: 'mini-legend' },
       el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s1)' } }), 'training loss'), el('span', { class: 'lg-item' }, el('i', { class: 'key-line', style: { background: 'var(--s2)' } }), 'validation loss'));
@@ -1362,6 +1444,7 @@
       scratchLabel: 'New run from scratch',
     }, { title: 'How it learned', what: 'Its results', emptyText: 'Press Train. The moments of the run collect here: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.' });
     this.resCanvas.addEventListener('contextmenu', (e) => { if (this.problem().id === 'draw') e.preventDefault(); });
+    this.resCanvas.tabIndex = 0; // (a click on the picture, then a key of the world's: you jump in)
     this.resCanvas.addEventListener('pointerdown', (e) => this.resultsPointer(e));
     this.resCanvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') this.resultsHover(e); });
     this.resCanvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.resultsHover(null); });
@@ -1863,16 +1946,20 @@
   BL.renderResHead = function (live) {
     const d = live ? this.data : this.dataFor(), p = this.problem(), run = live ? this.run : null, S = this.seqView || (this.seqView = {});
     const narrow = !!this.resBox && this.resBox.clientWidth - 16 <= 520;
-    const key = JSON.stringify([this.evoView, narrow, !!this.youPlay, this.watchCell, run && run.method, live && this.model && this.model.evoBlocks ? this.model.paramCount + ':' + this.model.evoBlocks.map((b) => b.units).join('-') : '', p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok, d.family === 'control' && this.rewardSummary()]);
+    const key = JSON.stringify([!!this.full, this.full && [this.training, this.canContinue()], this.evoView, narrow, !!this.youPlay, this.watchCell, run && run.method, live && this.model && this.model.evoBlocks ? this.model.paramCount + ':' + this.model.evoBlocks.map((b) => b.units).join('-') : '', p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok, d.family === 'control' && this.rewardSummary()]);
     if (key === this._headKey) return;
     this._headKey = key;
     if (this._resTip) { NA.tooltip.hide(); this._resTip = false; } // (a tooltip of the picture before: the view, problem or run has changed)
     const parts = [];
     const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (BT.isValue(d.family) ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
     if (d.error) parts.push(el('div', { class: 'bd-res-error', role: 'alert', text: d.error }));
-    parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · ${d.family === 'control' ? `score of its best moves${run.bestVm > (run.last ? run.last.vm : 0) ? ` (best ${fmtPct(run.bestVm, 0)})` : ''}` : `validation ${this.metricName()}`}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
-    // what it is paid, in a line, which opens the Reward tab (not while you play: the picture gets the room)
-    const paid = d.family === 'control' && !d.error && !this.youPlay ? this.rewardSummary() : '';
+    // full screen: the picture over the whole page (and back); in full screen, Train beside it
+    const full = !!this.full, fullBtn = el('button', { class: 'icon-btn bd-full-btn', type: 'button', title: full ? 'Leave full screen (Esc)' : 'Full screen: the picture as big as the screen', 'aria-label': full ? 'Leave full screen' : 'Full screen', 'aria-pressed': String(full), onclick: () => this.setFull(!full) }, icon(full ? 'unfull' : 'full'));
+    const trainBtn = full && !d.error ? el('button', { class: 'btn bd-full-train', type: 'button', onclick: () => (this.training ? this.pause() : this.play()) }, this.training ? 'Pause' : this.canContinue() ? 'Continue' : 'Train') : null;
+    parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · ${d.family === 'control' ? `score of its best moves${run.bestVm > (run.last ? run.last.vm : 0) ? ` (best ${fmtPct(run.bestVm, 0)})` : ''}` : `validation ${this.metricName()}`}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }),
+      el('span', { class: 'bd-res-right' }, score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null, trainBtn, fullBtn)));
+    // what it is paid, in a line, which opens the Reward tab (not while you play, nor in full screen: the picture gets the room)
+    const paid = d.family === 'control' && !d.error && !this.youPlay && !full ? this.rewardSummary() : '';
     if (paid) parts.push(el('button', { class: 'bd-rew-chip', type: 'button', title: `What it is paid: ${paid}. ${Click()} to change it.`, onclick: () => this.openReward() }, el('span', { class: 'bd-rew-k', text: 'Reward' }), el('span', { class: 'bd-rew-v', text: paid })));
     // learning from rewards: the views of a run (builder-depth.js): it plays, what it looked at, the whole generation, MAP-Elites'
     // grid of styles on a small screen, the family line of the best, the map of styles; a list when a small screen has many
@@ -1884,14 +1971,21 @@
     }
     if (live && run.method === 'me' && this.watchCell !== null && this.watchCell !== undefined) parts.push(el('p', { class: 'sec-note', text: `Watching the elite of one style. ${Click()} its cell again to watch the best of all.` }));
     // grow and prune: the shape it has evolved so far, next to the one built
-    const evo = live && run.grow && this.model && this.model.evoBlocks, hidden = (bs) => (bs.length ? `${bs.map((b) => b.units).join(' → ')} neuron${bs.length === 1 && bs[0].units === 1 ? '' : 's'}` : 'no hidden layer');
-    if (evo) parts.push(el('p', { class: 'sec-note bd-res-shape', text: `Its shape now: ${hidden(evo)}, ${fmtInt(this.model.paramCount)} weights (you built ${hidden(this.setup.blocks.filter((b) => b.type === 'dense'))}).` }));
-    // learning from rewards: Try it yourself
-    if (d.family === 'control' && !d.error && PLAY[d.world]) parts.push(this.playRow(d));
-    // (while you play, the picture gets the room: no legend, no diagnosis)
-    const lg = this.youPlay ? null : legendFor(d, live);
+    // (with activations that can change, each layer's, where they are not all ReLU)
+    const evo = live && run.grow && this.model && this.model.evoBlocks, actsSay = (bs) => (bs.some((b) => (b.act || 'relu') !== 'relu') ? ` (${bs.map((b) => (ACTS[b.act || 'relu'] || {}).label || b.act).join(', ')})` : '');
+    const hidden = (bs) => (bs.length ? `${bs.map((b) => b.units).join(' → ')} neuron${bs.length === 1 && bs[0].units === 1 ? '' : 's'}${actsSay(bs)}` : 'no hidden layer');
+    // (a run that started small says so: none of the network you built was in it)
+    const small = evo && NA.bevo.growOptions(d.family === 'control' ? run.cfg.ps[run.cfg.problem] || {} : run.cfg.train, d.family !== 'control').start === 'small';
+    if (evo) parts.push(el('p', { class: 'sec-note bd-res-shape', text: `Its shape now: ${hidden(evo)}, ${fmtInt(this.model.paramCount)} weights (${small ? 'it started with no hidden layer; ' : ''}you built ${hidden(this.setup.blocks.filter((b) => b.type === 'dense'))}).` }));
+    // learning from rewards: Jump in; the buttons to hold under the row, or in full screen under the picture
+    let pad = null;
+    if (d.family === 'control' && !d.error && PLAY[d.world]) { const pr = this.playRow(d); parts.push(pr.row); pad = pr.pad; if (pad && !full) parts.push(pad); }
+    clear(this.resPad).append(...(pad && full ? [pad] : []));
+    this.resPad.hidden = !(pad && full);
+    // (while you play, and in full screen, the picture gets the room: no diagnosis, and no legend where it is a sentence)
+    const lg = this.youPlay || (full && d.family === 'control') ? null : legendFor(d, live);
     if (lg) parts.push(lg);
-    const ins = this.youPlay ? null : NA.builderInsights;
+    const ins = this.youPlay || full ? null : NA.builderInsights;
     if (ins) {
       // the most pressing thing about the run, in one line, with the fixes to try; the Training tab has the whole story
       const top = ins.diagnose(this)[0];
@@ -2037,7 +2131,7 @@
       body.append(chartSec, UI.section('Compare two runs', this.parts.cmp), UI.section('Runs', this.parts.list));
     } else if (id === 'python') {
       this.parts.code = el('div');
-      body.append(UI.section('Your model in PyTorch', UI.note(NA.builderPyEdit ? 'The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch. Edit it, and the page reads your changes back into the model; what it cannot follow, it says, and puts back.' : 'The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch.'), this.parts.code));
+      body.append(UI.section('Your model in PyTorch', UI.note('The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch.'), this.parts.code));
     }
     this.updateTab();
   };
@@ -2772,7 +2866,70 @@
   const GROW_LAYER_SAY = {
     one: 'A new layer starts with one neuron, passing on the signal the next layer leans on most; the rest is cut off. That is a bottleneck: unlike a new neuron it changes what the network does, and selection keeps it only if the child still does well. Later “+1 neuron” changes widen it without changing anything, and a layer goes when its last neuron is pruned.',
     some: 'A new layer starts with a few neurons, from 1 to one less than the numbers it reads, each passing on one of the signals the next layer leans on most: still a bottleneck, a looser one, kept only if the child still does well. A layer goes when its last neuron is pruned.',
-    whole: 'A new layer starts as wide as what it reads, passing values straight through, so a child that grows a layer does exactly what its parent did (after a ReLU layer); a whole layer can also go at once, folded into the next. This is the older way, here to compare.',
+    whole: 'A new layer starts as wide as what it reads, passing values straight through, so a child that grows a layer does exactly what its parent did (after a ReLU layer). This is the older way, here to compare: turn on “−1 layer” too and whole layers can also go at once.',
+  };
+  const GROW_WHERE_SAY = { any: 'A new layer goes between any two layers, at random.', first: 'A new layer goes straight after the input: a new first stage, the one that sees the raw numbers.', last: 'A new layer goes just before the output: a last stage that reads what all the others made.' };
+  const GROW_PCT = (v) => `${v >= 0.095 ? Math.round(100 * v) : (100 * v).toFixed(1)}%`;
+  /* Grow and prune's settings, the same for evolution (the Output block; o.sup false: the problem's settings) and for
+     learning from examples (the Training tab; o.sup true: the training settings, whose older keys have other names):
+     what it starts from; the changes it can make, their odds and how many children change; how new neurons and
+     layers start and where layers go; what pruning takes; the largest network, the pressure to stay small, and
+     protection for new shapes (evolution) or the networks side by side and how often they are reshaped (examples).
+     o: { sup, s (the settings), set(key, value), can (the model can change shape) }. Each section says what its
+     choices do, with the odds worked out. */
+  BL.growSecs = function (o) {
+    const EV = NA.bevo, s = o.s, sup = o.sup, g = EV.growOptions(s, sup), on = !!s.grow, K = sup ? { penalty: 'growPenalty', size: 'growWidth', mode: 'growNew' } : { penalty: 'penalty', size: 'layerSize', mode: 'newLayer' };
+    const seg = (label, key, opts, cur, title) => UI.field(label, UI.seg(opts.map(([value, l, t]) => ({ value, label: l, title: t })), cur, (v) => o.set(key, v), title || label));
+    const N = g.members, ga = !sup;
+    const head = UI.section('Grow and prune', seg('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']], on),
+      on && o.can ? seg('Start from', 'growStart', [['built', 'Your network', 'The first networks are the one you built and copies of it'], ['small', 'No hidden layer', 'The first networks have no hidden layer: every neuron and layer they end with, evolution added']], g.start) : null,
+      UI.note(!o.can ? (sup ? 'Only a model of Dense blocks on a list of numbers can change shape. Start from the Linear template, or one Dense block of 1 neuron, and let it grow.' : 'Only a model of Dense blocks on a list of numbers can change shape; yours keeps its shape and only its weights evolve. The Small MLP can grow, and so can the Linear template, from no hidden layer at all.')
+        : !on ? `${sup ? `Turn it on and ${N} networks learn side by side from your model; every ${g.every} steps the worse half are replaced by copies of the better half, each with one change to its shape: a neuron more or less, or a new layer of one neuron. Start from one neuron on Two spirals and watch it grow.` : 'Turn it on, and a child may also gain or lose a neuron, or gain a new layer, as it is born. A new neuron starts with its outgoing weights at 0, so it does no harm until later mutations put it to work. A new layer starts with one neuron: a bottleneck that changes what the network does, so it is kept only if the child still plays well.'} Every part of it can be set: the changes it can make and how often, how new neurons and layers start, what pruning takes, the largest network, and more.`
+          : g.start === 'small' ? `${sup ? `All ${N} networks start` : 'Every network of the first generation starts'} with no hidden layer: the inputs go straight to the outputs, as NEAT starts (Stanley and Miikkulainen, 2002). Whatever hidden neurons and layers ${sup ? 'the best' : 'the winner'} ends with, evolution added one change at a time and kept only because ${sup ? 'it learned better' : 'it played better'} with them.${sup ? ' The network you built is not among them: only its kind of blocks counts.' : ''}`
+            : `The ${sup ? `${N} networks start as the one you built (and ${N - 1} fresh copies of its shape)` : 'first generation is the network you built and copies of it, moved at random'}: every change starts from its shape. The Architecture view shows the best network as it is now.`));
+    if (!on || !o.can) return [head];
+    // the changes it can make, their odds, and how many children change
+    const OPS = [['neuron+', 'growAddNeuron', 'A hidden layer gains a neuron'], ['neuron-', 'growCutNeuron', 'A hidden layer loses a neuron (its last takes the layer with it)'], ['layer+', 'growAddLayer', 'A new hidden layer'],
+      ['layer-', 'growCutLayer', 'A whole hidden layer goes at once, folded into the next'], ['act', 'growAct', `A hidden layer switches to another activation: ${EV.ACTS.map((a) => (ACTS[a] || {}).label || a).join(', ')}`]];
+    const odds = EV.changeOdds(g), allowed = OPS.filter(([k]) => g.ops[k]), none = !allowed.length;
+    const chips = el('div', { class: 'chip-row bd-grow-ops', role: 'group', 'aria-label': 'Changes it can make' }, ...OPS.map(([k, key, title]) => UI.chip(EV.CHANGES[k], g.ops[k], (v) => o.set(key, v), title)));
+    const rateSay = { 0.1: 'One child in ten is', 0.25: 'A quarter of the children are', 0.5: 'Half the children are', 1: 'Every child is' }[g.rate] || `${GROW_PCT(g.rate)} of the children are`;
+    const changes = UI.section('Changes to its shape', UI.field('It can make', chips),
+      none ? null : seg('Leaning', 'growLean', [['grow', 'To grow', 'Gaining neurons and layers is likelier'], ['even', 'Even', 'The usual odds'], ['prune', 'To prune', 'Losing neurons and layers is likelier']], g.lean),
+      none || sup ? null : seg('Children that change', 'growRate', [[0.1, '1 in 10'], [0.25, '1 in 4'], [0.5, 'Half'], [1, 'All']], g.rate, 'How many children are born with a change to their shape'),
+      UI.note(none ? 'Every change is off, so its shape stays as it is: turn one on.'
+        : `Of the changes it makes: ${allowed.map(([k]) => `${EV.CHANGES[k]} ${GROW_PCT(odds[k])}`).join(', ')}${g.ops['layer+'] ? ' (with no hidden layer, a new layer is the only change it can make)' : ''}. ${{ grow: 'Leaning to grow: networks get bigger sooner, and the size penalty has more to hold back.', even: 'Even: a neuron more is likeliest, then a neuron less, then a new layer, so it grows slowly and prunes what does not pay.', prune: 'Leaning to prune: it keeps networks small and tries out removing parts, so it suits a network you built too big.' }[g.lean]} ${sup ? `Each copy that replaces one of the worse half is born with one change; then its gradient steps teach it to use what it has.` : `${rateSay} born with one change; the rest only have their weights mutated. More changes explore more shapes, but fewer children get to tune the shape they have.`}${g.ops.act ? ' A new activation keeps the layer’s weights but changes what it computes: ReLU cuts negatives to 0, tanh and sigmoid squash into a range, leaky ReLU and ELU let a little of the negatives through.' : ''}`));
+    // how new neurons and layers start, and where layers go
+    const grows = g.ops['layer+'] || g.ops['neuron+'];
+    const parts = !grows ? null : UI.section('New neurons and layers',
+      g.ops['layer+'] ? seg('New layers start with', K.size, [['one', 'One neuron'], ['some', 'A few, at random'], ['whole', 'A whole layer']], g.size) : null,
+      g.ops['layer+'] ? seg('Their weights', K.mode, [['identity', 'Passing values on'], ['random', 'At random']], g.mode, 'A new layer’s weights') : null,
+      g.ops['layer+'] ? seg('New layers go', 'growWhere', [['any', 'Anywhere'], ['first', 'After the input'], ['last', 'Before the output']], g.where) : null,
+      g.ops['neuron+'] ? seg('New neurons start', 'growNeuron', [['silent', 'Silent', 'Outgoing weights 0: it changes nothing at first'], ['random', 'At random', 'Outgoing weights at random: it joins in at once']], g.neuron) : null,
+      UI.note([g.ops['layer+'] ? `${GROW_LAYER_SAY[g.size] || GROW_LAYER_SAY.one}${g.mode === 'random' ? ` Its weights start at random, so right after it is added the network forgets much of what it did: ${sup ? 'it has to learn again' : 'children that grow a layer rarely win'}.` : ''} ${GROW_WHERE_SAY[g.where]}` : '',
+        g.ops['neuron+'] ? (g.neuron === 'random' ? 'A new neuron’s outgoing weights start at random: it joins in at once, so a child that grows does differently from its parent, often worse at first.' : `A new neuron’s outgoing weights start at 0: it changes nothing until ${sup ? 'gradient steps' : 'mutations'} put it to work, so growing never costs a ${sup ? 'network' : 'child'} anything at first.`) : ''].filter(Boolean).join(' ')));
+    // what pruning takes
+    const prunes = g.ops['neuron-'] || g.ops['layer-'];
+    const pruning = !prunes ? null : UI.section('Pruning',
+      g.ops['neuron-'] ? seg('Pruning takes', 'growPrune', [['weak', 'The weakest', 'The neuron the next layer listens to least'], ['random', 'One at random']], g.prune) : null,
+      UI.note([g.ops['neuron-'] ? (g.prune === 'random' ? 'Any neuron, at random: sometimes one the network relies on, so pruning is more often a step back, and selection has to catch it.' : 'The weakest neuron: the one the next layer listens to least (the smallest outgoing weights, in absolute size), as magnitude pruning does. Taking it out changes the least.') : '',
+        g.ops['neuron-'] && g.size !== 'whole' ? 'When a layer’s last neuron goes, the layer goes too, folded into the next.' : '',
+        g.ops['layer-'] ? '“−1 layer” takes a whole layer out at once: the next layer’s weights are multiplied through (W₂·W₁), as if the activation let every value pass, so it changes what the network does unless that activation is linear.' : ''].filter(Boolean).join(' ')));
+    // its limits and the pressure to stay small; evolution: protecting new shapes; examples: how many networks, how often
+    const pen = g.penalty, penSay = pen === 'off' ? 'With no size penalty nothing holds them back: they tend to swell with weights that do nothing.'
+      : sup ? `The penalty adds ${EV.PENALTY_EX[pen]} to a network’s validation loss for every 100 weights, so the smaller of two equal networks wins.` : `The penalty takes ${GROW_PCT(EV.PENALTY[pen])} of a good episode’s return off the fitness for every 100 weights, so the smaller of two equal networks wins.`;
+    const limits = UI.section('Limits and pressure',
+      seg('Hidden layers, at most', 'growMaxLayers', [[2, '2'], [4, '4'], [6, '6'], [8, '8']], g.maxLayers),
+      seg('Neurons in a layer, at most', 'growMaxUnits', [[16, '16'], [32, '32'], [48, '48'], [64, '64']], g.maxUnits),
+      seg('Size penalty', K.penalty, [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']], pen),
+      ga ? seg('Protect new shapes', 'growProtect', [[false, 'Off'], [true, `For ${EV.PROTECT.gens} generations`]], g.protect) : null,
+      sup ? seg('Networks side by side', 'growSize', [[4, '4'], [6, '6'], [10, '10']], N) : null,
+      sup ? seg('A generation every', 'growEvery', [[50, '50 steps'], [150, '150'], [500, '500']], g.every, 'Steps between one reshaping and the next') : null,
+      UI.note([`No network grows past ${g.maxLayers} hidden layer${g.maxLayers === 1 ? '' : 's'} of ${g.maxUnits} neurons: a change that would is not made.`, penSay,
+        ga ? (g.protect ? `A new shape usually starts a little worse (a new neuron does nothing yet, a new layer is a bottleneck). For ${EV.PROTECT.gens} generations after a shape appears, its best member carries on unchanged (up to ${EV.PROTECT.most} shapes at a time), so mutations get time to tune it before it has to beat the rest: a simple form of NEAT’s speciation, which protects new structure the same way.`
+          : 'Off: a new shape has to beat the rest at once, and most die in their first generation, before mutations can tune them. Turn it on to give them a few generations.')
+          : `More networks try more shapes at once, and each step takes longer. A generation every 50 steps reshapes often, but a copy has had little time to learn its new shape; every 500, slowly but fairly.`].join(' ')));
+    return [head, changes, parts, pruning, limits].filter(Boolean);
   };
   // learning from rewards: the output block says what the outputs mean and how they learn
   BL.renderControlOutput = function (body, d) {
@@ -2808,13 +2965,7 @@
             UI.note(`${EV.CROSS[cr]}. ${{ uniform: 'Fast mixing, but a neuron can end up with half its weights from one parent and half from the other, which may make sense to neither.', neuron: 'Each neuron is a working unit, so this mixes whole features: a child gets some of each parent’s neurons as they were.', none: 'Mutation alone: every child is a copy of one parent, nudged. Two networks can do the same job with their neurons in a different order, so mixing them can break both: on the race track and the rocket, copies alone found their way sooner.' }[cr]} Only parents of the same shape can be mixed.`)),
           UI.section('Mutation', pick('Kind', 'mutate', [['plain', 'Plain'], ['safe', 'Safe']]),
             UI.note(mu === 'safe' ? 'Safe mutations: before nudging, it measures how much the moves depend on each weight (the gradient of every output, over moments it lived through) and divides each nudge by that. Weights the moves hang on barely move, the others move more, with the same total nudge as plain: children stay close to what worked. Lehman and others, 2018.' : 'Plain: one weight in ten moves by a random amount, whatever it does. A nudge to a weight the moves depend on can wreck a good network.')),
-          m !== 'ga' ? null : UI.section('Grow and prune', pick('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']]),
-            s.grow ? pick('Size penalty', 'penalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']]) : null,
-            s.grow ? pick('New layers start with', 'layerSize', [['one', 'One neuron'], ['some', 'A few, at random'], ['whole', 'A whole layer']]) : null,
-            s.grow ? pick('Their weights', 'newLayer', [['identity', 'Passing values on'], ['random', 'At random']], 'A new layer’s weights') : null,
-            UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape; yours keeps its shape and only its weights evolve. The Small MLP can grow, and so can the Linear template, from no hidden layer at all.'
-              : !s.grow ? 'Turn it on, and a child may also gain or lose a neuron, or gain a new layer, as it is born. A new neuron starts with its outgoing weights at 0, so it does no harm until later mutations put it to work. A new layer starts with one neuron: a bottleneck that changes what the network does, so it is kept only if the child still plays well.'
-                : `A quarter of the children are born with one change to their shape: a neuron more or less, or a new layer${(s.layerSize || def.layerSize) === 'whole' ? ', or a layer less' : ''}. ${GROW_LAYER_SAY[s.layerSize || def.layerSize] || GROW_LAYER_SAY.one}${(s.newLayer || def.newLayer) === 'random' ? ' Its weights start at random, so right after it is added the network forgets much of what it did: children that grow a layer rarely win.' : ''} ${(s.penalty || def.penalty) === 'off' ? 'With no size penalty nothing holds them back: they tend to swell with weights that do nothing.' : `The penalty takes a little off the fitness for every 100 weights, so the smaller of two equal networks wins.`} The Architecture view shows the best network as it is now.`)));
+          ...(m === 'ga' ? this.growSecs({ sup: false, s, can, set: (k, v) => set((q) => { q[k] = v; }) }) : []));
       }
     }
     const what = m === 'dqn' ? `${d.nA} Q-values, one per action: what it expects to collect from here on if it takes that action now. It plays the largest.`
@@ -2889,8 +3040,10 @@
     P.sweep = null;
     body.append(...[P.live,
       ga ? UI.section(this.ps().method === 'erl' ? 'Evolution and a DQN' : 'No gradients', UI.note(this.ps().method === 'erl' ? 'The population needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones. Its DQN does take gradient steps, with Adam at the learning rate set on the Output block, with the rest of its settings.' : 'Evolution needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones (evolution strategies step by their own size). The settings are on the Output block.'),
-        UI.field('Generations per press of Train', UI.select(stepChoices(true, T.steps), T.steps, (v) => set((t) => { t.steps = +v; })))) : null,
-      !ctl && !this.isClassicSetup() ? this.growSection() : null,
+        UI.field('Generations per press of Train', UI.select(stepChoices(true, T.steps), T.steps, (v) => set((t) => { t.steps = +v; }))),
+        // (the way it evolves, grow and prune among it, is set on the Output block: one press away)
+        el('div', { class: 'btn-row' }, el('button', { class: 'btn', type: 'button', onclick: () => this.selectBlock({ kind: 'output', id: 'output' }) }, this.ps().method === 'ga' ? 'Evolution and grow and prune settings' : 'Evolution’s settings'))) : null,
+      ...(!ctl && !this.isClassicSetup() ? this.growSection() : []),
       ga ? null : UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
         UI.note({ sgd: 'Plain gradient descent: step downhill by learning rate × gradient.', momentum: 'Keeps a running velocity (0.9 of the last one plus the new gradient): faster along consistent directions, damped zig-zags.', adam: 'Adapts the step for every weight from running averages of its gradient and squared gradient. Usually the easiest to tune.', adamw: 'Adam with weight decay applied directly to the weights (decoupled), the usual choice for transformers.' }[T.opt]),
         lr, UI.note('How big each step is. Too small: slow. Too big: the loss jumps around or blows up (the run is marked diverged).')),
@@ -2912,18 +3065,16 @@
     this.renderSweep();
     this.updateTrainLive();
   };
-  /* Grow and prune while it learns: 6 networks side by side from your model, the worse half replaced every 150 steps
-     by copies of the better half, each with one change to its shape (problems with answers; Dense blocks on numbers). */
+  /* Grow and prune while it learns: 6 networks (unless set) side by side from your model, the worse half replaced
+     every 150 steps (unless set) by copies of the better half, each with one change to its shape (problems with
+     answers; Dense blocks on numbers). Its sections (BL.growSecs), or none. */
   BL.growSection = function () {
-    const T = this.setup.train, set = (fn) => this.edit((s) => fn(s.train)), can = this.evolvable(), d = this.dataFor(), seg = (label, key, opts, def) => UI.field(label, UI.seg(opts.map(([value, l]) => ({ value, label: l })), T[key] ?? def, (v) => set((t) => { t[key] = v; }), label));
-    if (d.error || (d.output && d.output.kind === 'tokens')) return null;
-    return UI.section('Grow and prune', seg('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']], false),
-      T.grow ? seg('Size penalty', 'growPenalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']], 'light') : null,
-      T.grow ? seg('New layers start with', 'growWidth', [['one', 'One neuron'], ['some', 'A few, at random'], ['whole', 'A whole layer']], 'one') : null,
-      T.grow ? seg('Their weights', 'growNew', [['identity', 'Passing values on'], ['random', 'At random']], 'identity') : null,
-      UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape. Start from the Linear template, or one Dense block of 1 neuron, and let it grow.'
-        : !T.grow ? 'Turn it on and 6 networks learn side by side from your model; every 150 steps the worse half are replaced by copies of the better half, each with one change to its shape: a neuron more or less, or a new layer of one neuron. Start from one neuron on Two spirals and watch it grow.'
-          : `6 networks learn side by side from the same batches. Every 150 steps each is judged by its validation loss${(T.growPenalty || 'light') === 'off' ? '' : ' plus a little for every 100 weights'}, and the worse half become copies of the better half, weights and all, each with one change to its shape: a neuron more or less, or a new layer. A new neuron starts with its outgoing weights at 0, so it changes nothing. ${GROW_LAYER_SAY[T.growWidth || 'one'] || GROW_LAYER_SAY.one}${(T.growNew || 'identity') === 'random' ? ' Its weights start at random, so it forgets much of what it did.' : ''} Its gradient steps then teach it to use what it has. The best so far is the one on show, in the results and the Architecture view.`));
+    const d = this.dataFor();
+    if (d.error || (d.output && d.output.kind === 'tokens')) return [];
+    const secs = this.growSecs({ sup: true, s: this.setup.train, can: this.evolvable(), set: (k, v) => this.edit((s) => { s.train[k] = v; }) });
+    // (while it learns: how a generation is judged, after the settings' own notes)
+    if (this.setup.train.grow && this.evolvable()) secs[0].append(UI.note(`Every ${NA.bevo.growOptions(this.setup.train, true).every} steps each network is judged by its validation loss (finer than accuracy, so a network that has just grown is not tied with its parent), plus the size penalty, and the worse half become copies of the better half, weights and all. The best so far is the one on show, in the results and the Architecture view.`));
+    return secs;
   };
   const fmtLr = (v) => (v >= 0.01 ? fmt(v, 3) : v.toExponential(1).replace('e-', ' × 10⁻').replace(/(\d)$/, (d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[d]));
   BL.updateTrainLive = function () {

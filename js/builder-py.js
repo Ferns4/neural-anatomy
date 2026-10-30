@@ -1431,7 +1431,7 @@ def story():
       `# Built in Neural Anatomy's model builder: ${p.label}.`,
       `# Model:     ${summary(setup, d)}`,
       ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
-      `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}${grow ? '; 6 networks side by side, their shapes evolving (grow and prune)' : ''}`,
+      `# Training:  ${lossName} loss, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}, ${steps.toLocaleString('en')} steps${T.steps ? '' : ' (the page trains until you pause)'}${grow ? `; ${NA.bevo.growOptions(T, true).members} networks side by side, their shapes evolving (grow and prune)` : ''}`,
       ...needs.filter(Boolean), 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
       `torch.manual_seed(${T.seed})`, rnd ? `random.seed(${T.seed})` : null, '',
       dataCode(setup, d), '', '',

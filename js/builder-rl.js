@@ -69,12 +69,17 @@
   BRL.stepsFor = (world, method) => W(world).steps[method] || 3000;
   /* The learning settings a problem starts with. normReward: A2C and PPO see each reward divided by the running
      spread of the discounted return (DQN and REINFORCE as they are). Grow and prune: new layers start with one neuron (layerSize),
-     passing on what the next layer leans on most (newLayer: 'identity') or at random. Novelty search: its k
+     passing on what the next layer leans on most (newLayer: 'identity') or at random; it starts from the network you
+     built, may add and prune neurons and add layers (not take a whole layer out at once, growCutLayer, which is left
+     out here so that whole layers bring it with them: builder-evo.js EV.growOptions; nor change activations), with
+     even odds, a quarter of the children changing, new layers anywhere, new neurons silent, the weakest neuron
+     pruned, at most 6 layers of 48, no protection for new shapes. Novelty search: its k
      nearest neighbours, novelty alone or mixed with the reward, behaviours kept a generation. The cross-entropy
      method: the share of each generation that refits it (the elite), its starting spread and the floor under it.
      ERL: the DQN's gradient steps a generation, how often its network joins the population, its learning rate. */
   BRL.defaults = (world) => ({ method: 'dqn', gamma: W(world).gamma, explore: W(world).explore, normReward: true, pop: W(world).pop || 24, sigma: W(world).sigma || 0.2,
-    select: 'tournament', cross: W(world).cross || 'uniform', mutate: 'plain', grow: false, penalty: 'light', newLayer: 'identity', layerSize: 'one', esSigma: 0.05, esLr: 0.03,
+    select: 'tournament', cross: W(world).cross || 'uniform', mutate: 'plain', grow: false, penalty: 'light', newLayer: 'identity', layerSize: 'one', growStart: 'built', growAddNeuron: true,
+    growCutNeuron: true, growAddLayer: true, growAct: false, growLean: 'even', growRate: 0.25, growWhere: 'any', growNeuron: 'silent', growPrune: 'weak', growMaxLayers: 6, growMaxUnits: 48, growProtect: false, esSigma: 0.05, esLr: 0.03,
     novK: 10, novMix: 'novelty', novAdd: 2, cemElite: 0.2, cemSigma: 0.3, cemFloor: 0.05, erlSteps: 200, erlEvery: 5, erlLr: 0.001 });
 
   const argmax = (o, base, n) => { let a = 0; for (let k = 1; k < n; k++) if (o[base + k] > o[base + a]) a = k; return a; };
