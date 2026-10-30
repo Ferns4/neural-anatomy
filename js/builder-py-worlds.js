@@ -3,8 +3,9 @@
    step for step as on the page (their random numbers come from Python's random, so the starts, where the drones
    appear and the random tracks differ), each measuring its style of play for MAP-Elites; and the evolutionary
    methods of builder-evo.js: a genetic algorithm with its ways of choosing, mixing and mutating parents, grow and
-   prune (networks whose shape evolves: lists of weight matrices that gain or lose neurons and layers), evolution
-   strategies and MAP-Elites; and grow and prune while a network learns from examples. */
+   prune (networks whose shape evolves: lists of weight matrices that gain or lose neurons, and gain layers that
+   start with one neuron), novelty search, evolution strategies, the cross-entropy method, MAP-Elites and ERL (a
+   genetic algorithm teaching a DQN); and grow and prune while a network learns from examples. */
 (function (NA) {
   'use strict';
   const PW = { worlds: {} };
@@ -16,9 +17,14 @@
     const ws = d.ws, rw = h.rw, f = h.f, num = h.num, say = h.say, E = NA.rlEnvs;
     const id = ws.track === 'random' ? 'random' : E.TRACKS[ws.track] ? ws.track : 'esses', random = id === 'random', cam = ws.view === 'camera';
     const steps = ws.steps > 0 ? Math.min(ws.steps, 6000) : 0, pts = (k) => `[${E.TRACKS[k].pts.map(([x, y]) => `(${x}, ${y})`).join(', ')}]`;
-    const reward = f ? ['        progress, speed, crashed, lap, t = ds / T.L, self.v, float(crashed), float(lap), self.t', '        center, turn, brake = min(1.0, abs(side) / HW), float(steer), float(not gas)', ...h.ownLine]
-      : ['        progress = ds / T.L                        # laps of progress this step', `        r = ${terms([rw.rProgress ? `${num(rw.rProgress)} * progress` : null, rw.rLap ? `(${num(rw.rLap)} if lap else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rStep ? num(rw.rStep) : null])}`];
-    const pays = h.pays(`${say(rw.rProgress)} for a lap of progress (backwards counts against it)${rw.rCrash ? `, ${say(rw.rCrash)} for crashing` : ''}${rw.rLap ? `, ${say(rw.rLap)} for each lap done` : ''}${rw.rStep ? `, ${say(rw.rStep)} a step` : ''}.`);
+    const W = E.make('track', ws), laps = W.laps, extra = d.extra || [], heading = !!f || extra.includes('its heading'), bends = !!f || extra.includes('the bends ahead');
+    const reward = f ? ['        progress, speed, crashed, lap, t = ds / T.L, self.v, float(crashed), float(lap), self.t', '        center, turn, brake = min(1.0, abs(side) / HW), float(steer), float(not gas)',
+      '        wall, ahead, finished, laps = max(0.0, HW - abs(side)), self.rays[3], float(self.end == "finished"), self.lap',
+      '        side, bend, heading = min(max(side / HW, -1.0), 1.0), self.bend(0) / DEG, self.heading() / DEG', ...h.ownLine]
+      : ['        progress = ds / T.L                        # laps of progress this step', `        r = ${terms([rw.rProgress ? `${num(rw.rProgress)} * progress` : null, rw.rLap ? `(${num(rw.rLap)} if lap else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rStep ? num(rw.rStep) : null,
+        rw.rSpeed ? `${num(rw.rSpeed)} * self.v` : null, rw.rCenter ? `${num(rw.rCenter)} * min(1.0, abs(side) / HW)` : null, rw.rSteer ? `(${num(rw.rSteer)} if steer else 0.0)` : null,
+        rw.rBrake ? `(${num(rw.rBrake)} if not gas else 0.0)` : null, rw.rNearWall ? `(${num(rw.rNearWall)} if HW - abs(side) < 2 else 0.0)` : null, rw.rFinish ? `(${num(rw.rFinish)} if self.end == "finished" else 0.0)` : null])}`];
+    const pays = h.pays(`${say(rw.rProgress)} for a lap of progress (backwards counts against it)${rw.rCrash ? `, ${say(rw.rCrash)} for crashing` : ''}${rw.rLap ? `, ${say(rw.rLap)} for each lap done` : ''}${rw.rStep ? `, ${say(rw.rStep)} a step` : ''}${rw.rFinish ? `, ${say(rw.rFinish)} for finishing the last lap` : ''}${rw.rSpeed ? `, ${say(rw.rSpeed)} × its speed (m/s) every step` : ''}${rw.rCenter ? `, ${say(rw.rCenter)} × how far it is from the middle (1 at a wall) every step` : ''}${rw.rNearWall ? `, ${say(rw.rNearWall)} every step within 2 m of a wall` : ''}${rw.rSteer ? `, ${say(rw.rSteer)} every step it steers` : ''}${rw.rBrake ? `, ${say(rw.rBrake)} every step it brakes` : ''}.`);
     const obs = cam ? rows(String.raw`    def obs(self):                                 # (2, 16, 16): the track from above, ahead up, 32 m from 4 m behind and 12 m to each side; its speed
         c, s, T = math.cos(self.th), math.sin(self.th), self.track
         near = [[0.0] * 16 for _ in range(16)]
@@ -28,13 +34,14 @@
                 right = (j + 0.5) / 16 * 24 - 12
                 near[i][j] = float(T.center_dist(self.x + ahead * c - right * s, self.y + ahead * s + right * c) < HW)
         return torch.tensor([near, [[self.v / VMAX] * 16] * 16])`)
-      : rows(String.raw`    def obs(self):                                 # 7 distances to the walls (of 40 m) and its speed (of 24 m/s)
+      : rows(String.raw`    def obs(self):                                 # 7 distances to the walls (of ${String(+W.range)} m) and its speed (of ${String(+W.vmax)} m/s)
         return torch.tensor([r / RANGE for r in self.rays] + [self.v / VMAX])`);
     return [
       ...rows(String.raw`TRACK = ${pts(random ? 'oval' : id)}   # ${random ? 'the Oval, if no random track works out' : E.TRACKS[id].name}: points its middle line passes through, m
 HW = 4.5                                           # half the track's width, m
-VMAX, VMIN, ACC, BRAKE, GRIP, STEER = 24.0, 3.0, 9.0, 16.0, 14.0, 1.6   # speeds (m/s), throttle and brake (m/s²), grip (m/s² sideways), steering (rad/s)
-CAR_R, DT, RANGE = 1.0, 0.1, 40.0                  # the car's radius (m), a step (s), how far its sensors see (m)
+VMAX, VMIN, ACC, BRAKE, GRIP, STEER = ${num(W.vmax)}, 3.0, 9.0, 16.0, ${num(W.grip)}, 1.6   # speeds (m/s), throttle and brake (m/s²), grip (m/s² sideways), steering (rad/s)
+CAR_R, DT, RANGE = 1.0, 0.1, ${num(W.range)}${' '.repeat(Math.max(1, 21 - num(W.range).length))}# the car's radius (m), a step (s), how far its sensors see (m)
+LAPS, DEG = ${laps}, math.pi / 180${' '.repeat(Math.max(1, 30 - String(laps).length))}# the laps to drive; a degree in radians
 RAYS = [math.radians(a) for a in (-90, -50, -20, 0, 20, 50, 90)]   # its 7 sensors, from straight ahead
 
 
@@ -80,7 +87,8 @@ class Track:
             self.tx.append(dx / l)
             self.ty.append(dy / l)
         heading = [math.atan2(y, x) for x, y in zip(self.tx, self.ty)]
-        self.min_radius = min(4 * self.ds / (abs(wrap(heading[(k + 2) % N] - heading[k - 2])) or 1e-9) for k in range(N))
+        self.curv = [wrap(heading[(k + 2) % N] - heading[k - 2]) / (4 * self.ds) for k in range(N)]   # how sharply it bends, rad a metre (> 0: right)
+        self.min_radius = min(abs(1 / (c or 1e-9)) for c in self.curv)
         self.ok = check is None or check(self)
         if self.ok:
             self.distances()
@@ -154,15 +162,15 @@ def random_track(seed):
     return SEEN[seed]`)] : []),
       '', '',
       ...h.head(rows(String.raw`class World:
-    """A car drives 4 laps of ${random ? 'a random track (a new one every episode)' : `the ${E.TRACKS[id].name.toLowerCase()} track`}: it steers, and brakes for the tight bends. ${pays}
-    It crashes when it touches a wall; 4 laps, or ${steps || 'as many steps as 4 laps at 10 m/s take'}${steps ? ' steps' : ''}, also end an episode."""
+    """A car drives ${laps} lap${laps === 1 ? '' : 's'} of ${random ? 'a random track (a new one every episode)' : `the ${E.TRACKS[id].name.toLowerCase()} track`}: it steers, and brakes for the tight bends. ${pays}
+    It crashes when it touches a wall; ${laps} lap${laps === 1 ? '' : 's'}, or ${steps || `as many steps as ${laps === 1 ? 'a lap' : laps + ' laps'} at 10 m/s take`}${steps ? ' steps' : ''}, also end an episode."""
     actions = ["steer left", "straight on", "steer right", "brake"]`)), '',
       ...rows(String.raw`    def __init__(self):
         ${random ? 'self.tests = [random_track(s) for s in (7001, 7002, 7003, 7004)]   # 4 tracks it never trains on' : 'self.fixed = Track(TRACK)'}
 
     def reset(self, track=None):                   # at the start line, pointing along the track
         self.track = T = track or ${random ? 'random_track(1 + random.randrange(64))' : 'self.fixed'}
-        self.max_steps = ${steps || 'round(4 * T.L)'}${steps ? '' : '                 # 4 laps at an average of 10 m/s'}
+        self.max_steps = ${steps || 'round(LAPS * T.L)'}${steps ? '' : '              # its laps at an average of 10 m/s'}
         self.k, self.x, self.y, self.v = 0, T.cx[0], T.cy[0], 8.0
         self.th = math.atan2(T.ty[0], T.tx[0])
         self.s, self.prog, self.lap, self.t, self.end = T.arc(self.x, self.y, 0), 0.0, 0, 0, None
@@ -172,7 +180,15 @@ def random_track(seed):
 
     def see(self):                                 # what its 7 sensors read
         self.rays = [self.track.ray(self.x, self.y, self.th + a) for a in RAYS]
-`),
+${heading ? `
+    def heading(self):                             # its heading to the way the track runs, rad (more than 0: to the right)
+        T = self.track
+        return wrap(self.th - math.atan2(T.ty[self.k], T.tx[self.k]))
+` : ''}${bends ? `
+    def bend(self, d):                             # how sharply the track bends d m ahead, rad a metre
+        T = self.track
+        return T.curv[(self.k + math.floor(d / T.ds + 0.5)) % T.N]
+` : ''}`),
       ...h.sense(obs), '',
       ...rows(String.raw`    def step(self, a):
         T, gas, steer = self.track, a != 3, (-1 if a == 0 else 1 if a == 2 else 0)
@@ -201,22 +217,22 @@ def random_track(seed):
         self.sum_side += min(max(side / HW, -1.0), 1.0)
         if not crashed:
             self.see()
-        done = crashed or self.prog >= 4 * T.L or self.t >= self.max_steps
+        done = crashed or self.prog >= LAPS * T.L or self.t >= self.max_steps
         if done:
-            self.end = "crashed" if crashed else "finished" if self.prog >= 4 * T.L else "time"`),
+            self.end = "crashed" if crashed else "finished" if self.prog >= LAPS * T.L else "time"`),
       ...reward, '        return self.obs(), r, done', '',
       ...rows(String.raw`    def behavior(self):                            # its style: average speed (slow to fast), the side it keeps (left to right)
         n = max(1, self.t)
         return min(max(self.sum_v / n / VMAX, 0.0), 1.0), min(max(0.5 + 1.2 * self.sum_side / n, 0.0), 1.0)
 
     def score(self, policy):
-        """The share of 4 laps its best moves drive${random ? ', on 4 tracks it never trained on' : ''}."""
+        """The share of ${laps === 1 ? 'a lap' : laps + ' laps'} its best moves drive${random ? ', on 4 tracks it never trained on' : ''}."""
         total = 0.0
         for T in ${random ? 'self.tests' : '[self.fixed]'}:
             o, done = self.reset(T), False
             while not done:
                 o, _, done = self.step(policy(o))
-            total += min(max(self.prog / (4 * T.L), 0.0), 1.0)
+            total += min(max(self.prog / (LAPS * T.L), 0.0), 1.0)
         return total / ${random ? 4 : 1}`)];
   };
 
@@ -224,10 +240,17 @@ def random_track(seed):
   PW.worlds.arena = function (d, h) {
     const ws = d.ws, rw = h.rw, f = h.f, num = h.num, say = h.say, E = NA.rlEnvs, px = ws.view === 'pixels';
     const map = E.ARENAS[ws.map] ? ws.map : 'room', k = Math.min(3, Math.max(1, Math.round(ws.drones) || 1)), fast = ws.speed === 'fast', most = ws.steps > 0 ? Math.min(ws.steps, 3000) : 500;
-    const reward = f ? ['        aimed = seen = 0.0                         # a drone in its sights; how many it can see', '        for d in self.drones:', '            if d.alive:', '                rel, dist, rad, visible = self.sight(d)', '                if visible:', '                    seen += 1', '                    aimed = max(aimed, float(abs(rel) < rad + 0.02))',
-      '        hit, hurt, shot, lives, t, moved, turned = float(hit), float(hurt), float(shot), float(self.health), self.t, float(walk), float(abs(turn))', ...h.ownLine]
-      : [`        r = ${terms([rw.rHit ? `(${num(rw.rHit)} if hit else 0.0)` : null, rw.rHurt ? `${num(rw.rHurt)} * hurt` : null, rw.rShot ? `(${num(rw.rShot)} if shot else 0.0)` : null, rw.rStep ? num(rw.rStep) : null])}`];
-    const pays = h.pays(`${say(rw.rHit)} for each drone destroyed, ${say(rw.rHurt)} for each that reaches it${rw.rShot ? `, ${say(rw.rShot)} a shot` : ''}${rw.rStep ? `, ${say(rw.rStep)} a step` : ''}.`);
+    const W = E.make('arena', ws), lives = W.lives, goal = W.goal, recharge = W.recharge;
+    // the drones in view and in its sights, worked out only when they are paid for
+    const sights = f || rw.rAim || rw.rSee ? ['        aimed = seen = 0                           # a drone in its sights; how many it can see', '        for d in self.drones:', '            if d.alive:', '                rel, dist, rad, visible = self.sight(d)', '                if visible:', '                    seen += 1', '                    aimed = max(aimed, int(abs(rel) < rad + 0.02))'] : [];
+    const reward = f ? [...sights, '        near = min([math.hypot(d.x - self.x, d.y - self.y) for d in self.drones if d.alive] + [12.0])   # the nearest drone, m',
+      '        hit, hurt, shot, lives, t, moved, turned = float(hit), float(hurt), float(shot), float(self.health), self.t, float(walk), float(abs(turn))',
+      '        missed, kills, bump, cleared, ready = float(shot and not hit), self.kills, float(bump), float(self.end == "cleared"), float(self.cool == 0)', ...h.ownLine]
+      : [...sights, `        r = ${terms([rw.rHit ? `(${num(rw.rHit)} if hit else 0.0)` : null, rw.rHurt ? `${num(rw.rHurt)} * hurt` : null, rw.rShot ? `(${num(rw.rShot)} if shot else 0.0)` : null, rw.rStep ? num(rw.rStep) : null,
+        rw.rMiss ? `(${num(rw.rMiss)} if shot and not hit else 0.0)` : null, rw.rAim ? `(${num(rw.rAim)} if aimed else 0.0)` : null, rw.rSee ? `${num(rw.rSee)} * seen` : null,
+        rw.rWalk ? `(${num(rw.rWalk)} if walk else 0.0)` : null, rw.rTurn ? `(${num(rw.rTurn)} if turn else 0.0)` : null, rw.rBump ? `(${num(rw.rBump)} if bump else 0.0)` : null,
+        rw.rClear ? `(${num(rw.rClear)} if self.end == "cleared" else 0.0)` : null])}`];
+    const pays = h.pays(`${say(rw.rHit)} for each drone destroyed, ${say(rw.rHurt)} for each that reaches it${rw.rShot ? `, ${say(rw.rShot)} a shot` : ''}${rw.rStep ? `, ${say(rw.rStep)} a step` : ''}${rw.rMiss ? `, ${say(rw.rMiss)} for a shot that hits nothing` : ''}${rw.rClear ? `, ${say(rw.rClear)} for destroying the last drone` : ''}${rw.rAim ? `, ${say(rw.rAim)} every step a drone is in its sights` : ''}${rw.rSee ? `, ${say(rw.rSee)} every step for each drone in view` : ''}${rw.rWalk ? `, ${say(rw.rWalk)} every step it walks` : ''}${rw.rTurn ? `, ${say(rw.rTurn)} every step it turns` : ''}${rw.rBump ? `, ${say(rw.rBump)} for walking into a wall` : ''}.`);
     const obs = px ? rows(String.raw`    def obs(self):
         """What it sees, (2, 10, 20): walls (brighter nearer) and drones, each column showing the nearest thing in it."""
         p, z = torch.zeros(2, PROWS, PCOLS), [0.0] * PCOLS
@@ -270,7 +293,7 @@ def random_track(seed):
                         v[COLS + c] = max(v[COLS + c], 1 - dist / VIEW)
         if near:
             v[22], v[23] = math.sin(near[0]), math.cos(near[0])
-        v[24], v[25] = self.health / 3, float(self.cool == 0)
+        v[24], v[25] = self.health / LIVES, float(self.cool == 0)
         return torch.tensor(v)`);
     return [
       `ARENA = [${E.ARENAS[map].rows.map((r) => JSON.stringify(r)).join(', ')}]   # ${E.ARENAS[map].name}: # a wall, S where it starts`,
@@ -278,6 +301,7 @@ def random_track(seed):
 FOV, COLS, VIEW = math.radians(66), 11, 8.0         # its field of view, the columns it sees in, how far it sees (m)${px ? '\nPROWS, PCOLS = 10, 20                              # the picture it sees' : ''}
 DRONE_R, ME_R, TURN, WALK = 0.3, 0.25, math.radians(12), 0.22   # sizes (m), a turn, a step's walk (m)
 DRONES, SPEED, MAX_STEPS = ${k}, ${fast ? 0.085 : 0.045}, ${most}              # drones at once, how far they fly a step (m), the longest episode
+LIVES, GOAL, RECHARGE = ${lives}, ${goal}, ${recharge}${' '.repeat(Math.max(1, 25 - String(lives).length - String(goal).length - String(recharge).length))}# its lives, the drones to destroy, the steps the gun needs after a shot
 
 
 def wrap(a):                                       # an angle, from -pi to pi
@@ -332,14 +356,14 @@ class Drone:
     def __init__(self, wait):
         self.x, self.y, self.alive, self.wait, self.phase = 0.0, 0.0, False, wait, random.uniform(0, 2 * math.pi)`), '', '',
       ...h.head(rows(String.raw`class World:
-    """A first-person arena: it turns 12 degrees, walks 0.22 m or fires (the gun then recharges for 3 steps). Glowing
-    drones drift toward it, weaving; a shot that crosses one destroys it, one that reaches it costs a life (3 lives).
-    ${pays} 10 drones destroyed, no lives left or ${most} steps end an episode."""
+    """A first-person arena: it turns 12 degrees, walks 0.22 m or fires (${recharge ? `the gun then recharges for ${recharge} step${recharge === 1 ? '' : 's'}` : 'the gun is ready again at once'}). Glowing
+    drones drift toward it, weaving; a shot that crosses one destroys it, one that reaches it costs a life (${lives} ${lives === 1 ? 'life' : 'lives'}).
+    ${pays} ${goal} drone${goal === 1 ? '' : 's'} destroyed, no lives left or ${most} steps end an episode."""
     actions = ["turn left", "turn right", "walk forward", "fire"]`)), '',
       ...rows(String.raw`    def reset(self):
         s = "".join(ARENA).index("S")
         self.x, self.y, self.th = s % MW + 0.5, s // MW + 0.5, 0.0
-        self.t, self.health, self.kills, self.cool, self.end, self.moved, self.shots = 0, 3, 0, 0, None, 0, 0
+        self.t, self.health, self.kills, self.cool, self.end, self.moved, self.shots = 0, LIVES, 0, 0, None, 0, 0
         self.drones = [Drone(6 * i) for i in range(DRONES)]   # the first now, the next ones a little later
         for d in self.drones:
             if not d.wait:
@@ -366,15 +390,18 @@ class Drone:
       ...rows(String.raw`    def step(self, a):
         turn, walk = (-1 if a == 0 else 1 if a == 1 else 0), a == 2
         self.th = wrap(self.th + turn * TURN)
+        bump = False                               # walking into a wall: a step that went less than half as far as it should
         if walk:
             x0, y0 = self.x, self.y
             slide(self, math.cos(self.th) * WALK, math.sin(self.th) * WALK, ME_R)
-            self.moved += math.hypot(self.x - x0, self.y - y0) > 0.01
+            went = math.hypot(self.x - x0, self.y - y0)
+            self.moved += went > 0.01
+            bump = went < WALK / 2
         shot = hit = False
         if self.cool:                              # the gun recharging
             self.cool -= 1
         elif a == 3:                               # a shot: the nearest drone in line before the wall
-            shot, self.cool = True, 3
+            shot, self.cool = True, RECHARGE
             self.shots += 1
             wall, ux, uy, best = cast(self.x, self.y, self.th), math.cos(self.th), math.sin(self.th), None
             for d in self.drones:
@@ -402,38 +429,44 @@ class Drone:
                 d.alive, d.wait = False, 14
         self.health -= hurt
         self.t += 1
-        done = self.health <= 0 or self.kills >= 10 or self.t >= MAX_STEPS
+        done = self.health <= 0 or self.kills >= GOAL or self.t >= MAX_STEPS
         if done:
-            self.end = "cleared" if self.kills >= 10 else "dead" if self.health <= 0 else "time"`),
+            self.end = "cleared" if self.kills >= GOAL else "dead" if self.health <= 0 else "time"`),
       ...reward, '        return self.obs(), r, done', '',
       ...rows(String.raw`    def behavior(self):                            # its style: how much it walks, how often it fires
         n = max(1, self.t)
         return min(self.moved / n, 1.0), min(4 * self.shots / n, 1.0)
 
     def score(self, policy):
-        """The share of 10 drones its best moves destroy, over 3 games (the same 3 every time)."""
+        """The share of ${goal} drone${goal === 1 ? '' : 's'} its best moves destroy, over 3 games (the same 3 every time)."""
         total = 0.0`),
-      ...h.SEEDED(4242, ['for _ in range(3):', ...h.PLAY('    '), '    total += self.kills / 10']).map((l) => '        ' + l), '        return total / 3'];
+      ...h.SEEDED(4242, ['for _ in range(3):', ...h.PLAY('    '), '    total += self.kills / GOAL']).map((l) => '        ' + l), '        return total / 3'];
   };
 
   // ------------------------------------------------------------------ the rocket
   PW.worlds.lander = function (d, h) {
     const ws = d.ws, rw = h.rw, f = h.f, num = h.num, say = h.say;
-    const g = ws.gravity > 0 ? ws.gravity : 1.62, fuel = ws.fuel > 0 ? Math.min(ws.fuel, 3000) : 150, wind = !!ws.wind, randomPad = ws.pad === 'random';
-    const reward = f ? ['        dist, speed, tilt = math.hypot(self.x - self.pad, self.y), math.hypot(self.vx, self.vy), math.degrees(self.th)',
-      '        landed, crashed, engine, turn, h, vx, vy, fuel, t = float(landed), float(crashed), float(main), float(abs(turn)), self.y, self.vx, self.vy, self.fuel / FUEL, self.t', ...h.ownLine]
-      : [`        r = ${terms([rw.rLand ? `(${num(rw.rLand)} if landed else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rFuel ? `(${num(rw.rFuel)} if main else 0.0)` : null, rw.rShape ? `${num(rw.rShape)} * closer` : null])}`];
-    const pays = h.pays(`${say(rw.rLand)} for landing softly on the pad, ${say(rw.rCrash)} for anything else${rw.rShape ? `; and ${rw.rShape === 1 ? '' : `${say(rw.rShape)} × `}how much closer, slower and straighter it got each step (shaping)` : ''}${rw.rFuel ? `; ${say(rw.rFuel)} each step the main engine fires` : ''}.`);
+    const W = NA.rlEnvs.make('lander', ws), g = W.g, fuel = W.fuelMax, wind = W.wind, randomPad = W.randomPad, most = W.maxSteps;
+    const engine = ws.engine === 'strong' ? 3.5 : ws.engine === 'weak' ? 1.8 : 2.4, wide = String(+(2 * W.padHalf).toFixed(2));
+    const reward = f ? ['        dist, speed, tilt = math.hypot(self.x - self.pad, self.y), math.hypot(self.vx, self.vy), self.th / DEG',
+      '        landed, crashed, engine, turn, h, vx, vy, fuel, t = float(landed), float(crashed), float(main), float(abs(turn)), self.y, self.vx, self.vy, self.fuel / FUEL, self.t',
+      '        x, spin, offpad, away, timeup = self.x - self.pad, self.w / DEG, float(self.end == "offpad"), float(self.end == "away"), float(self.end == "time")',
+      '        ground, wind = self.y - self.ground(self.x), self.wind()', ...h.ownLine]
+      : [`        r = ${terms([rw.rLand ? `(${num(rw.rLand)} if landed else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rFuel ? `(${num(rw.rFuel)} if main else 0.0)` : null, rw.rShape ? `${num(rw.rShape)} * closer` : null,
+        rw.rTurn ? `(${num(rw.rTurn)} if turn else 0.0)` : null, rw.rTilt ? `${num(rw.rTilt)} * abs(self.th / DEG)` : null, rw.rStep ? num(rw.rStep) : null,
+        rw.rOffPad ? `(${num(rw.rOffPad)} if self.end == "offpad" else 0.0)` : null, rw.rSpare ? `(${num(rw.rSpare)} * self.fuel / FUEL if landed else 0.0)` : null])}`];
+    const pays = h.pays(`${say(rw.rLand)} for landing softly on the pad, ${say(rw.rCrash)} for anything else${rw.rShape ? `; and ${rw.rShape === 1 ? '' : `${say(rw.rShape)} × `}how much closer, slower and straighter it got each step (shaping)` : ''}${rw.rFuel ? `; ${say(rw.rFuel)} each step the main engine fires` : ''}${rw.rTurn ? `; ${say(rw.rTurn)} each step a side thruster fires` : ''}${rw.rTilt ? `; ${say(rw.rTilt)} × its tilt (degrees) every step` : ''}${rw.rStep ? `; ${say(rw.rStep)} every step` : ''}${rw.rOffPad ? `; ${say(rw.rOffPad)} for touching down softly off the pad` : ''}${rw.rSpare ? `; ${say(rw.rSpare)} × the share of its fuel left on landing` : ''}.`);
     return [
       ...rows(String.raw`G = ${num(g)}                                     # gravity, m/s²
-THRUST = 2.4 * G + 1                               # the main engine's push along the rocket, m/s²
-FUEL, MAX_STEPS = ${fuel}, 300                          # steps of burning in its tank; the longest episode
-LEG, FOOT, PAD = 1.8, 1.4, 6.0                     # its legs reach 1.8 m down and 1.4 m out; the pad is 12 m wide`), '', '',
+THRUST = ${engine} * G + 1${' '.repeat(Math.max(1, 32 - String(engine).length))}# the main engine's push along the rocket (${ws.engine === 'strong' || ws.engine === 'weak' ? ws.engine : 'normal'}), m/s²
+FUEL, MAX_STEPS = ${fuel}, ${most}${' '.repeat(Math.max(1, 30 - String(fuel).length - String(most).length))}# steps of burning in its tank; the longest episode
+LEG, FOOT, PAD = 1.8, 1.4, ${num(W.padHalf)}${' '.repeat(Math.max(1, 23 - num(W.padHalf).length))}# its legs reach 1.8 m down and 1.4 m out; the pad is ${wide} m wide
+DEG = math.pi / 180`), '', '',
       ...h.head(rows(String.raw`class World:
     """A rocket comes down from 30 m, up to 12 m to either side of the pad, drifting and tilted a little. Its main
     engine pushes along its axis, its side thrusters turn it, while the fuel lasts. When a leg touches the ground on
     the pad, slower than 3 m/s down and 2 m/s across and within 25 degrees of upright, it has landed. ${pays}
-    Still up there after 300 steps of 0.08 s counts as a crash.${wind ? ' Wind pushes it sideways in gusts.' : ''}"""
+    Still up there after ${most} steps of 0.08 s counts as a crash.${wind ? ' Wind pushes it sideways in gusts.' : ''}"""
     actions = ["nothing", "main engine", "turn left", "turn right"]`)), '',
       ...rows(String.raw`    def ground(self, x):                           # gentle hills, flat for 3 m beyond the pad (heights above it)
         d = abs(x - self.pad)
@@ -479,11 +512,11 @@ LEG, FOOT, PAD = 1.8, 1.4, 6.0                     # its legs reach 1.8 m down a
             soft = self.vy > -3 and abs(self.vx) < 2 and abs(self.th) < math.radians(25)
             landed = soft and all(abs(fx - self.pad) <= PAD for fx, _ in feet)
             crashed, self.land_x = not landed, self.x
-            self.end = "landed" if landed else "off the pad" if soft else "crashed"
+            self.end = "landed" if landed else "offpad" if soft else "crashed"   # (offpad: soft, but off the pad)
         elif abs(self.x - self.pad) > 50 or self.y > 60:
-            crashed, self.end = True, "flew away"
+            crashed, self.end = True, "away"       # flown off
         elif self.t >= MAX_STEPS:                  # out of time counts as a failure: no hovering for ever
-            crashed, self.end = True, "out of time"
+            crashed, self.end = True, "time"
         phi = self.potential()
         closer, self.phi = phi - self.phi, phi`),
       ...reward, '        return self.obs(), r, self.end is not None', '',
@@ -535,17 +568,22 @@ LEG, FOOT, PAD = 1.8, 1.4, 6.0                     # its legs reach 1.8 m down a
   /* x: { flt, num, big, ACT_FN, setup, evolvable (the model's blocks can change shape), every }. A member is its
      weights as one vector (the model's own parameters), except with grow and prune on: then each member is a network
      of its own, a list of weight matrices and biases and the activations of its hidden layers. */
-  const PLAY = (args, load, move, style, keep) => rows(String.raw`def play(${args}, seed${keep ? ', keep=False' : ''}):
+  // style: what its style is for (true: MAP-Elites); mem: every move also goes into the DQN's memory (ERL)
+  const PLAY = (args, load, move, style, keep, mem) => rows(String.raw`def play(${args}, seed${keep ? ', keep=False' : ''}):
     """Its best moves over a few episodes, from the same starts as everyone else in its generation: the average return
-    (its fitness)${style ? ', its style in the first (for MAP-Elites)' : ''}${keep ? ' and some of what it saw there (for safe mutations)' : ''}."""${load ? `\n    ${load}` : ''}
+    (its fitness)${style ? `, its style in the first (for ${style === true ? 'MAP-Elites' : style})` : ''}${keep ? ' and some of what it saw there (for safe mutations)' : ''}.${mem ? ' Every\n    move also goes into the memory the DQN learns from.' : ''}"""${load ? `\n    ${load}` : ''}
     total, style, seen = 0.0, None, []
     state = random.getstate()
     random.seed(seed)
     for k in range(episodes):
         o, done, t = env.reset(), False, 0
-        while not done:${keep ? '\n            if keep and k == 0 and len(seen) < 32 and t % 5 == 0:\n                seen.append(o)' : ''}
+        while not done:${keep ? '\n            if keep and k == 0 and len(seen) < 32 and t % 5 == 0:\n                seen.append(o)' : ''}${mem ? `
+            a = ${move}(o)
+            o2, r, done = env.step(a)
+            memory.append((o, a, r, None if done else o2))
+            o, total, t = o2, total + r, t + 1` : `
             o, r, done = env.step(${move}(o))
-            total, t = total + r, t + 1${style ? '\n        if k == 0:\n            style = env.behavior()' : ''}
+            total, t = total + r, t + 1`}${style ? '\n        if k == 0:\n            style = env.behavior()' : ''}
     random.setstate(state)
     return total / episodes, style, seen`);
   const PICK = {
@@ -555,21 +593,10 @@ LEG, FOOT, PAD = 1.8, 1.4, 6.0                     # its legs reach 1.8 m down a
   };
   const episodesOf = (d) => (NA.brl.WORLD[d.world] || NA.brl.WORLD.pole).gaEpisodes + (d.ws.random || d.ws.slip || (d.world === 'track' && d.ws.track === 'random') ? 2 : 0);
 
-  PW.method = function (d, T, steps, x) {
-    const s = d.s, m = d.method === 'me' && d.world === 'levers' ? 'ga' : d.method, every = x.every;
-    if (m === 'es') return esPy(d, steps, x);
-    if (m === 'me') return mePy(d, steps, x);
-    const note = d.method === 'me' ? ['# MAP-Elites keeps the best network of every style of play, and a pull of a lever has no style to tell apart:', '# this runs the genetic algorithm instead.'] : [];
-    if (s.grow && x.evolvable) return [...note, ...growPy(d, steps, x)];
-    return [...note, s.grow ? '# Grow and prune is on, but only a model of Dense blocks on a list of numbers can change shape: here only the weights evolve.' : null, ...gaPy(d, steps, x)].filter((l) => l !== null);
-    function gaPy() {
-      const sel = PICK[s.select] ? s.select : 'tournament', cross = ['uniform', 'neuron', 'none'].includes(s.cross) ? s.cross : 'uniform', neuron = cross === 'neuron' && x.evolvable, safe = s.mutate === 'safe';
-      return [
-        'from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`,
-        'w0 = parameters_to_vector(model.parameters()).detach()', '# the first generation: the network you built and copies of it, each moved at random',
-        'population = [w0.clone()] + [w0 + 0.5 * torch.randn_like(w0) for _ in range(pop_size - 1)]', '', '',
-        ...PLAY('w', 'vector_to_parameters(w, model.parameters())', 'best_move', false, safe), '', '', ...PICK[sel], '', '',
-        ...(cross === 'none' ? [] : neuron ? [...rows(String.raw`# which neuron each weight belongs to: a row of a layer's weights and its bias go together
+  // a population's members mixed: each weight, or each neuron whole, from one parent or the other (or not at all)
+  function mixPy(s, x) {
+    const cross = ['uniform', 'neuron', 'none'].includes(s.cross) ? s.cross : 'uniform', neuron = cross === 'neuron' && x.evolvable;
+    return cross === 'none' ? [] : neuron ? [...rows(String.raw`# which neuron each weight belongs to: a row of a layer's weights and its bias go together
 unit_of, n_units = [], 0
 for layer in (m for m in model.modules() if isinstance(m, nn.Linear)):
     U, I = layer.weight.shape
@@ -580,8 +607,10 @@ unit_of = torch.cat(unit_of)
 
 def mix(a, b):                                     # each neuron whole, with all its weights, from one parent or the other
     return torch.where((torch.rand(n_units) < 0.5)[unit_of], a, b)`), '', '']
-          : [...(cross === 'neuron' ? ['# (neuron by neuron needs a model of Dense blocks only: here, weight by weight)'] : []), 'def mix(a, b):                                     # each weight from one parent or the other', '    return torch.where(torch.rand_like(a) < 0.5, a, b)', '', '']),
-        ...(safe ? rows(String.raw`def sensitivity(w, seen):
+      : [...(cross === 'neuron' ? ['# (neuron by neuron needs a model of Dense blocks only: here, weight by weight)'] : []), 'def mix(a, b):                                     # each weight from one parent or the other', '    return torch.where(torch.rand_like(a) < 0.5, a, b)', '', ''];
+  }
+  // one weight in ten nudged: plain, or safe (each nudge divided by how much the moves depend on that weight)
+  const mutatePy = (safe) => (safe ? rows(String.raw`def sensitivity(w, seen):
     """How much the moves depend on each weight: each output's gradient, averaged over what the parent saw; the root
     of the sum of their squares over the outputs (SM-G-SUM, Lehman and others, 2018)."""
     vector_to_parameters(w, model.parameters())
@@ -598,20 +627,50 @@ def mutate(w, sens):
     so the nudges are as big on average as plain ones (sigma at random)."""
     chosen = (torch.rand_like(w) < 0.1).float()
     d = chosen * torch.randn_like(w) / (sens + 0.05 * sens.mean() + 1e-6)
-    return w + d * sigma * 0.7979 * chosen.sum() / d.abs().sum().clamp_min(1e-12)`) : ['def mutate(w):                                     # one weight in ten nudged by sigma at random', '    return w + (torch.rand_like(w) < 0.1) * sigma * torch.randn_like(w)']), '', '',
+    return w + d * sigma * 0.7979 * chosen.sum() / d.abs().sum().clamp_min(1e-12)`) : ['def mutate(w):                                     # one weight in ten nudged by sigma at random', '    return w + (torch.rand_like(w) < 0.1) * sigma * torch.randn_like(w)']);
+  // the next generation (inside the loop): the best two unchanged, then children of parents picked by fit
+  function breedPy(s) {
+    const cross = ['uniform', 'neuron', 'none'].includes(s.cross) ? s.cross : 'uniform', safe = s.mutate === 'safe';
+    return ['    children = [population[order[0]].clone(), population[order[1]].clone()]   # the best two carry on unchanged', safe ? '    sens = {}' : null,
+      '    while len(children) < pop_size:', '        i = pick(order, fit)', '        child = population[i]',
+      ...(cross === 'none' ? [] : ['        j = pick(order, fit)', '        if j != i:', '            child = mix(population[i], population[j])']),
+      ...(safe ? ['        if i not in sens:', '            sens[i] = sensitivity(population[i], results[i][2])', '        children.append(mutate(child, sens[i]))'] : ['        children.append(mutate(child))'])];
+  }
+  // the first generation of a population of weight vectors
+  const FIRST = ['w0 = parameters_to_vector(model.parameters()).detach()', '# the first generation: the network you built and copies of it, each moved at random',
+    'population = [w0.clone()] + [w0 + 0.5 * torch.randn_like(w0) for _ in range(pop_size - 1)]'];
+
+  // what a method does, for the script's first lines (builder-py.js): the methods of builder-evo.js that it does not name itself
+  PW.how = (d) => { const s = d.s; return { novelty: `a population of ${s.pop} chosen for new behaviour, not reward`, cem: `${Math.max(4, Math.round(s.pop) || 24)} networks a generation drawn from a bell curve over the weights`, erl: `a population of ${s.pop} whose moves teach a DQN` }[d.method] || ''; };
+  // the methods whose worlds must say how they played (the small worlds' Python adds it: PW.style)
+  PW.needsStyle = (method) => method === 'me' || method === 'novelty';
+  PW.method = function (d, T, steps, x) {
+    const s = d.s, flat = d.world === 'levers' && PW.needsStyle(d.method), m = flat ? 'ga' : d.method, every = x.every;
+    if (m === 'es') return esPy(d, steps, x);
+    if (m === 'me') return mePy(d, steps, x);
+    if (m === 'cem') return cemPy(d, steps, x);
+    if (m === 'novelty') return novPy(d, steps, x);
+    if (m === 'erl') return erlPy(d, steps, x);
+    const note = flat ? [d.method === 'me' ? '# MAP-Elites keeps the best network of every style of play, and a pull of a lever has no style to tell apart:' : '# Novelty search looks for behaviour unlike any before, and a pull of a lever has no style to tell apart:', '# this runs the genetic algorithm instead.'] : [];
+    if (s.grow && x.evolvable) return [...note, ...growPy(d, steps, x)];
+    return [...note, s.grow ? '# Grow and prune is on, but only a model of Dense blocks on a list of numbers can change shape: here only the weights evolve.' : null, ...gaPy(d, steps, x)].filter((l) => l !== null);
+    function gaPy() {
+      const sel = PICK[s.select] ? s.select : 'tournament', safe = s.mutate === 'safe';
+      return [
+        'from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`, ...FIRST, '', '',
+        ...PLAY('w', 'vector_to_parameters(w, model.parameters())', 'best_move', false, safe), '', '', ...PICK[sel], '', '', ...mixPy(s, x), ...mutatePy(safe), '', '',
         `for gen in range(${x.big(steps)}):`, `    results = [play(w, 1000 + gen${safe ? ', keep=True' : ''}) for w in population]`, '    fit = [r[0] for r in results]', '    order = sorted(range(pop_size), key=lambda k: -fit[k])',
-        '    children = [population[order[0]].clone(), population[order[1]].clone()]   # the best two carry on unchanged', safe ? '    sens = {}' : null,
-        '    while len(children) < pop_size:', '        i = pick(order, fit)', '        child = population[i]',
-        ...(cross === 'none' ? [] : ['        j = pick(order, fit)', '        if j != i:', '            child = mix(population[i], population[j])']),
-        ...(safe ? ['        if i not in sens:', '            sens[i] = sensitivity(population[i], results[i][2])', '        children.append(mutate(child, sens[i]))'] : ['        children.append(mutate(child))']),
+        ...breedPy(s),
         '    population = children', '    vector_to_parameters(population[0], model.parameters())             # on show: the best of the generation',
         `    if gen % ${every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
     }
   };
 
-  // the operations on a network whose shape can change: its outputs, its size, a neuron or a layer more or less
-  function netOps(acts, newLayer, ACT_FN) {
-    const used = [...new Set([...acts, 'relu'])];
+  /* The operations on a network whose shape can change: its outputs, its size, a neuron more or less, a layer more
+     (size: how wide a new layer starts, 'one', 'some' or 'whole', as builder-evo.js), a layer less ('whole': at
+     once; otherwise when its last neuron goes). */
+  function netOps(acts, newLayer, ACT_FN, size = 'one') {
+    const used = [...new Set([...acts, 'relu'])], whole = size === 'whole', rnd = newLayer === 'random';
     return rows(String.raw`ACT = {${used.map((a) => `"${a}": ${ACT_FN[a] || 'F.relu'}`).join(', ')}}
 MOST_LAYERS, MOST_UNITS = 6, 48
 
@@ -647,27 +706,43 @@ def add_neuron(net, h):
 
 
 def remove_neuron(net, h):
-    """The neuron of hidden layer h that the next layer listens to least (the smallest outgoing weights), taken out."""
+    """The neuron of hidden layer h that the next layer listens to least (the smallest outgoing weights), taken out.${whole ? '' : '\n    The last neuron of a layer takes the layer with it, folded into the next.'}"""
     w = list(net["w"])
     W, b, W2 = w[2 * h], w[2 * h + 1], w[2 * h + 2]
     if W.shape[0] <= 1:
-        return None
+        return ${whole ? 'None' : 'remove_layer(net, h)'}
     j = int(W2.abs().sum(0).argmin())
     keep = [i for i in range(W.shape[0]) if i != j]
     w[2 * h], w[2 * h + 1], w[2 * h + 2] = W[keep], b[keep], W2[:, keep]
     return {"w": w, "acts": net["acts"]}
 
 
-def add_layer(net, p):
-    """A new hidden layer at position p (0: straight after the input), as wide as what it reads: ${newLayer === 'random' ? 'its weights at random' : 'its weights the\n    identity, so it passes its input straight through (exactly, after a ReLU layer)'}."""
+${whole ? `def add_layer(net, p):
+    """A new hidden layer at position p (0: straight after the input), as wide as what it reads: ${rnd ? 'its weights at random' : 'its weights the\n    identity, so it passes its input straight through (exactly, after a ReLU layer)'}."""
     acts = list(net["acts"])
     U = net["w"][2 * p].shape[1]                   # the width of what it reads
     if len(acts) >= MOST_LAYERS or U > MOST_UNITS:
         return None
     w = list(net["w"])
-    w[2 * p:2 * p] = [${newLayer === 'random' ? 'torch.randn(U, U) * math.sqrt(2 / U)' : 'torch.eye(U)'}, torch.zeros(U)]
+    w[2 * p:2 * p] = [${rnd ? 'torch.randn(U, U) * math.sqrt(2 / U)' : 'torch.eye(U)'}, torch.zeros(U)]
     acts.insert(p, acts[p - 1] if p > 0 else acts[0] if acts else "relu")
-    return {"w": w, "acts": acts}
+    return {"w": w, "acts": acts}` : `def add_layer(net, p):
+    """A new hidden layer at position p (0: straight after the input) of ${size === 'one' ? 'one neuron' : 'a few neurons (1 to one less than the width it reads,\n    at random)'}: it passes on ${size === 'one' ? 'the signal' : 'the signals'} the next layer leans on most (the largest column${size === 'one' ? '' : 's'} of its weights),
+    ${rnd ? 'its own weights at random' : `each neuron picking one with a weight of 1`}, and the next layer reads ${size === 'one' ? 'it' : 'them'} with ${size === 'one' ? 'that same column' : 'those same columns'}. The rest
+    is cut off: a bottleneck, so unlike a new neuron it changes what the network does, until "+1 neuron" widens it."""
+    acts = list(net["acts"])
+    if len(acts) >= MOST_LAYERS:
+        return None
+    w = list(net["w"])
+    W2 = w[2 * p]                                  # the next layer's weights: it will read the new layer instead
+    I = W2.shape[1]                                # the width of what the new layer reads
+    U = ${size === 'one' ? '1' : 'random.randint(1, max(1, min(I - 1, MOST_UNITS)))'}
+    lean = W2.abs().sum(0).tolist()
+    keep = sorted(range(I), key=lambda j: -lean[j])[:U]   # the inputs the next layer leans on most
+${rnd ? '    new = torch.randn(U, I) * math.sqrt(2 / I)' : '    new = torch.zeros(U, I)\n    for k, j in enumerate(keep):                   # each neuron passes one of them on\n        new[k, j] = 1.0'}
+    w[2 * p:2 * p + 1] = [new, torch.zeros(U), W2[:, keep]]
+    acts.insert(p, acts[p - 1] if p > 0 else acts[0] if acts else "relu")
+    return {"w": w, "acts": acts}`}
 
 
 def remove_layer(net, h):
@@ -682,9 +757,10 @@ def remove_layer(net, h):
 
 
 def change_shape(net):
-    """One change to its shape: a neuron more (most often) or less, or a layer more or less."""
+    """One change to its shape: a neuron more (most often) or less, or a layer more${whole ? ' or less."""' : ` (of ${size === 'one' ? 'one neuron' : 'a few'}); a layer goes when
+    its last neuron does."""`}
     n = len(net["acts"])
-    ops = {"neuron+": 3 if n else 0, "neuron-": 2 if n else 0, "layer+": 1.4 if n < MOST_LAYERS else 0, "layer-": 1 if n else 0}
+    ops = {"neuron+": 3 if n else 0, "neuron-": 2 if n else 0, "layer+": 1.4 if n < MOST_LAYERS else 0${whole ? ', "layer-": 1 if n else 0' : ''}}
     for _ in range(8):
         op = random.choices(list(ops), weights=list(ops.values()))[0]
         if op == "neuron+":
@@ -700,15 +776,18 @@ def change_shape(net):
     return net`);
   }
   const actsOf = (blocks) => blocks.filter((b) => b.type === 'dense').map((b) => b.act || 'relu');
+  // how wide new layers start (one neuron unless set), and the change of shape that says
+  const layerSizeOf = (v) => (['one', 'some', 'whole'].includes(v) ? v : 'one');
+  const SHAPE_SAY = { one: 'gain a new layer of one neuron (a layer goes when its last neuron does)', some: 'gain a new layer of a few neurons (a layer goes when its last neuron does)', whole: 'gain or lose a whole layer' };
   const START = 'start = {"w": [t.detach().clone() for m in model.modules() if isinstance(m, nn.Linear) for t in (m.weight, m.bias)], "acts": ACTS}';
 
   // a genetic algorithm whose networks grow and shrink
   function growPy(d, steps, x) {
     const s = d.s, sel = PICK[s.select] ? s.select : 'tournament', cross = ['uniform', 'neuron', 'none'].includes(s.cross) ? s.cross : 'uniform', safe = s.mutate === 'safe';
-    const W = NA.brl.WORLD[d.world] || NA.brl.WORLD.pole, pen = (NA.bevo ? NA.bevo.PENALTY[s.penalty] ?? NA.bevo.PENALTY.light : 0.0005) * (W.scale || 1);
+    const W = NA.brl.WORLD[d.world] || NA.brl.WORLD.pole, pen = (NA.bevo ? NA.bevo.PENALTY[s.penalty] ?? NA.bevo.PENALTY.light : 0.0005) * (W.scale || 1), size = layerSizeOf(s.layerSize);
     return [
-      '# Each member is a network of its own: its Dense layers as a list [W1, b1, W2, b2, ..., W_out, b_out] and an', '# activation for each hidden layer. Its shape can change: a child may gain or lose a neuron or a whole layer.',
-      `ACTS = ${JSON.stringify(actsOf(x.setup.blocks))}`, ...netOps(actsOf(x.setup.blocks), s.newLayer, x.ACT_FN), '', '',
+      '# Each member is a network of its own: its Dense layers as a list [W1, b1, W2, b2, ..., W_out, b_out] and an', `# activation for each hidden layer. Its shape can change: a child may gain or lose a neuron, or ${SHAPE_SAY[size]}.`,
+      `ACTS = ${JSON.stringify(actsOf(x.setup.blocks))}`, ...netOps(actsOf(x.setup.blocks), s.newLayer, x.ACT_FN, size), '', '',
       `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`,
       `penalty = ${x.num(pen)}                                  # taken off the fitness for every 100 weights: of two that play as well, the smaller wins`,
       START, '# the first generation: the network you built and copies of it, each moved at random',
@@ -742,7 +821,7 @@ def mutate(net, sens):
       '    while len(children) < pop_size:', '        i = pick(order, adj)', '        child = population[i]',
       ...(cross === 'none' ? [] : ['        j = pick(order, adj)', '        if j != i and shape(population[j]) == shape(child) and population[j]["acts"] == child["acts"]:   # only parents of one shape mix', '            child = mix(child, population[j])']),
       ...(safe ? ['        if i not in sens:', '            sens[i] = sensitivity(population[i], results[i][2])', '        child = mutate(child, sens[i]) if shape(child) == shape(population[i]) else child'] : ['        child = mutate(child)']),
-      '        if random.random() < 0.25:                 # a quarter of the children: a neuron or a layer more or less', '            child = change_shape(child)', '        children.append(child)',
+      `        if random.random() < 0.25:                 # a quarter of the children: ${size === 'whole' ? 'a neuron or a layer more or less' : 'a neuron more or less, or a new layer'}`, '            child = change_shape(child)', '        children.append(child)',
       '    population = children', '    best_move = moves_of(population[0])           # on show: the best of the generation',
       `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  shape {shape(population[0])}, {size(population[0])} weights  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
   }
@@ -779,18 +858,115 @@ def mutate(net, sens):
       `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  {len(archive)} of 144 styles found  best {best[0]:.2f}  score {judge.score(best_move):.3f}")'];
   }
 
+  // novelty search: the genetic algorithm's breeding, each member chosen for how new its behaviour is
+  function novPy(d, steps, x) {
+    const s = d.s, sel = PICK[s.select] ? s.select : 'tournament', safe = s.mutate === 'safe', half = s.novMix === 'half', axes = (NA.rlEnvs.WORLDS[d.world] || {}).axes || ['style 1', 'style 2'];
+    const k = Math.max(1, Math.round(s.novK) || 10), add = Math.max(1, Math.round(s.novAdd) || 2), most = NA.bevo ? NA.bevo.ARCHIVE : 1000;
+    return [
+      'from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`,
+      `k_nearest, keep_new = ${k}, ${add}                         # novelty: the mean distance to the k nearest; the most novel few kept a generation`, ...FIRST,
+      `archive = []                                       # behaviours (${axes.join(', ')}) kept as stepping stones: a place once reached stops being new`,
+      'champion = (-1.0, -math.inf, w0.clone())           # the best by score found so far (its score, its return, its weights): the one on show', '', '',
+      ...PLAY('w', 'vector_to_parameters(w, model.parameters())', 'best_move', 'its novelty', safe), '', '',
+      ...rows(String.raw`def novelty(styles):
+    """How new each behaviour is: its mean distance to its k nearest among the generation's others and the archive."""
+    out = []
+    for i, a in enumerate(styles):
+        near = sorted([math.dist(a, b) for j, b in enumerate(styles) if j != i] + [math.dist(a, b) for b in archive])
+        out.append(sum(near[:k_nearest]) / max(1, min(k_nearest, len(near))))
+    return out`), '', '',
+      ...(half ? [...rows(String.raw`def ranks(v):                                      # each value's rank, from 0 (the lowest) to 1 (the highest)
+    r = [0.0] * len(v)
+    for i, k in enumerate(sorted(range(len(v)), key=lambda k: v[k])):
+        r[k] = i / max(1, len(v) - 1)
+    return r`), '', ''] : []),
+      ...PICK[sel], '', '', ...mixPy(s, x), ...mutatePy(safe), '', '',
+      `for gen in range(${x.big(steps)}):`, `    results = [play(w, 1000 + gen${safe ? ', keep=True' : ''}) for w in population]`, '    ret, nov = [r[0] for r in results], novelty([r[1] for r in results])',
+      half ? '    fit = [(a + b) / 2 for a, b in zip(ranks(nov), ranks(ret))]   # half novelty, half reward (as ranks)' : '    fit = nov                                      # chosen for novelty alone: the reward plays no part',
+      '    archive += [results[k][1] for k in sorted(range(pop_size), key=lambda k: -nov[k])[:keep_new]]', `    del archive[:-${most}]                           # (the oldest go first)`,
+      '    top = max(range(pop_size), key=lambda k: ret[k])   # the best by return, scored: it is on show if it beats the champion', '    vector_to_parameters(population[top], model.parameters())',
+      '    champion = max(champion, (judge.score(best_move), ret[top], population[top].clone()), key=lambda c: c[:2])', '    order = sorted(range(pop_size), key=lambda k: -fit[k])',
+      ...breedPy(s),
+      '    population = children', '    vector_to_parameters(champion[2], model.parameters())                # on show: the best by score found so far',
+      `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  most novel {max(nov):.3f}  best return {max(ret):.2f}  archive {len(archive)}  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
+  }
+
+  // the cross-entropy method: a bell curve over the weights, refitted every generation to the best it drew
+  function cemPy(d, steps, x) {
+    const s = d.s, N = Math.max(4, Math.round(s.pop) || 24), E = Math.max(2, Math.round(N * (s.cemElite > 0 && s.cemElite < 1 ? s.cemElite : 0.2)));
+    return [
+      'from torch.nn.utils import parameters_to_vector, vector_to_parameters', `pop_size, elite, episodes = ${N}, ${E}, ${episodesOf(d)}                  # the best ${E} of each generation refit the bell curve`,
+      'mu = parameters_to_vector(model.parameters()).detach().clone()   # the middle of the bell curve: the network you built',
+      `sd = torch.full_like(mu, ${x.flt(s.cemSigma > 0 ? s.cemSigma : 0.3)})                         # its spread, the same for every weight at first`,
+      `sd_floor = ${x.flt(s.cemFloor >= 0 ? s.cemFloor : 0.05)}                                    # the spread never falls below this, so it keeps looking`, '', '',
+      ...PLAY('w', 'vector_to_parameters(w, model.parameters())', 'best_move', false, false), '', '',
+      `for gen in range(${x.big(steps)}):`, '    samples = [mu + sd * torch.randn_like(mu) for _ in range(pop_size)]   # a generation drawn from the bell curve',
+      '    fit = [play(w, 1000 + gen)[0] for w in samples]', '    best = torch.stack([samples[k] for k in sorted(range(pop_size), key=lambda k: -fit[k])[:elite]])',
+      '    mu, sd = best.mean(0), (best.var(0, unbiased=False) + sd_floor ** 2).sqrt()   # refitted to the elite',
+      '    vector_to_parameters(mu, model.parameters())                       # on show: the middle of the bell curve',
+      `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  spread {sd.mean():.3f}  score {judge.score(best_move):.3f}")'];
+  }
+
+  // ERL: a genetic algorithm whose every move teaches a DQN; the DQN's network joins the population every few generations
+  function erlPy(d, steps, x) {
+    const s = d.s, sel = PICK[s.select] ? s.select : 'tournament', safe = s.mutate === 'safe';
+    // (as on the page: a smaller memory when each observation is big, a picture or a long list)
+    const join = Math.max(1, Math.round(s.erlEvery) || 5), learn = Math.max(1, Math.round(s.erlSteps) || 200), lr = s.erlLr > 0 ? s.erlLr : 0.001, cap = d.Xtr.length / d.nTr > 64 ? 5000 : 20000;
+    return [
+      'import collections', 'import copy', 'from torch.nn.utils import parameters_to_vector, vector_to_parameters',
+      `pop_size, sigma, episodes = ${s.pop}, ${x.flt(s.sigma)}, ${episodesOf(d)}`,
+      `gamma, rl_steps, rl_every, batch = ${x.flt(s.gamma)}, ${learn}, ${join}, 32   # the DQN: its discount, its steps a generation, how often it joins`, ...FIRST,
+      `memory = collections.deque(maxlen=${cap})           # every move the population makes: (observation, move, reward, next observation or None)`,
+      'q_net, q_target = copy.deepcopy(model), copy.deepcopy(model).eval()   # the DQN: a network like yours, and its target network',
+      `q_opt = torch.optim.Adam(q_net.parameters(), lr=${x.flt(lr)})`, 'updates = 0', '', '',
+      ...PLAY('w', 'vector_to_parameters(w, model.parameters())', 'best_move', false, safe, true), '', '',
+      ...rows(String.raw`def learn():
+    """Gradient steps of the DQN on moves drawn from the memory, as the page's DQN learns: toward the reward plus gamma
+    times the next state's value (double DQN: the DQN picks the next move, its target network says what it is worth),
+    a Huber loss, Adam; the target network refreshed every 500 steps. Returns the average loss."""
+    global updates
+    total = 0.0
+    for _ in range(rl_steps):
+        sample = [memory[random.randrange(len(memory))] for _ in range(batch)]
+        X, A = torch.stack([q[0] for q in sample]), torch.tensor([q[1] for q in sample])
+        R, alive = torch.tensor([float(q[2]) for q in sample]), torch.tensor([float(q[3] is not None) for q in sample])
+        X2 = torch.stack([q[0] if q[3] is None else q[3] for q in sample])
+        with torch.no_grad():
+            q_net.eval()
+            nxt = q_net(X2)[:, :n_actions].argmax(1)
+            q_net.train()
+            y = R + gamma * alive * q_target(X2).gather(1, nxt[:, None])[:, 0]
+        loss = F.smooth_l1_loss(q_net(X).gather(1, A[:, None])[:, 0], y)
+        q_opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(q_net.parameters(), 1.0)
+        q_opt.step()
+        total, updates = total + loss.item(), updates + 1
+        if updates % 500 == 0:
+            q_target.load_state_dict(q_net.state_dict())
+    return total / rl_steps`), '', '',
+      ...PICK[sel], '', '', ...mixPy(s, x), ...mutatePy(safe), '', '',
+      `for gen in range(${x.big(steps)}):`, `    results = [play(w, 1000 + gen${safe ? ', keep=True' : ''}) for w in population]`, '    fit = [r[0] for r in results]', '    order = sorted(range(pop_size), key=lambda k: -fit[k])',
+      '    rl_loss = learn() if len(memory) >= 64 else float("nan")   # the DQN learns from the moves, between generations',
+      ...breedPy(s),
+      '    if (gen + 1) % rl_every == 0:                  # every few generations the DQN\'s network takes the place of the worst',
+      '        children[-1] = parameters_to_vector(q_net.parameters()).detach().clone()',
+      '    population = children', '    vector_to_parameters(population[0], model.parameters())             # on show: the best of the generation',
+      `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  DQN loss {rl_loss:.4f}  score {judge.score(best_move):.3f}")'].filter((l) => l !== null);
+  }
+
   /* Grow and prune while it learns from examples: 6 networks learn side by side from the same batches; every 150
      steps each is judged on the validation examples and the worse half replaced by copies of the better half, each
      with one change to its shape. x: { flt, num, big, ACT_FN, setup, d, evalEvery, gains (each layer's starting
      gain, or null for "tiny"), clip, lrAt (the schedule's lines, or null) } */
   PW.growSupervised = function (x) {
-    const T = x.setup.train, steps = T.steps || 3000, every = T.growEvery || 150, pen = NA.bevo ? NA.bevo.PENALTY_EX[T.growPenalty] ?? NA.bevo.PENALTY_EX.light : 0.004, acts = actsOf(x.setup.blocks);
+    const T = x.setup.train, steps = T.steps || 3000, every = T.growEvery || 150, pen = NA.bevo ? NA.bevo.PENALTY_EX[T.growPenalty] ?? NA.bevo.PENALTY_EX.light : 0.004, acts = actsOf(x.setup.blocks), size = layerSizeOf(T.growWidth);
     const opt = { sgd: 'torch.optim.SGD(groups, lr=LR)', momentum: 'torch.optim.SGD(groups, lr=LR, momentum=0.9)', adam: 'torch.optim.Adam(groups, lr=LR)', adamw: 'torch.optim.AdamW(groups, lr=LR)' }[T.opt] || 'torch.optim.Adam(groups, lr=LR)';
     return [
       '# ---------------------------------------------------------------- grow and prune while it learns',
       `# ${x.size || 6} networks learn side by side from the same batches, each a list of Dense layers [W1, b1, ..., W_out, b_out]`, `# whose shape can change. Every ${every} steps each is judged on the validation examples (its loss there, plus`,
-      `# ${x.num(pen)} for every 100 weights) and the worse half replaced by copies of the better half, each with a neuron or a`, '# layer more or less: population-based training, with the architecture evolving instead of the learning rate.',
-      `ACTS = ${JSON.stringify(acts)}`, ...netOps(acts, T.growNew, x.ACT_FN), '', '',
+      `# ${x.num(pen)} for every 100 weights) and the worse half replaced by copies of the better half, each with one change`, `# to its shape (a neuron more or less, or ${SHAPE_SAY[size]}): population-based training, with the`, '# architecture evolving instead of the learning rate.',
+      `ACTS = ${JSON.stringify(acts)}`, ...netOps(acts, T.growNew, x.ACT_FN, size), '', '',
       `LR, WD, PENALTY = ${x.flt(T.lr)}, ${x.flt(T.wd || 0)}, ${x.num(pen)}`, '', '',
       'def member(w, acts):                               # a network that learns: its weights and its own optimizer', '    w = [t.detach().clone().requires_grad_() for t in w]',
       '    groups = [{"params": w[::2], "weight_decay": WD}, {"params": w[1::2], "weight_decay": 0.0}]   # decay on the weights, not the biases', `    return {"w": w, "acts": acts, "opt": ${opt}}`, '', '',

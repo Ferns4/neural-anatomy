@@ -1,7 +1,9 @@
 /* builder-engine.js — the engine behind "build a model from scratch". A model is a list of blocks (dense, gated,
    activation, dropout, noise, LayerNorm, batch norm, Fourier features, self-attention, transformer, recurrent
    (RNN, LSTM, GRU), 1-D convolution, positions, sequence pooling, image patches, convolution, max and average
-   pool, flatten, global average pool) between an input (a vector, an image, a sequence of token ids or of numbers)
+   pool, flatten, global average pool, parallel branches; and separable convolution, squeeze-and-excitation,
+   coordinate channels, random shifts, global max pool, attention pooling, a state-space layer, radial basis units,
+   maxout and a mixture of experts) between an input (a vector, an image, a sequence of token ids or of numbers)
    and an output head (classes, a value, or a token at every position). Shapes are plain arrays per example: [F] a vector, [C, H, W] an image, [T, D] a
    sequence. Every buffer holds the whole batch, one example after another, so a layer is a few large matrix
    products rather than many small ones. Forward and backward passes are written out by hand and checked against
@@ -290,7 +292,20 @@
     patches: { label: 'Patches', defaults: { size: 2, dim: 32 } },
     avgpool: { label: 'Average pool', defaults: { size: 2 } },
     parallel: { label: 'Parallel branches', defaults: { merge: 'concat' } },
+    sepconv: { label: 'Separable convolution', defaults: { filters: 16, k: 3, dilation: 1, stride: 1, act: 'relu' } },
+    se: { label: 'Squeeze-and-excitation', defaults: { ratio: 4 } },
+    coords: { label: 'Coordinate channels', defaults: { radius: false } },
+    augment: { label: 'Random shifts', defaults: { shift: 2, flip: false } },
+    gmp: { label: 'Global max pool', defaults: {} },
+    attnpool: { label: 'Attention pool', defaults: {} },
+    ssm: { label: 'State-space layer', defaults: { state: 16, units: 16, act: 'gelu' } },
+    rbf: { label: 'Radial basis', defaults: { units: 16, width: 0.5 } },
+    maxout: { label: 'Maxout', defaults: { units: 16, pieces: 2 } },
+    moe: { label: 'Mixture of experts', defaults: { experts: 4, units: 16, top: 2, act: 'relu' } },
   };
+  // squeeze-and-excitation's bottleneck: the channels divided by the ratio, rounded half up, at least 1 (in whole
+  // numbers, so Python's (2C + r) // 2r gives the same)
+  const seHidden = (C, ratio) => Math.max(1, Math.floor((2 * C + ratio) / (2 * ratio)));
   // how parallel branches are joined: side by side (their features, or an image's channels), or number by number
   const MERGES = { concat: 'join', add: 'add', mul: 'multiply', mean: 'average' };
   const LETTERS = 'ABCD';
@@ -469,6 +484,65 @@
         const [C, H, W] = inS, Ho = Math.floor(H / s.size), Wo = Math.floor(W / s.size);
         if (!Ho || !Wo) return fail(`The ${s.size} × ${s.size} pooling window is bigger than this image (${shapeText(inS)}).`);
         return ok([C, Ho, Wo], 0);
+      }
+      case 'sepconv': {
+        if (kind !== 3) return fail(`A separable convolution needs an image (channels × height × width), but this is ${describe(inS)}; for a sequence, use the 1-D convolution.`);
+        if (!isInt(s.filters)) return fail('A separable convolution needs a whole number of filters, at least 1.');
+        if (!isInt(s.k) || s.k % 2 === 0) return fail('A separable convolution needs an odd filter size (1, 3, 5 or 7), so that every window has a centre pixel.');
+        if (!isInt(s.dilation)) return fail('A separable convolution needs a dilation of at least 1.');
+        if (!isInt(s.stride)) return fail('A separable convolution needs a stride of at least 1.');
+        if (!own(A, s.act)) return fail(unknownAct(s.act));
+        const [C, H, W] = inS;
+        return ok([s.filters, Math.ceil(H / s.stride), Math.ceil(W / s.stride)], C * s.k * s.k + C + s.filters * C + s.filters);
+      }
+      case 'se': {
+        if (!isInt(s.ratio)) return fail('Squeeze-and-excitation needs a whole-number squeeze ratio, at least 1.');
+        const C = kind === 3 ? inS[0] : inS[kind - 1], h = seHidden(C, s.ratio);
+        return ok(inS, 2 * C * h + h + C);
+      }
+      case 'coords':
+        if (kind !== 3) return fail(`Coordinate channels are added to an image (channels × height × width), but this is ${describe(inS)}; a sequence gets its positions from the Positions block.`);
+        return ok([inS[0] + (s.radius ? 3 : 2), inS[1], inS[2]], 0);
+      case 'augment':
+        if (kind !== 3) return fail(`Random shifts move pictures about, but this is ${describe(inS)}; for numbers, Gaussian noise does a similar job.`);
+        if (!isInt(s.shift, 0)) return fail('Random shifts need a whole number of pixels, 0 or more.');
+        return ok(inS, 0);
+      case 'gmp':
+        if (kind === 1) return fail(`Global max pooling keeps the largest value over the positions of an image or a sequence, but this is already ${describe(inS)}.`);
+        return ok(kind === 3 ? [inS[0]] : [inS[1]], 0);
+      case 'attnpool':
+        if (kind === 1) return fail(`Attention pooling weighs the positions of a sequence (or the pixels of an image) into one vector, but this is already ${describe(inS)}.`);
+        return ok(kind === 3 ? [inS[0]] : [inS[1]], kind === 3 ? inS[0] : inS[1]);
+      case 'ssm': {
+        if (kind !== 2) return fail(`A state-space layer reads a sequence (positions × features) one step at a time, but this is ${describe(inS)}.`);
+        if (!isInt(s.state)) return fail('A state-space layer needs a state of at least 1 number.');
+        if (!isInt(s.units)) return fail('A state-space layer needs a whole number of output units, at least 1.');
+        if (!own(A, s.act)) return fail(unknownAct(s.act));
+        const N = s.state;
+        return ok([inS[0], s.units], N + N * inS[1] + s.units * N + s.units);
+      }
+      case 'rbf': {
+        if (!isInt(s.units)) return fail('A radial basis layer needs a whole number of units, at least 1.');
+        if (!(typeof s.width === 'number' && s.width > 0)) return fail('A radial basis layer needs a starting width above 0.');
+        const p = (F) => s.units * F + s.units;
+        if (kind === 3) return fail(`A radial basis layer measures distances between flat vectors, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
+        return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
+      }
+      case 'maxout': {
+        if (!isInt(s.units)) return fail('A maxout layer needs a whole number of units, at least 1.');
+        if (!isInt(s.pieces)) return fail('A maxout layer needs at least 1 piece per unit (2 or more make it bend).');
+        const p = (F) => s.pieces * s.units * (F + 1);
+        if (kind === 3) return fail(`A maxout layer needs a flat vector or a sequence, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
+        return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
+      }
+      case 'moe': {
+        if (!isInt(s.experts, 2)) return fail('A mixture of experts needs at least 2 experts.');
+        if (!isInt(s.units)) return fail('A mixture of experts needs a whole number of units in each expert, at least 1.');
+        if (!isInt(s.top, 0) || s.top > s.experts) return fail(`A mixture of experts sends each example to its top 1 to ${s.experts} experts (or 0: to all of them, weighted).`);
+        if (!own(A, s.act)) return fail(unknownAct(s.act));
+        const E = s.experts, p = (F) => E * (F * s.units + s.units) + F * E + E;
+        if (kind === 3) return fail(`A mixture of experts needs a flat vector or a sequence, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
+        return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
       }
       case 'flatten':
         return ok([size(inS)], 0);
@@ -1534,8 +1608,496 @@
     }
   }
 
+  // ------------------------------------------------------------------ the newest layers
+  /* Depthwise-separable convolution: a k × k filter for each input channel on its own (depthwise; its taps spaced d
+     apart when dilated), then a 1 × 1 convolution that mixes the channels into F outputs (pointwise), then the
+     activation. C·k² + C·F weights instead of a full convolution's C·k²·F: the idea behind Xception and MobileNet.
+     'Same' zero padding of d·(k − 1)/2 on every side (k is odd); the output is ceil(H/stride) × ceil(W/stride). */
+  class SepConv {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [C, H, W] = inS, F = outS[0], k = cfg.k, dil = cfg.dilation || 1, A = NA.engine.ACTIVATIONS;
+      Object.assign(this, { type: 'sepconv', spec, inShape: inS, outShape: outS, C, H, W, F, k, dil, s: cfg.stride || 1, pad: (dil * (k - 1)) >> 1, Ho: outS[1], Wo: outS[2], scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.Q = this.Ho * this.Wo;
+      this.dw = param(ctx, 'depthwise kernels', [C, k, k], true); this.db = param(ctx, 'depthwise bias', [C], false);
+      this.pw = param(ctx, 'pointwise weights', [F, C], true); this.pb = param(ctx, 'bias', [F], false);
+      this.params = [this.dw, this.db, this.pw, this.pb];
+      this.fn = activation(own(A, cfg.act) ? cfg.act : 'relu', ctx.f64); this.linear = this.fn.id === 'linear';
+      gauss(ctx, this.dw, initSd(linearInit(ctx), k * k)); gauss(ctx, this.pw, initSd(ctx.init, C, this.fn.he));
+    }
+    alloc(B) {
+      const m = this.mem, n = B * this.F * this.Q;
+      this.mid = m.view('mid', B * this.C * this.Q); this.z = m.view('z', n);
+      this.a = this.linear ? this.z : m.view('a', n); this.out = this.a;
+      this.dz = this.linear ? null : m.view('dz', n);
+      this.dx = m.view('dx', B * this.C * this.H * this.W);
+    }
+    // the output columns whose tap kx lands inside the picture
+    span(kx) { const { W, s, Wo } = this, o = kx * this.dil - this.pad; return [Math.max(0, Math.ceil(-o / s)), Math.min(Wo, Math.floor((W - 1 - o) / s) + 1)]; }
+    forward(x, B) {
+      const { C, H, W, F, k, dil, s, pad, Wo, Q, mid, z } = this, w = this.dw.w, db = this.db.w, pb = this.pb.w, HW = H * W, T = this.scr.get('sepT', Q * C);
+      this.x = x;
+      for (let e = 0; e < B; e++) {
+        const mo = e * C * Q, xo = e * C * HW;
+        // depthwise: each channel through its own k × k filter
+        for (let c = 0; c < C; c++) {
+          const mc = mo + c * Q, xc = xo + c * HW;
+          mid.fill(db[c], mc, mc + Q);
+          for (let ky = 0; ky < k; ky++) for (let kx = 0; kx < k; kx++) {
+            const wv = w[(c * k + ky) * k + kx], [ox0, ox1] = this.span(kx), off = kx * dil - pad;
+            for (let oy = 0; oy < this.Ho; oy++) {
+              const iy = oy * s + ky * dil - pad;
+              if (iy < 0 || iy >= H) continue;
+              const row = xc + iy * W + off, mr = mc + oy * Wo;
+              for (let ox = ox0; ox < ox1; ox++) mid[mr + ox] += wv * x[row + ox * s];
+            }
+          }
+        }
+        // pointwise: z[f, q] = b[f] + Σ_c pw[f, c] · mid[c, q], one matrix product
+        transpose(T, mid, mo, C, Q);
+        const zo = e * F * Q;
+        for (let f = 0; f < F; f++) z.fill(pb[f], zo + f * Q, zo + (f + 1) * Q);
+        gemmNT(z, zo, this.pw.w, 0, T, 0, F, Q, C);
+      }
+      if (!this.linear) activate(this.a, z, B * F * Q, this.fn);
+      return this.out;
+    }
+    backward(dy, B, needDx) {
+      const { C, H, W, F, k, dil, s, pad, Wo, Q, mid, x } = this, HW = H * W, sc = this.scr, w = this.dw.w, gw = this.dw.g, gdb = this.db.g, gpb = this.pb.g;
+      let dz = dy;
+      if (!this.linear) { dz = this.dz; activateBack(dz, dy, this.z, this.a, B * F * Q, this.fn); }
+      const pwT = sc.get('sepPwT', C * F), dzT = sc.get('sepDzT', Q * F), dm = sc.get('sepDm', C * Q), dx = needDx ? this.dx : null;
+      transpose(pwT, this.pw.w, 0, F, C);
+      if (dx) dx.fill(0, 0, B * C * HW);
+      for (let e = 0; e < B; e++) {
+        const zo = e * F * Q, mo = e * C * Q, xo = e * C * HW;
+        for (let f = 0; f < F; f++) { let t = 0; for (let i = zo + f * Q, end = i + Q; i < end; i++) t += dz[i]; gpb[f] += t; }
+        gemmNT(this.pw.g, 0, dz, zo, mid, mo, F, C, Q);          // dpw[f, c] += Σ_q dz[f, q] · mid[c, q]
+        transpose(dzT, dz, zo, F, Q);
+        dm.fill(0, 0, C * Q);
+        gemmNT(dm, 0, pwT, 0, dzT, 0, C, Q, F);                   // dmid[c, q] = Σ_f pw[f, c] · dz[f, q]
+        for (let c = 0; c < C; c++) {
+          const mc = c * Q, xc = xo + c * HW;
+          let t = 0;
+          for (let q = 0; q < Q; q++) t += dm[mc + q];
+          gdb[c] += t;
+          for (let ky = 0; ky < k; ky++) for (let kx = 0; kx < k; kx++) {
+            const ki = (c * k + ky) * k + kx, wv = w[ki], [ox0, ox1] = this.span(kx), off = kx * dil - pad;
+            let g = 0;
+            for (let oy = 0; oy < this.Ho; oy++) {
+              const iy = oy * s + ky * dil - pad;
+              if (iy < 0 || iy >= H) continue;
+              const row = xc + iy * W + off, mr = mc + oy * Wo;
+              for (let ox = ox0; ox < ox1; ox++) { const gm = dm[mr + ox], xi = row + ox * s; g += gm * x[xi]; if (dx) dx[xi] += gm * wv; }
+            }
+            gw[ki] += g;
+          }
+        }
+      }
+      return dx;
+    }
+  }
+
+  /* Squeeze-and-excitation: each channel of an image (each feature of a sequence or a vector) is averaged over its
+     positions (the squeeze), a small network turns those C averages into C gates between 0 and 1 (the excitation:
+     a dense layer of C/r ReLU units, then one of C sigmoids), and every channel is multiplied by its gate. Attention
+     over channels: the network learns which of its features matter for this example. */
+  class SE {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const kind = inS.length, C = kind === 3 ? inS[0] : inS[kind - 1], P = kind === 3 ? inS[1] * inS[2] : kind === 2 ? inS[0] : 1, h = seHidden(C, cfg.ratio);
+      // a channel's numbers sit one after another in an image (channels first), C apart in a sequence
+      Object.assign(this, { type: 'se', spec, inShape: inS, outShape: outS, C, P, h, cs: kind === 3 ? P : 1, ps: kind === 3 ? 1 : C, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.W1 = param(ctx, 'squeeze weights', [h, C], true); this.b1 = param(ctx, 'squeeze bias', [h], false);
+      this.W2 = param(ctx, 'excite weights', [C, h], true); this.b2 = param(ctx, 'excite bias', [C], false);
+      this.params = [this.W1, this.b1, this.W2, this.b2];
+      gauss(ctx, this.W1, initSd(ctx.init, C, true)); gauss(ctx, this.W2, initSd(linearInit(ctx), h));
+    }
+    alloc(B) {
+      const m = this.mem, C = this.C, h = this.h, n = B * C * this.P;
+      for (const key of ['s', 'z2', 'g', 'dg', 'ds']) this[key] = m.view(key, B * C);
+      for (const key of ['z1', 'a1', 'da1']) this[key] = m.view(key, B * h);
+      this.out = m.view('out', n); this.dx = m.view('dx', n);
+    }
+    forward(x, B) {
+      const { C, P, h, cs, ps, s, z1, a1, z2, g, out } = this;
+      this.x = x;
+      for (let b = 0; b < B; b++) for (let c = 0; c < C; c++) { const o = b * C * P + c * cs; let t = 0; for (let p = 0; p < P; p++) t += x[o + p * ps]; s[b * C + c] = t / P; }
+      linear(z1, s, this.W1.w, this.b1.w, B, C, h);
+      for (let i = 0, n = B * h; i < n; i++) a1[i] = z1[i] > 0 ? z1[i] : 0;
+      linear(z2, a1, this.W2.w, this.b2.w, B, h, C);
+      for (let i = 0, n = B * C; i < n; i++) g[i] = sig(z2[i]);
+      for (let b = 0; b < B; b++) for (let c = 0; c < C; c++) { const o = b * C * P + c * cs, gv = g[b * C + c]; for (let p = 0; p < P; p++) out[o + p * ps] = x[o + p * ps] * gv; }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { C, P, h, cs, ps, s, z1, a1, g, dg, da1, ds, x } = this;
+      // through the gates (each one scales all of its channel's numbers), the sigmoids, the ReLUs and the squeeze
+      for (let b = 0; b < B; b++) for (let c = 0; c < C; c++) { const o = b * C * P + c * cs, gv = g[b * C + c]; let t = 0; for (let p = 0; p < P; p++) t += dy[o + p * ps] * x[o + p * ps]; dg[b * C + c] = t * gv * (1 - gv); }
+      linearBack(this.scr, da1, false, this.W2.g, this.b2.g, dg, a1, this.W2.w, B, h, C);
+      for (let i = 0, n = B * h; i < n; i++) if (z1[i] <= 0) da1[i] = 0;
+      linearBack(this.scr, needDx ? ds : null, false, this.W1.g, this.b1.g, da1, s, this.W1.w, B, C, h);
+      if (!needDx) return null;
+      const dx = this.dx, inv = 1 / P;
+      for (let b = 0; b < B; b++) for (let c = 0; c < C; c++) { const o = b * C * P + c * cs, gv = g[b * C + c], d = ds[b * C + c] * inv; for (let p = 0; p < P; p++) dx[o + p * ps] = dy[o + p * ps] * gv + d; }
+      return dx;
+    }
+  }
+
+  /* Coordinate channels (CoordConv): two more channels holding each pixel's column and row, from −1 to 1 (with
+     radius, a third: its distance from the centre, 0 to 1). A convolution slides the same filter everywhere, so on
+     its own it cannot tell where it is; with these it can. Nothing is learned. */
+  class Coords {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [C, H, W] = inS, K = outS[0] - C, lin = (n, j) => (n > 1 ? -1 + (2 * j) / (n - 1) : -1); // as torch.linspace(-1, 1, n)
+      Object.assign(this, { type: 'coords', spec, inShape: inS, outShape: outS, params: [], C, H, W, K, mem: new Mem(ctx.Arr) });
+      this.grid = new ctx.Arr(K * H * W);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const u = lin(W, x), v = lin(H, y), p = y * W + x;
+        this.grid[p] = u; this.grid[H * W + p] = v;
+        if (K > 2) this.grid[2 * H * W + p] = Math.sqrt(u * u + v * v) / Math.SQRT2;
+      }
+    }
+    alloc(B) { const HW = this.H * this.W; this.out = this.mem.view('out', B * (this.C + this.K) * HW); this.dx = this.mem.view('dx', B * this.C * HW); }
+    forward(x, B) {
+      const n = this.C * this.H * this.W, m = n + this.grid.length, out = this.out;
+      for (let b = 0; b < B; b++) { for (let i = 0; i < n; i++) out[b * m + i] = x[b * n + i]; out.set(this.grid, b * m + n); }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const n = this.C * this.H * this.W, m = n + this.grid.length, dx = this.dx;
+      for (let b = 0; b < B; b++) for (let i = 0; i < n; i++) dx[b * n + i] = dy[b * m + i];
+      return dx;
+    }
+  }
+
+  /* Random shifts while training: each picture is moved by up to s pixels left or right and up or down (the pixels
+     that come in are 0), and with flip it is mirrored left to right half of the time: out[c, y, x] = in[c, y + oy,
+     x′ + ox] with x′ = W − 1 − x when mirrored. A new move for every example at every step, so the model never sees
+     quite the same picture twice (data augmentation). When the model is used, nothing changes. */
+  class Augment {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [C, H, W] = inS;
+      Object.assign(this, { type: 'augment', spec, inShape: inS, outShape: outS, params: [], C, H, W, shift: Math.max(0, cfg.shift | 0), flip: !!cfg.flip, model: ctx.model, mem: new Mem(ctx.Arr) });
+    }
+    alloc(B) { const n = B * this.C * this.H * this.W; this.buf = this.mem.view('out', n); this.dx = this.mem.view('dx', n); this.moves = this.mem.view('moves', 3 * B, Int32Array); this.out = this.buf; }
+    // example b, moved: copies src into dst (or, going back, adds dst's gradient onto src's pixels)
+    move(b, src, dst, back) {
+      const { C, H, W, moves } = this, HW = H * W, oy = moves[3 * b], ox = moves[3 * b + 1], fl = moves[3 * b + 2];
+      for (let c = 0; c < C; c++) for (let y = 0; y < H; y++) {
+        const iy = y + oy;
+        if (iy < 0 || iy >= H) continue;
+        const ro = (b * C + c) * HW + y * W, ri = (b * C + c) * HW + iy * W;
+        for (let x = 0; x < W; x++) {
+          const ix = (fl ? W - 1 - x : x) + ox;
+          if (ix < 0 || ix >= W) continue;
+          if (back) dst[ri + ix] += src[ro + x]; else dst[ro + x] = src[ri + ix];
+        }
+      }
+    }
+    forward(x, B, train) {
+      this.moved = !!train && (this.shift > 0 || this.flip);
+      if (!this.moved) return (this.out = x);
+      const { shift, moves, buf } = this, rng = this.model.rng;
+      buf.fill(0, 0, B * this.C * this.H * this.W);
+      for (let b = 0; b < B; b++) {
+        moves[3 * b] = rng.int(2 * shift + 1) - shift; moves[3 * b + 1] = rng.int(2 * shift + 1) - shift; moves[3 * b + 2] = this.flip && rng.next() < 0.5 ? 1 : 0;
+        this.move(b, x, buf, false);
+      }
+      return (this.out = buf);
+    }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      if (!this.moved) return dy;
+      const dx = this.dx;
+      dx.fill(0, 0, B * this.C * this.H * this.W);
+      for (let b = 0; b < B; b++) this.move(b, dy, dx, true);
+      return dx;
+    }
+  }
+
+  // Global max pool: each channel of an image (each feature of a sequence) keeps its largest value over the positions.
+  class Gmp {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const image = inS.length === 3, C = image ? inS[0] : inS[1], P = image ? inS[1] * inS[2] : inS[0];
+      Object.assign(this, { type: 'gmp', spec, inShape: inS, outShape: outS, params: [], C, P, cs: image ? P : 1, ps: image ? 1 : C, mem: new Mem(ctx.Arr) });
+    }
+    alloc(B) { const m = this.mem; this.out = m.view('out', B * this.C); this.arg = m.view('arg', B * this.C, Int32Array); this.dx = m.view('dx', B * this.C * this.P); }
+    forward(x, B) {
+      const { C, P, cs, ps, out, arg } = this;
+      for (let b = 0; b < B; b++) for (let c = 0; c < C; c++) {
+        const o = b * C * P + c * cs;
+        let bi = o;
+        for (let p = 1; p < P; p++) if (x[o + p * ps] > x[bi]) bi = o + p * ps;
+        out[b * C + c] = x[bi]; arg[b * C + c] = bi;
+      }
+      return out;
+    }
+    // the gradient goes only to the number that won
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const dx = this.dx, arg = this.arg;
+      dx.fill(0);
+      for (let i = 0, n = B * this.C; i < n; i++) dx[arg[i]] += dy[i];
+      return dx;
+    }
+  }
+
+  /* Attention pooling: one learned query vector w scores every position of a sequence (every pixel of an image),
+     s_t = w · x_t; a softmax turns the scores into weights that add up to 1, and the output is the weighted average
+     of the positions' vectors. A learned, example-by-example choice of where to look, in place of an average or the
+     last step: the simplest attention there is. */
+  class AttnPool {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const image = inS.length === 3, D = image ? inS[0] : inS[1], T = image ? inS[1] * inS[2] : inS[0];
+      // a feature's numbers sit T apart in an image's layout (channels first), next to each other in a sequence
+      Object.assign(this, { type: 'attnpool', spec, inShape: inS, outShape: outS, D, T, fs: image ? T : 1, ts: image ? 1 : D, mem: new Mem(ctx.Arr) });
+      this.w = param(ctx, 'query', [D], false); gauss(ctx, this.w, initSd(linearInit(ctx), D));
+      this.params = [this.w];
+    }
+    alloc(B) { const m = this.mem; this.out = m.view('out', B * this.D); this.att = m.view('att', B * this.T); this.dx = m.view('dx', B * this.T * this.D); this.row = m.get('row', this.T, Float64Array); }
+    forward(x, B) {
+      const { D, T, fs, ts, out, att } = this, w = this.w.w;
+      this.x = x;
+      for (let b = 0; b < B; b++) {
+        const o = b * T * D, ao = b * T;
+        let max = -Infinity, sum = 0;
+        for (let t = 0; t < T; t++) { let s = 0; for (let c = 0; c < D; c++) s += w[c] * x[o + t * ts + c * fs]; att[ao + t] = s; if (s > max) max = s; }
+        for (let t = 0; t < T; t++) { const e = Math.exp(att[ao + t] - max); att[ao + t] = e; sum += e; }
+        for (let t = 0; t < T; t++) att[ao + t] /= sum;
+        for (let c = 0; c < D; c++) { let s = 0; for (let t = 0; t < T; t++) s += att[ao + t] * x[o + t * ts + c * fs]; out[b * D + c] = s; }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { D, T, fs, ts, att, x, row } = this, w = this.w.w, gw = this.w.g, dx = needDx ? this.dx : null;
+      for (let b = 0; b < B; b++) {
+        const o = b * T * D, ao = b * T, go = b * D;
+        // da_t = dy · x_t, then through the softmax: ds_t = a_t (da_t − Σ a·da)
+        let dot = 0;
+        for (let t = 0; t < T; t++) { let s = 0; for (let c = 0; c < D; c++) s += dy[go + c] * x[o + t * ts + c * fs]; row[t] = s; dot += att[ao + t] * s; }
+        for (let t = 0; t < T; t++) {
+          const a = att[ao + t], d = a * (row[t] - dot);
+          for (let c = 0; c < D; c++) { const i = o + t * ts + c * fs; gw[c] += d * x[i]; if (dx) dx[i] = a * dy[go + c] + d * w[c]; }
+        }
+      }
+      return dx;
+    }
+  }
+
+  /* A state-space layer: a linear recurrence, the core of S4, LRU and Mamba without their extras. N memory cells, each
+     a moving average of a learned mix of the input with its own learned memory a between 0 and 1:
+     h_t = a ⊙ h_(t−1) + (1 − a) ⊙ B·x_t, then y_t = f(C·h_t + c). A cell with a near 1 remembers for many steps, one
+     near 0 follows the input. With no squashing inside the loop, the gradient through time neither fades nor
+     explodes, and the whole recurrence could be run for all steps at once (a parallel scan); here it runs step by step.
+     The memories start spread from about 2 to 32 steps (a = e^(−1/τ)), learned as logits: a = σ(θ). */
+  class SSM {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const [T, D] = inS, N = cfg.state, U = cfg.units, A = NA.engine.ACTIVATIONS;
+      Object.assign(this, { type: 'ssm', spec, inShape: inS, outShape: outS, T, D, N, U, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.theta = param(ctx, 'memory logits', [N], false);
+      this.Bm = param(ctx, 'input weights', [N, D], true);
+      this.Cm = param(ctx, 'output weights', [U, N], true); this.cb = param(ctx, 'bias', [U], false);
+      this.params = [this.theta, this.Bm, this.Cm, this.cb];
+      this.fn = activation(own(A, cfg.act) ? cfg.act : 'gelu', ctx.f64); this.linear = this.fn.id === 'linear';
+      for (let j = 0; j < N; j++) { const a = Math.exp(-1 / Math.pow(2, 1 + (4 * j) / Math.max(1, N - 1))); this.theta.w[j] = Math.log(a / (1 - a)); }
+      gauss(ctx, this.Bm, initSd(linearInit(ctx), D)); gauss(ctx, this.Cm, initSd(ctx.init, N, this.fn.he));
+      this.noBias = new ctx.Arr(N);
+    }
+    alloc(B) {
+      const m = this.mem, R = B * this.T;
+      this.u = m.view('u', R * this.N); this.h = m.view('h', R * this.N); this.z = m.view('z', R * this.U);
+      this.a = this.linear ? this.z : m.view('a', R * this.U); this.out = this.a;
+      this.dz = this.linear ? null : m.view('dz', R * this.U);
+      this.dh = m.view('dh', R * this.N); this.du = m.view('du', R * this.N); this.dx = m.view('dx', R * this.D);
+      this.dec = m.get('dec', this.N, Float64Array); this.gA = m.get('gA', this.N, Float64Array); this.carry = m.get('carry', this.N, Float64Array);
+    }
+    forward(x, B) {
+      const { T, D, N, U, u, h, dec } = this, R = B * T, th = this.theta.w;
+      this.x = x;
+      for (let j = 0; j < N; j++) dec[j] = sig(th[j]);
+      linear(u, x, this.Bm.w, this.noBias, R, D, N);
+      for (let b = 0; b < B; b++) for (let t = 0; t < T; t++) {
+        const o = (b * T + t) * N, p = o - N;
+        for (let j = 0; j < N; j++) h[o + j] = (t ? dec[j] * h[p + j] : 0) + (1 - dec[j]) * u[o + j];
+      }
+      linear(this.z, h, this.Cm.w, this.cb.w, R, N, U);
+      if (!this.linear) activate(this.a, this.z, R * U, this.fn);
+      return this.out;
+    }
+    backward(dy, B, needDx) {
+      const { T, D, N, U, u, h, dh, du, dec, gA, carry } = this, R = B * T, sc = this.scr;
+      let dz = dy;
+      if (!this.linear) { dz = this.dz; activateBack(dz, dy, this.z, this.a, R * U, this.fn); }
+      linearBack(sc, dh, false, this.Cm.g, this.cb.g, dz, h, this.Cm.w, R, N, U);
+      // back through time: what reaches h_t from its output and from h_(t+1), shared between a, h_(t−1) and B·x_t
+      gA.fill(0);
+      for (let b = 0; b < B; b++) {
+        carry.fill(0);
+        for (let t = T - 1; t >= 0; t--) {
+          const o = (b * T + t) * N, p = o - N;
+          for (let j = 0; j < N; j++) {
+            const g = dh[o + j] + carry[j];
+            gA[j] += g * ((t ? h[p + j] : 0) - u[o + j]);
+            du[o + j] = (1 - dec[j]) * g;
+            carry[j] = dec[j] * g;
+          }
+        }
+      }
+      const gth = this.theta.g, noGrad = sc.get('ssmNoBias', N);
+      for (let j = 0; j < N; j++) gth[j] += gA[j] * dec[j] * (1 - dec[j]);
+      linearBack(sc, needDx ? this.dx : null, false, this.Bm.g, noGrad, du, this.x, this.Bm.w, R, D, N);
+      return needDx ? this.dx : null;
+    }
+  }
+
+  /* Radial basis units: each unit has a centre c and a width σ, both learned, and answers how close the input is to
+     its centre, φ = exp(−‖x − c‖² / 2σ²): 1 at the centre, fading to 0 away from it. A layer of them covers the
+     input space with bumps that the next layer adds up (an RBF network). The centres start spread over −1…1 and the
+     widths at the width you choose; widths are learned as log σ, so they stay positive. On a sequence, the same at
+     every position. */
+  class RBF {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const nIn = inS[inS.length - 1], U = outS[outS.length - 1];
+      Object.assign(this, { type: 'rbf', spec, inShape: inS, outShape: outS, nIn, U, rows: inS.length === 2 ? inS[0] : 1, mem: new Mem(ctx.Arr) });
+      this.c = param(ctx, 'centres', [U, nIn], false); this.ls = param(ctx, 'log widths', [U], false);
+      this.params = [this.c, this.ls];
+      for (let i = 0; i < this.c.w.length; i++) this.c.w[i] = ctx.rng.uniform(-1, 1);
+      this.ls.w.fill(Math.log(cfg.width > 0 ? cfg.width : 0.5));
+    }
+    alloc(B) { const m = this.mem, n = B * this.rows * this.U; this.d2 = m.view('d2', n); this.out = m.view('out', n); this.dx = m.view('dx', B * this.rows * this.nIn); }
+    forward(x, B) {
+      const { nIn: F, U, d2, out } = this, c = this.c.w, ls = this.ls.w;
+      this.x = x;
+      for (let r = 0, R = B * this.rows; r < R; r++) for (let j = 0; j < U; j++) {
+        let s = 0;
+        for (let i = 0; i < F; i++) { const d = x[r * F + i] - c[j * F + i]; s += d * d; }
+        d2[r * U + j] = s; out[r * U + j] = Math.exp(-0.5 * s * Math.exp(-2 * ls[j]));
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { nIn: F, U, d2, out, x } = this, c = this.c.w, ls = this.ls.w, gc = this.c.g, gl = this.ls.g, R = B * this.rows, dx = needDx ? this.dx : null;
+      if (dx) dx.fill(0);
+      for (let j = 0; j < U; j++) {
+        const iv = Math.exp(-2 * ls[j]);
+        for (let r = 0; r < R; r++) {
+          // φ = e^E with E = −½·d²/σ²: g = ∂L/∂E; ∂E/∂(log σ) = d²/σ², ∂E/∂x = −(x − c)/σ² = −∂E/∂c
+          const g = dy[r * U + j] * out[r * U + j];
+          if (!g) continue;
+          gl[j] += g * d2[r * U + j] * iv;
+          const k = -g * iv;
+          for (let i = 0; i < F; i++) { const v = k * (x[r * F + i] - c[j * F + i]); gc[j * F + i] -= v; if (dx) dx[r * F + i] += v; }
+        }
+      }
+      return dx;
+    }
+  }
+
+  /* Maxout: each unit computes k weighted sums of the input (its pieces) and keeps the largest, so it learns its own
+     bend: with two pieces it can be a ReLU, an absolute value or a leaky ramp; with more, any convex shape made of k
+     straight pieces (Goodfellow and others, 2013). Weights row j·k + p is piece p of unit j. On a sequence, at every
+     position. */
+  class Maxout {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const nIn = inS[inS.length - 1], U = outS[outS.length - 1], k = cfg.pieces;
+      Object.assign(this, { type: 'maxout', spec, inShape: inS, outShape: outS, nIn, U, k, rows: inS.length === 2 ? inS[0] : 1, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.W = param(ctx, 'weights', [U * k, nIn], true); this.b = param(ctx, 'bias', [U * k], false);
+      this.params = [this.W, this.b];
+      gauss(ctx, this.W, initSd(ctx.init, nIn, false));
+    }
+    alloc(B) { const m = this.mem, R = B * this.rows, n = R * this.U; this.z = m.view('z', n * this.k); this.dz = m.view('dz', n * this.k); this.out = m.view('out', n); this.arg = m.view('arg', n, Int32Array); this.dx = m.view('dx', R * this.nIn); }
+    forward(x, B) {
+      const { nIn, U, k, z, out, arg } = this, R = B * this.rows;
+      this.x = x;
+      linear(z, x, this.W.w, this.b.w, R, nIn, U * k);
+      for (let i = 0, n = R * U; i < n; i++) {
+        const o = i * k;
+        let best = 0;
+        for (let p = 1; p < k; p++) if (z[o + p] > z[o + best]) best = p;
+        out[i] = z[o + best]; arg[i] = best;
+      }
+      return out;
+    }
+    // the gradient goes only to the piece that won
+    backward(dy, B, needDx) {
+      const { nIn, U, k, dz, arg } = this, R = B * this.rows;
+      dz.fill(0);
+      for (let i = 0, n = R * U; i < n; i++) dz[i * k + arg[i]] = dy[i];
+      linearBack(this.scr, needDx ? this.dx : null, false, this.W.g, this.b.g, dz, this.x, this.W.w, R, nIn, U * k);
+      return needDx ? this.dx : null;
+    }
+  }
+
+  /* Mixture of experts: E small dense layers (the experts) and a gate, a dense layer with one output per expert. For
+     each example (each position of a sequence) the gate's softmax says how much to trust each expert, and the output
+     is out = Σ_e g_e · expert_e(x). With top-k routing only the k experts the gate rates highest take part, their
+     weights renormalised; the rest get no say and no gradient. (Large models then skip the others entirely, which is
+     how they stay fast; here every expert is computed and the unchosen ones are left out.) Expert e's unit j is row
+     e·U + j of the expert weights. */
+  class MoE {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const nIn = inS[inS.length - 1], U = outS[outS.length - 1], E = cfg.experts, A = NA.engine.ACTIVATIONS;
+      Object.assign(this, { type: 'moe', spec, inShape: inS, outShape: outS, nIn, U, E, top: cfg.top > 0 && cfg.top < E ? cfg.top : E, rows: inS.length === 2 ? inS[0] : 1, scr: ctx.scr, mem: new Mem(ctx.Arr) });
+      this.fn = activation(own(A, cfg.act) ? cfg.act : 'relu', ctx.f64);
+      this.We = param(ctx, 'expert weights', [E * U, nIn], true); this.be = param(ctx, 'expert biases', [E * U], false);
+      this.Wg = param(ctx, 'gate weights', [E, nIn], true); this.bg = param(ctx, 'gate bias', [E], false);
+      this.params = [this.We, this.be, this.Wg, this.bg];
+      gauss(ctx, this.We, initSd(ctx.init, nIn, this.fn.he)); gauss(ctx, this.Wg, initSd(linearInit(ctx), nIn));
+    }
+    alloc(B) {
+      const m = this.mem, R = B * this.rows, n = R * this.E * this.U;
+      for (const key of ['ze', 'ae', 'dze', 'dae']) this[key] = m.view(key, n);
+      for (const key of ['logits', 'gate', 'dl']) this[key] = m.view(key, R * this.E);
+      this.out = m.view('out', R * this.U); this.dx = m.view('dx', R * this.nIn);
+    }
+    forward(x, B) {
+      const { nIn, U, E, top, ze, ae, logits, gate, out } = this, R = B * this.rows, EU = E * U;
+      this.x = x;
+      linear(ze, x, this.We.w, this.be.w, R, nIn, EU);
+      activate(ae, ze, R * EU, this.fn);
+      linear(logits, x, this.Wg.w, this.bg.w, R, nIn, E);
+      for (let r = 0; r < R; r++) {
+        const o = r * E;
+        // an expert is chosen when fewer than top others rate higher (on a tie, the first counts as higher)
+        let max = -Infinity, sum = 0;
+        for (let e = 0; e < E; e++) {
+          const v = logits[o + e];
+          let above = 0;
+          for (let q = 0; q < E; q++) if (logits[o + q] > v || (q < e && logits[o + q] === v)) above++;
+          gate[o + e] = above < top ? 1 : 0;
+          if (gate[o + e] && v > max) max = v;
+        }
+        for (let e = 0; e < E; e++) if (gate[o + e]) { const v = Math.exp(logits[o + e] - max); gate[o + e] = v; sum += v; }
+        for (let e = 0; e < E; e++) gate[o + e] /= sum;
+        for (let j = 0; j < U; j++) { let s = 0; for (let e = 0; e < E; e++) { const gv = gate[o + e]; if (gv) s += gv * ae[(r * E + e) * U + j]; } out[r * U + j] = s; }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { nIn, U, E, ae, gate, dae, dze, dl } = this, R = B * this.rows, EU = E * U;
+      for (let r = 0; r < R; r++) {
+        const o = r * E;
+        let dot = 0;
+        for (let e = 0; e < E; e++) {
+          const gv = gate[o + e], eo = (r * E + e) * U;
+          let s = 0;
+          for (let j = 0; j < U; j++) { const d = dy[r * U + j]; dae[eo + j] = gv * d; s += d * ae[eo + j]; }
+          dl[o + e] = s; dot += gv * s;
+        }
+        // through the softmax over the chosen experts; an unchosen one has g = 0, so it gets nothing
+        for (let e = 0; e < E; e++) dl[o + e] = gate[o + e] * (dl[o + e] - dot);
+      }
+      activateBack(dze, dae, this.ze, ae, R * EU, this.fn);
+      const dx = needDx ? this.dx : null;
+      linearBack(this.scr, dx, false, this.We.g, this.be.g, dze, this.x, this.We.w, R, nIn, EU);
+      linearBack(this.scr, dx, true, this.Wg.g, this.bg.g, dl, this.x, this.Wg.w, R, nIn, E);
+      return dx;
+    }
+  }
+
   const LAYERS = { dense: Dense, activation: Act, dropout: Dropout, layernorm: LayerNormBlock, attention: Attention, transformer: Transformer, conv: Conv, pool: Pool, flatten: Flatten, gap: Gap,
-    gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool, parallel: Parallel };
+    gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool, parallel: Parallel,
+    sepconv: SepConv, se: SE, coords: Coords, augment: Augment, gmp: Gmp, attnpool: AttnPool, ssm: SSM, rbf: RBF, maxout: Maxout, moe: MoE };
 
   // ------------------------------------------------------------------ losses
   function resolveLoss(loss, kind) {
@@ -1812,5 +2374,5 @@
     return new Model(blocks || [], input, output, opts || {}, chk);
   }
 
-  NA.bx = { BLOCKS, LOSSES, OPTIMIZERS, MERGES, check, build, shapeText, stackShape };
+  NA.bx = { BLOCKS, LOSSES, OPTIMIZERS, MERGES, check, build, shapeText, stackShape, seHidden };
 })(typeof globalThis !== 'undefined' ? (globalThis.NA = globalThis.NA || {}) : (window.NA = window.NA || {}));

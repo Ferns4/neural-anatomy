@@ -454,7 +454,9 @@
     new MutationObserver(refreshTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { App.emit('lens'); App.emit('weights'); });
     const hash = (location.hash || '').slice(1), shared = NA.share && NA.share.readLink();
-    let start = NA.presets.byId[hash] ? hash : NA.store.get('preset', 'spiral');
+    // (an address that names a group, such as #rl, opens its first model)
+    const group = !NA.presets.byId[hash] && hash ? NA.presets.PRESETS.find((p) => p.id.startsWith(hash + '-')) : null;
+    let start = NA.presets.byId[hash] ? hash : group ? group.id : NA.store.get('preset', 'spiral');
     if (!NA.presets.byId[start]) start = 'spiral';
     // a share link opens its own model and settings; a plain network then retrains where you can watch it
     if (!shared || !NA.share.open(shared)) App.loadPreset(start, { sync: true });

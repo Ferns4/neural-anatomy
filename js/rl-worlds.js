@@ -2,14 +2,14 @@
    rl-envs.js: a race track (a car that sees seven distances to the walls and its speed, or a camera picture from
    above), a drone arena seen in the first person (what each column of its view holds, a radar and its health, or
    the picture itself) and a rocket to land on a pad. The same interface as rl-envs.js (reset, step, snap, score),
-   the same reward tables and formulas, inputs that can be left out and sensor noise. Each also says how it
-   behaved (behavior(): two numbers from 0 to 1, the axes of MAP-Elites' grid of styles) and keeps a trace of
-   where it went (trace: x, y, heading every other step, so a whole generation can be shown driving at once).
+   the same reward tables and formulas, inputs that can be left out or added, and sensor noise. Each also says
+   how it behaved (behavior(): two numbers from 0 to 1, the axes of MAP-Elites' grid of styles) and keeps a trace
+   of where it went (trace: x, y, heading every other step, so a whole generation can be shown driving at once).
    Pictures: drawTrack, drawArena (a raycast first-person view with a map in the corner) and drawLander, each also
    drawing other members of a population (o.ghosts). Everything is seeded. Needs rl-envs.js. */
 (function (NA) {
   'use strict';
-  const E = NA.rlEnvs;
+  const E = NA.rlEnvs, pay = E.pay;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
   const TAU = Math.PI * 2, DEG = Math.PI / 180;
   const wrapAngle = (a) => { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; };
@@ -129,7 +129,8 @@
      default 10 a lap), −1 for crashing; 4 laps end the episode, and so does time (by default 4 laps at an
      average of 10 m/s). view 'rays': 7 distances to the walls (90°, 50°,
      20° to each side and straight ahead, out to 40 m) and its speed. view 'camera': a picture from above, 16 × 16,
-     of the track 32 m ahead and 12 m to each side, turned with the car, and its speed as a second channel. */
+     of the track 32 m ahead and 12 m to each side, turned with the car, and its speed as a second channel.
+     Settings: laps (4), vmax (top speed, 24 m/s), grip (14 m/s²) and range (how far its sensors see, 40 m). */
   const VMAX = 24, VMIN = 3, ACC = 9, BRAKE = 16, GRIP = 14, STEER = 1.6, CAR_R = 1, DT = 0.1, RANGE = 40;
   const RAYS = [-90, -50, -20, 0, 20, 50, 90];
   const RAY_NAMES = ['wall 90° left', 'wall 50° left', 'wall 20° left', 'wall ahead', 'wall 20° right', 'wall 50° right', 'wall 90° right'];
@@ -138,7 +139,8 @@
       this.view = o.view === 'camera' ? 'camera' : 'rays';
       this.trackId = TRACKS[o.track] || o.track === 'random' ? o.track : 'esses'; this.random = this.trackId === 'random';
       this.track = this.random ? randomTrack(TEST_SEEDS[0]) : trackOf(this.trackId);
-      this.laps = 4; this.steps = o.steps > 0 ? Math.min(o.steps, 6000) : 0; this.nA = 4;
+      this.laps = o.laps > 0 ? clamp(Math.round(o.laps), 1, 20) : 4; this.steps = o.steps > 0 ? Math.min(o.steps, 6000) : 0; this.nA = 4;
+      this.vmax = o.vmax > VMIN ? Math.min(o.vmax, 60) : VMAX; this.grip = o.grip > 0 ? Math.min(o.grip, 60) : GRIP; this.range = o.range > 0 ? Math.min(o.range, 100) : RANGE;
       this.actions = ['steer left', 'straight on', 'steer right', 'brake'];
       if (this.view === 'camera') { this.input = { kind: 'image', c: 2, h: 16, w: 16 }; this.obsSize = 512; this.obsNames = NA.range(512).map((i) => (i < 256 ? `track at (${i % 16}, ${Math.floor(i / 16)})` : 'speed')); }
       else { this.input = { kind: 'vector', dim: 8 }; this.obsSize = 8; this.obsNames = [...RAY_NAMES, 'speed']; }
@@ -149,7 +151,7 @@
       this.rng = rng;
       if (this.random && rng) this.track = randomTrack(1 + rng.int(64));
       const T = this.track;
-      this.maxSteps = this.steps || Math.round(this.laps * T.L); // by default 4 laps at an average of 10 m/s
+      this.maxSteps = this.steps || Math.round(this.laps * T.L); // by default its laps at an average of 10 m/s
       // always the same start, so the score (from it) is what evolution judged: with a start turned a little at random,
       // a driver that got round one start could crash from the next, and the score jumped about
       this.k = 0; this.x = T.cx[0]; this.y = T.cy[0]; this.th = Math.atan2(T.ty[0], T.tx[0]); this.v = 8;
@@ -158,17 +160,22 @@
       this.see();
       return this.obs();
     }
-    see() { for (let i = 0; i < 7; i++) this.rays[i] = trackRay(this.track, this.x, this.y, this.th + RAYS[i] * DEG, RANGE); }
+    see() { for (let i = 0; i < 7; i++) this.rays[i] = trackRay(this.track, this.x, this.y, this.th + RAYS[i] * DEG, this.range); }
     rawObs() {
       if (this.view === 'camera') return this.camera();
       const o = new Float32Array(8);
-      for (let i = 0; i < 7; i++) o[i] = this.rays[i] / RANGE;
-      o[7] = this.v / VMAX;
+      for (let i = 0; i < 7; i++) o[i] = this.rays[i] / this.range;
+      o[7] = this.v / this.vmax;
       return o;
     }
+    // how far it is across the track (−1 at the left wall, 1 at the right) and its heading to the track's way round
+    side() { return sideAt(this.track, this.x, this.y, this.k) / HW; }
+    heading() { const T = this.track; return wrapAngle(this.th - Math.atan2(T.ty[this.k], T.tx[this.k])); }
+    // how sharply the track bends d metres ahead, radians a metre (more than 0: to the right)
+    bend(d) { const T = this.track; return T.curv[(this.k + Math.round(d / T.ds)) % T.N]; }
     // the picture from above: forward up, 32 m ahead (from 4 m behind), 12 m to each side
     camera() {
-      const o = new Float32Array(512), c = Math.cos(this.th), s = Math.sin(this.th), sp = this.v / VMAX;
+      const o = new Float32Array(512), c = Math.cos(this.th), s = Math.sin(this.th), sp = this.v / this.vmax;
       for (let i = 0; i < 16; i++) {
         const fwd = ((15.5 - i) / 16) * 32 - 4;
         for (let j = 0; j < 16; j++) {
@@ -180,8 +187,8 @@
     }
     step(a) {
       const T = this.track, gas = a !== 3, steer = a === 0 ? -1 : a === 2 ? 1 : 0;
-      if (gas) this.v += ACC * DT * (1 - this.v / VMAX); else this.v = Math.max(VMIN, this.v - BRAKE * DT);
-      this.th += steer * Math.min(STEER, GRIP / Math.max(this.v, 0.5)) * DT;
+      if (gas) this.v += ACC * DT * (1 - this.v / this.vmax); else this.v = Math.max(VMIN, this.v - BRAKE * DT);
+      this.th += steer * Math.min(STEER, this.grip / Math.max(this.v, 0.5)) * DT;
       this.x += this.v * Math.cos(this.th) * DT; this.y += this.v * Math.sin(this.th) * DT;
       this.t++; this.a = a;
       // progress: how far along the middle line it got (backwards counts against it)
@@ -198,14 +205,25 @@
       if (!crashed) this.see();
       const done = crashed || this.prog >= this.laps * T.L || this.t >= this.maxSteps;
       if (done) this.end = crashed ? 'crashed' : this.prog >= this.laps * T.L ? 'finished' : 'time';
-      const rw = this.rw, progress = ds / T.L;
-      const r = this.rf ? this.rf({ progress, speed: this.v, crashed: +crashed, lap: +lap, center: Math.min(1, Math.abs(side) / HW), t: this.t, turn: steer, brake: +!gas })
-        : rw.rProgress * progress + (lap ? rw.rLap : 0) + (crashed ? rw.rCrash : 0) + rw.rStep;
-      return { obs: this.obs(), r, done };
+      // (wall: how far its middle is from the nearer wall, m; it crashes at 1)
+      const rw = this.rw, progress = ds / T.L, center = Math.min(1, Math.abs(side) / HW), wall = Math.max(0, HW - Math.abs(side)), finished = this.end === 'finished';
+      const parts = this.rf ? null : {};
+      let r = 0;
+      if (this.rf) r = this.rf({ progress, speed: this.v, crashed: +crashed, lap: +lap, center, t: this.t, turn: steer, brake: +!gas, wall, ahead: this.rays[3], finished: +finished, laps: this.lap, side: clamp(side / HW, -1, 1), bend: this.bend(0) / DEG, heading: this.heading() / DEG });
+      else {
+        r = pay(parts, 'rProgress', rw.rProgress * progress, r); if (lap) r = pay(parts, 'rLap', rw.rLap, r); if (crashed) r = pay(parts, 'rCrash', rw.rCrash, r); r = pay(parts, 'rStep', rw.rStep, r);
+        if (rw.rSpeed) r = pay(parts, 'rSpeed', rw.rSpeed * this.v, r);
+        if (rw.rCenter) r = pay(parts, 'rCenter', rw.rCenter * center, r);
+        if (steer) r = pay(parts, 'rSteer', rw.rSteer, r);
+        if (!gas) r = pay(parts, 'rBrake', rw.rBrake, r);
+        if (wall < 2) r = pay(parts, 'rNearWall', rw.rNearWall, r);
+        if (finished) r = pay(parts, 'rFinish', rw.rFinish, r);
+      }
+      return { obs: this.obs(), r, done, parts };
     }
-    snap() { return { track: this.track, x: this.x, y: this.y, th: this.th, v: this.v, rays: Array.from(this.rays), laps: this.laps, lap: this.lap, prog: this.prog / this.track.L, t: this.t, a: this.a, end: this.end, trail: this.trace.slice(-90) }; }
+    snap() { return { track: this.track, x: this.x, y: this.y, th: this.th, v: this.v, vmax: this.vmax, rays: Array.from(this.rays), laps: this.laps, lap: this.lap, prog: this.prog / this.track.L, t: this.t, a: this.a, end: this.end, trail: this.trace.slice(-90) }; }
     // its average speed (slow to fast) and which side of the middle it keeps (left to right): its style of driving
-    behavior() { const n = Math.max(1, this.t); return [clamp(this.sumV / n / VMAX, 0, 1), clamp(0.5 + (1.2 * this.sumSide) / n, 0, 1)]; }
+    behavior() { const n = Math.max(1, this.t); return [clamp(this.sumV / n / this.vmax, 0, 1), clamp(0.5 + (1.2 * this.sumSide) / n, 0, 1)]; }
     // the share of 4 laps its best moves drive (on random tracks: on 4 it never trained on)
     score(policy) {
       const list = this.random ? TEST_SEEDS.map(randomTrack) : [this.track], keep = this.track, random = this.random;
@@ -226,7 +244,8 @@
      run out, or after 500 steps. view 'rays': what each of 11 columns across its 66° view holds (how near the wall
      is, how near a drone is, 0 when none), a radar (which way the nearest drone is, behind walls too), its lives and
      whether the gun is ready: 26 numbers. view 'pixels': the view itself, 10 × 20 pixels, walls (brighter nearer)
-     and drones as two channels: learning to aim from pixels, as agents learned to play first-person games. */
+     and drones as two channels: learning to aim from pixels, as agents learned to play first-person games.
+     Settings: lives (3), goal (drones to destroy, 10), recharge (steps the gun needs after a shot, 3), steps. */
   const MAPS = {
     room: { name: 'Room', rows: ['############', '#..........#', '#..........#', '#..#....#..#', '#..........#', '#..........#', '#....S.....#', '#..........#', '#..#....#..#', '#..........#', '#..........#', '############'] },
     pillars: { name: 'Pillars', rows: ['############', '#..........#', '#.#..#..#..#', '#..........#', '#..#....#..#', '#.....#....#', '#..#.S.....#', '#.......#..#', '#.#..#.....#', '#..........#', '#....#...#.#', '############'] },
@@ -257,7 +276,8 @@
     constructor(o = {}) {
       this.view = o.view === 'pixels' ? 'pixels' : 'rays';
       this.map = mapOf(MAPS[o.map] ? o.map : 'room'); this.mapId = this.map.id;
-      this.k = clamp(Math.round(o.drones) || 1, 1, 3); this.fast = o.speed === 'fast'; this.maxSteps = o.steps > 0 ? Math.min(o.steps, 3000) : 500; this.goal = 10; this.lives = 3;
+      this.k = clamp(Math.round(o.drones) || 1, 1, 3); this.fast = o.speed === 'fast'; this.maxSteps = o.steps > 0 ? Math.min(o.steps, 3000) : 500;
+      this.goal = o.goal > 0 ? clamp(Math.round(o.goal), 1, 50) : 10; this.lives = o.lives > 0 ? clamp(Math.round(o.lives), 1, 9) : 3; this.recharge = typeof o.recharge === 'number' && o.recharge >= 0 ? clamp(Math.round(o.recharge), 0, 20) : 3;
       this.nA = 4; this.actions = ['turn left', 'turn right', 'walk forward', 'fire'];
       if (this.view === 'pixels') { this.input = { kind: 'image', c: 2, h: PROWS, w: PCOLS }; this.obsSize = 2 * PROWS * PCOLS; this.obsNames = NA.range(this.obsSize).map((i) => `${i < PROWS * PCOLS ? 'wall' : 'drone'} at (${i % PCOLS}, ${Math.floor((i % (PROWS * PCOLS)) / PCOLS)})`); }
       else {
@@ -332,12 +352,14 @@
     step(a) {
       const M = this.map, turn = a === 0 ? -1 : a === 1 ? 1 : 0, walk = a === 2;
       this.th = wrapAngle(this.th + turn * TURN);
-      if (walk) { const x0 = this.x, y0 = this.y; slide(M, this, Math.cos(this.th) * WALK, Math.sin(this.th) * WALK, ME_R); if (Math.hypot(this.x - x0, this.y - y0) > 0.01) this.moved++; }
+      // walking into a wall: a step that went less than half as far as it should
+      let bump = 0;
+      if (walk) { const x0 = this.x, y0 = this.y; slide(M, this, Math.cos(this.th) * WALK, Math.sin(this.th) * WALK, ME_R); const went = Math.hypot(this.x - x0, this.y - y0); if (went > 0.01) this.moved++; if (went < WALK / 2) bump = 1; }
       // the gun: a shot crosses the nearest drone in line before the wall
       let shot = false, hit = null;
       if (this.cool) this.cool--;
       else if (a === 3) {
-        shot = true; this.shots++; this.cool = 3;
+        shot = true; this.shots++; this.cool = this.recharge;
         const wall = castRay(M, this.x, this.y, this.th).d, ux = Math.cos(this.th), uy = Math.sin(this.th);
         let best = null, bd = Infinity;
         for (const d of this.drones) {
@@ -361,12 +383,25 @@
       this.fx = shot || hurt ? { shot, hit, hurt } : null;
       const done = this.health <= 0 || this.kills >= this.goal || this.t >= this.maxSteps;
       if (done) this.end = this.kills >= this.goal ? 'cleared' : this.health <= 0 ? 'dead' : 'time';
-      let aimed = 0, seen = 0;
-      if (this.rf) for (const d of this.drones) { if (!d.alive) continue; const s = this.sight(d); if (s.visible) { seen++; if (Math.abs(s.rel) < s.rad + 0.02) aimed = 1; } }
-      const rw = this.rw;
-      const r = this.rf ? this.rf({ hit: hit ? 1 : 0, hurt, shot: +shot, aimed, seen, lives: this.health, t: this.t, moved: +walk, turned: Math.abs(turn) })
-        : (hit ? rw.rHit : 0) + hurt * rw.rHurt + (shot ? rw.rShot : 0) + rw.rStep;
-      return { obs: this.obs(), r, done };
+      // drones in view and in its sights (worked out only when they are paid for); a shot that hits nothing
+      let aimed = 0, seen = 0, near = 12;
+      const rw = this.rw, missed = shot && !hit, cleared = this.end === 'cleared';
+      if (this.rf || rw.rAim || rw.rSee) for (const d of this.drones) { if (!d.alive) continue; const s = this.sight(d); if (s.visible) { seen++; if (Math.abs(s.rel) < s.rad + 0.02) aimed = 1; } }
+      if (this.rf) for (const d of this.drones) if (d.alive) near = Math.min(near, Math.hypot(d.x - this.x, d.y - this.y));
+      const parts = this.rf ? null : {};
+      let r = 0;
+      if (this.rf) r = this.rf({ hit: hit ? 1 : 0, hurt, shot: +shot, aimed, seen, lives: this.health, t: this.t, moved: +walk, turned: Math.abs(turn), missed: +missed, kills: this.kills, near, bump, cleared: +cleared, ready: this.cool ? 0 : 1 });
+      else {
+        if (hit) r = pay(parts, 'rHit', rw.rHit, r); r = pay(parts, 'rHurt', hurt * rw.rHurt, r); if (shot) r = pay(parts, 'rShot', rw.rShot, r); r = pay(parts, 'rStep', rw.rStep, r);
+        if (missed) r = pay(parts, 'rMiss', rw.rMiss, r);
+        if (aimed) r = pay(parts, 'rAim', rw.rAim, r);
+        if (seen) r = pay(parts, 'rSee', rw.rSee * seen, r);
+        if (walk) r = pay(parts, 'rWalk', rw.rWalk, r);
+        if (turn) r = pay(parts, 'rTurn', rw.rTurn, r);
+        if (bump) r = pay(parts, 'rBump', rw.rBump, r);
+        if (cleared) r = pay(parts, 'rClear', rw.rClear, r);
+      }
+      return { obs: this.obs(), r, done, parts };
     }
     snap() { return { map: this.map, x: this.x, y: this.y, th: this.th, drones: this.drones.map((d) => ({ x: d.x, y: d.y, alive: d.alive })), health: this.health, lives: this.lives, kills: this.kills, goal: this.goal, t: this.t, maxSteps: this.maxSteps, cool: this.cool, a: this.a, end: this.end, fx: this.fx }; }
     // how much it walks (stands still to always on the move) and how often it fires: its style of play
@@ -385,19 +420,21 @@
      it has landed (+1); anything else is a crash (−1), and so is still being up there after 300 steps. By default
      it is also paid for getting closer and slower (shaping: the change in −(distance/10 + speed/3 + tilt), so the
      total only depends on where it starts and ends). Wind, if on, pushes it sideways in gusts. One step is 0.08 s,
-     at most 300 of them. */
+     at most 300 of them. Settings: padWidth (12 m), engine ('weak' 1.8, 'normal' 2.4 or 'strong' 3.5 × gravity,
+     plus 1 m/s²), steps. */
   const LEG = 1.8, FOOT = 1.4, PAD = 6;
   class Lander {
     constructor(o = {}) {
       this.g = o.gravity > 0 ? o.gravity : 1.62; this.wind = !!o.wind; this.randomPad = o.pad === 'random';
-      this.maxSteps = o.steps > 0 ? Math.min(o.steps, 3000) : 300; this.thrust = 2.4 * this.g + 1; this.fuelMax = o.fuel > 0 ? Math.min(o.fuel, 3000) : 150;
-      this.nA = 4; this.actions = ['nothing', 'main engine', 'turn left', 'turn right'];
+      this.maxSteps = o.steps > 0 ? Math.min(o.steps, 3000) : 300; this.thrust = (o.engine === 'strong' ? 3.5 : o.engine === 'weak' ? 1.8 : 2.4) * this.g + 1; this.fuelMax = o.fuel > 0 ? Math.min(o.fuel, 3000) : 150;
+      this.padHalf = o.padWidth > 0 && o.padWidth !== 12 ? clamp(o.padWidth, 4, 40) / 2 : PAD; // half the pad's width, m
+      this.view = 'state'; this.nA = 4; this.actions = ['nothing', 'main engine', 'turn left', 'turn right'];
       this.input = { kind: 'vector', dim: 7 }; this.obsSize = 7;
       this.obsNames = ['across from the pad', 'height', 'speed across', 'speed up', 'tilt', 'spin', 'fuel left'];
       this.rw = E.rewardTable('lander', o); this.rf = E.rewardFormula('lander', o.rFormula); E.sensors(this, 'lander', o);
     }
     // the ground: gentle hills, flat for 3 m beyond each end of the pad (heights above the pad's level)
-    ground(x) { const d = Math.abs(x - this.pad); if (d < PAD + 3) return 0; const h = 3 + 2.2 * Math.sin(0.17 * x + 1.3) + 1.6 * Math.sin(0.41 * x + 0.4) + 0.9 * Math.sin(0.83 * x + 2.1); return Math.max(0, h) * Math.min(1, (d - PAD - 3) / 4); }
+    ground(x) { const P = this.padHalf, d = Math.abs(x - this.pad); if (d < P + 3) return 0; const h = 3 + 2.2 * Math.sin(0.17 * x + 1.3) + 1.6 * Math.sin(0.41 * x + 0.4) + 0.9 * Math.sin(0.83 * x + 2.1); return Math.max(0, h) * Math.min(1, (d - P - 3) / 4); }
     reset(rng) {
       const r = rng || seeded(5);
       this.rng = rng;
@@ -423,19 +460,30 @@
       const F = this.feet(), touch = F.some(([fx, fy]) => fy <= this.ground(fx)) || this.y - 0.9 <= this.ground(this.x);
       let landed = false, crashed = false;
       if (touch) {
-        const onPad = F.every(([fx]) => Math.abs(fx - this.pad) <= PAD), soft = this.vy > -3 && Math.abs(this.vx) < 2 && Math.abs(this.th) < 25 * DEG;
+        const onPad = F.every(([fx]) => Math.abs(fx - this.pad) <= this.padHalf), soft = this.vy > -3 && Math.abs(this.vx) < 2 && Math.abs(this.th) < 25 * DEG;
         landed = onPad && soft; crashed = !landed; this.landX = this.x;
         this.end = landed ? 'landed' : soft ? 'offpad' : 'crashed';
       } else if (Math.abs(this.x - this.pad) > 50 || this.y > 60) { crashed = true; this.end = 'away'; }
       else if (this.t >= this.maxSteps) { crashed = true; this.end = 'time'; } // out of time counts as a failure: no hovering for ever
       const phi = this.potential(), closer = phi - this.phi;
       this.phi = phi;
-      const rw = this.rw, dist = Math.hypot(this.x - this.pad, this.y), speed = Math.hypot(this.vx, this.vy);
-      const r = this.rf ? this.rf({ landed: +landed, crashed: +crashed, dist, speed, tilt: this.th / DEG, engine: +main, turn: Math.abs(turn), h: this.y, vx: this.vx, vy: this.vy, fuel: this.fuel / this.fuelMax, t: this.t, closer })
-        : (landed ? rw.rLand : 0) + (crashed ? rw.rCrash : 0) + (main ? rw.rFuel : 0) + rw.rShape * closer;
-      return { obs: this.obs(), r, done: !!this.end };
+      const rw = this.rw, dist = Math.hypot(this.x - this.pad, this.y), speed = Math.hypot(this.vx, this.vy), offpad = this.end === 'offpad', away = this.end === 'away', timeup = this.end === 'time';
+      const parts = this.rf ? null : {};
+      let r = 0;
+      if (this.rf) {
+        r = this.rf({ landed: +landed, crashed: +crashed, dist, speed, tilt: this.th / DEG, engine: +main, turn: Math.abs(turn), h: this.y, vx: this.vx, vy: this.vy, fuel: this.fuel / this.fuelMax, t: this.t, closer,
+          x: this.x - this.pad, spin: this.w / DEG, offpad: +offpad, away: +away, timeup: +timeup, ground: this.y - this.ground(this.x), wind: this.windNow() });
+      } else {
+        if (landed) r = pay(parts, 'rLand', rw.rLand, r); if (crashed) r = pay(parts, 'rCrash', rw.rCrash, r); if (main) r = pay(parts, 'rFuel', rw.rFuel, r); r = pay(parts, 'rShape', rw.rShape * closer, r);
+        if (turn) r = pay(parts, 'rTurn', rw.rTurn, r);
+        if (rw.rTilt) r = pay(parts, 'rTilt', rw.rTilt * Math.abs(this.th / DEG), r);
+        r = pay(parts, 'rStep', rw.rStep, r);
+        if (offpad) r = pay(parts, 'rOffPad', rw.rOffPad, r);
+        if (landed && rw.rSpare) r = pay(parts, 'rSpare', (rw.rSpare * this.fuel) / this.fuelMax, r);
+      }
+      return { obs: this.obs(), r, done: !!this.end, parts };
     }
-    snap() { return { x: this.x, y: this.y, th: this.th, vx: this.vx, vy: this.vy, fuel: this.fuel, fuelMax: this.fuelMax, engine: this.engine, turn: this.a === 2 ? -1 : this.a === 3 ? 1 : 0, t: this.t, end: this.end, pad: this.pad, wind: this.windNow(), ground: (x) => this.ground(x), trail: this.trace.slice(-120) }; }
+    snap() { return { x: this.x, y: this.y, th: this.th, vx: this.vx, vy: this.vy, fuel: this.fuel, fuelMax: this.fuelMax, engine: this.engine, turn: this.a === 2 ? -1 : this.a === 3 ? 1 : 0, t: this.t, end: this.end, pad: this.pad, padHalf: this.padHalf, wind: this.windNow(), ground: (x) => this.ground(x), trail: this.trace.slice(-120) }; }
     // where it came down (left of the pad to right) and how much it burned: its style of landing
     behavior() { const n = Math.max(1, this.t), x = this.landX === null ? this.x : this.landX; return [clamp(0.5 + (x - this.pad) / 40, 0, 1), clamp(this.burn / n, 0, 1)]; }
     // the share of 10 starts its best moves land on the pad (the same 10 every time)
@@ -446,17 +494,42 @@
 
   // ------------------------------------------------------------------ rewards, inputs, the catalogue
   Object.assign(E.REWARDS, {
-    track: [{ key: 'rProgress', label: 'Progress, per lap of the track', def: 10 }, { key: 'rCrash', label: 'Crashing into a wall', def: -1 }, { key: 'rLap', label: 'Finishing a lap', def: 0 }, { key: 'rStep', label: 'Every step', def: 0 }],
-    arena: [{ key: 'rHit', label: 'Destroying a drone', def: 1 }, { key: 'rHurt', label: 'A drone reaching you', def: -1 }, { key: 'rShot', label: 'Firing a shot', def: 0 }, { key: 'rStep', label: 'Every step', def: 0 }],
-    lander: [{ key: 'rLand', label: 'Landing softly on the pad', def: 1 }, { key: 'rCrash', label: 'Crashing, flying off or running out of time', def: -1 }, { key: 'rShape', label: 'Getting closer and slower (shaping)', def: 1 }, { key: 'rFuel', label: 'Each step the main engine fires', def: 0 }],
+    track: [{ key: 'rProgress', label: 'Progress: this much a lap, paid as it drives', def: 10 }, { key: 'rCrash', label: 'Crashing into a wall', def: -1 }, { key: 'rLap', label: 'Finishing a lap', def: 0 }, { key: 'rStep', label: 'Every step', def: 0 },
+      { key: 'rFinish', label: 'Finishing the last lap', def: 0 }, { key: 'rSpeed', label: 'Each step, per m/s of speed', def: 0 }, { key: 'rCenter', label: 'Each step, by how far from the middle (1 at a wall)', def: 0 },
+      { key: 'rNearWall', label: 'Each step within 2 m of a wall', def: 0 }, { key: 'rSteer', label: 'Each step it steers', def: 0 }, { key: 'rBrake', label: 'Each step it brakes', def: 0 }],
+    arena: [{ key: 'rHit', label: 'Destroying a drone', def: 1 }, { key: 'rHurt', label: 'A drone reaching you', def: -1 }, { key: 'rShot', label: 'Firing a shot', def: 0 }, { key: 'rStep', label: 'Every step', def: 0 },
+      { key: 'rMiss', label: 'A shot that hits nothing', def: 0 }, { key: 'rClear', label: 'Destroying the last drone', def: 0 }, { key: 'rAim', label: 'Each step a drone is in its sights', def: 0 },
+      { key: 'rSee', label: 'Each step, per drone in view', def: 0 }, { key: 'rWalk', label: 'Each step it walks', def: 0 }, { key: 'rTurn', label: 'Each step it turns', def: 0 }, { key: 'rBump', label: 'Walking into a wall', def: 0 }],
+    lander: [{ key: 'rLand', label: 'Landing softly on the pad', def: 1 }, { key: 'rCrash', label: 'Crashing, flying off or running out of time', def: -1 }, { key: 'rShape', label: 'Getting closer and slower (shaping)', def: 1 }, { key: 'rFuel', label: 'Each step the main engine fires', def: 0 },
+      { key: 'rOffPad', label: 'Touching down softly, but off the pad', def: 0 }, { key: 'rSpare', label: 'Fuel left on landing, per full tank', def: 0 }, { key: 'rTurn', label: 'Each step a side thruster fires', def: 0 },
+      { key: 'rTilt', label: 'Each step, per degree of tilt', def: 0 }, { key: 'rStep', label: 'Every step', def: 0 }],
   });
   Object.assign(E.REWARD_VARS, {
     track: [['progress', 'how far along the track it got this step, in laps (backwards: less than 0)'], ['speed', 'its speed, m/s (3 to 24)'], ['crashed', '1 on touching a wall'], ['lap', '1 on finishing a lap'],
-      ['center', 'how far from the middle of the track: 0 in the middle, 1 at a wall'], ['turn', '−1 steering left, 1 right, 0 straight'], ['brake', '1 when braking'], ['t', 'steps so far']],
+      ['center', 'how far from the middle of the track: 0 in the middle, 1 at a wall'], ['turn', '−1 steering left, 1 right, 0 straight'], ['brake', '1 when braking'], ['t', 'steps so far'],
+      ['wall', 'how far its middle is from the nearer wall, m (it crashes at 1)'], ['ahead', 'how far the wall straight ahead is, m'], ['side', 'where it is across the track: −1 at the left wall, 1 at the right'],
+      ['heading', 'its heading to the way the track runs, degrees (more than 0: to the right)'], ['bend', 'how sharply the track bends here, degrees a metre (more than 0: to the right)'], ['laps', 'laps done'], ['finished', '1 on finishing the last lap']],
     arena: [['hit', '1 on destroying a drone'], ['hurt', '1 when a drone reaches it'], ['shot', '1 on firing'], ['aimed', '1 while a drone is in its sights'], ['seen', 'how many drones it can see'],
-      ['lives', 'lives left (3 at the start)'], ['moved', '1 when it walked'], ['turned', '1 when it turned'], ['t', 'steps so far']],
+      ['lives', 'lives left (3 at the start)'], ['moved', '1 when it walked'], ['turned', '1 when it turned'], ['t', 'steps so far'], ['missed', '1 on a shot that hits nothing'], ['kills', 'drones destroyed so far'],
+      ['near', 'how far the nearest drone is, m (12 when there is none)'], ['bump', '1 on walking into a wall'], ['cleared', '1 on destroying the last drone'], ['ready', '1 while the gun is ready to fire']],
     lander: [['landed', '1 on landing softly on the pad'], ['crashed', '1 on crashing, flying off or running out of time'], ['closer', 'the shaping: how much closer, slower and straighter it got this step'], ['dist', 'distance to the pad, m'],
-      ['speed', 'its speed, m/s'], ['tilt', 'its tilt, degrees'], ['engine', '1 while the main engine fires'], ['turn', '1 while a side thruster fires'], ['h', 'height above the pad, m'], ['vx', 'speed across, m/s'], ['vy', 'speed up, m/s'], ['fuel', 'fuel left: 1 full, 0 empty'], ['t', 'steps so far']],
+      ['speed', 'its speed, m/s'], ['tilt', 'its tilt, degrees'], ['engine', '1 while the main engine fires'], ['turn', '1 while a side thruster fires'], ['h', 'height above the pad, m'], ['vx', 'speed across, m/s'], ['vy', 'speed up, m/s'], ['fuel', 'fuel left: 1 full, 0 empty'], ['t', 'steps so far'],
+      ['x', 'how far across from the pad, m (more than 0: to the right)'], ['spin', 'how fast it turns, degrees a second'], ['offpad', '1 on touching down softly but off the pad'], ['away', '1 on flying off'],
+      ['timeup', '1 when the time runs out before it lands'], ['ground', 'its height above the ground right below it, m'], ['wind', 'the wind’s push now, m/s² (more than 0: to the right)']],
+  });
+  // the extra inputs these can be given (in the views that are a list of numbers)
+  Object.assign(E.EXTRAS, {
+    track: [...E.COMMON_EXTRAS,
+      { name: 'where it is across', what: 'where it is across the track: −1 at the left wall, 1 at the right', n: 1, names: ['across the track'], fill: (w, o, k) => { o[k] = clamp(w.side(), -1, 1); } },
+      { name: 'its heading', what: 'the angle between where it points and the way the track runs: 1 is a quarter turn to the right', n: 1, names: ['heading to the track'], fill: (w, o, k) => { o[k] = w.heading() / (Math.PI / 2); } },
+      { name: 'the bends ahead', what: 'how sharply the track bends 10 m and 30 m ahead (more than 0: to the right), as if it knew the map', n: 2, names: ['bend 10 m ahead', 'bend 30 m ahead'], fill: (w, o, k) => { o[k] = w.bend(10) * 7; o[k + 1] = w.bend(30) * 7; } }],
+    arena: [...E.COMMON_EXTRAS,
+      { name: 'the nearest drone’s distance', what: 'how far the nearest drone is, behind walls too (the radar gives only its direction): 1 at 12 m or more', n: 1, names: ['nearest drone’s distance'], fill: (w, o, k) => { let d = 12; for (const q of w.drones) if (q.alive) d = Math.min(d, Math.hypot(q.x - w.x, q.y - w.y)); o[k] = d / 12; } },
+      { name: 'where it is', what: 'its place on the map, across and down from 0 to 1, and which way it faces (sine and cosine)', n: 4, names: ['its place across', 'its place down', 'facing (sine)', 'facing (cosine)'], fill: (w, o, k) => { o[k] = w.x / w.map.W; o[k + 1] = w.y / w.map.H; o[k + 2] = Math.sin(w.th); o[k + 3] = Math.cos(w.th); } },
+      { name: 'drones destroyed', what: 'the share of the drones to destroy that it has destroyed so far', n: 1, names: ['drones destroyed'], fill: (w, o, k) => { o[k] = w.kills / w.goal; } }],
+    lander: [...E.COMMON_EXTRAS,
+      { name: 'the wind', what: 'the wind’s push now, sideways (0 when calm): with gusts on, it cannot see the wind otherwise', n: 1, names: ['the wind'], fill: (w, o, k) => { o[k] = w.windNow() / 2; } },
+      { name: 'height above the ground', what: 'its height above the ground right below it, hills and all: 1 at 30 m', n: 1, names: ['height above the ground'], fill: (w, o, k) => { o[k] = (w.y - w.ground(w.x)) / 30; } }],
   });
   Object.assign(E.INPUT_GROUPS, {
     track: { rays: [['sensors to the left', [0, 1, 2]], ['sensor ahead', [3]], ['sensors to the right', [4, 5, 6]], ['speed', [7]]] },
@@ -546,7 +619,7 @@
         const lr = 5, lx = r.x + r.w - 10 - (s.laps - 1) * 14, ly = r.y + 12;
         for (let i = 0; i < s.laps; i++) { ctx.beginPath(); ctx.arc(lx + i * 14, ly, lr, 0, TAU); ctx.fillStyle = i < s.lap ? T.c('good') : T.c('ink', 0.14); ctx.fill(); }
         label(ctx, `${Math.round(s.v)} m/s`, r.x + r.w - 10, ly + 18, 11.5, T.c('ink-2'), 'right', 600);
-        const sw = 52; ctx.fillStyle = T.c('ink', 0.12); ctx.fillRect(r.x + r.w - 10 - sw, ly + 29, sw, 4); ctx.fillStyle = T.c('s1'); ctx.fillRect(r.x + r.w - 10 - sw, ly + 29, sw * clamp(s.v / VMAX, 0, 1), 4);
+        const sw = 52; ctx.fillStyle = T.c('ink', 0.12); ctx.fillRect(r.x + r.w - 10 - sw, ly + 29, sw, 4); ctx.fillStyle = T.c('s1'); ctx.fillRect(r.x + r.w - 10 - sw, ly + 29, sw * clamp(s.v / (s.vmax || VMAX), 0, 1), 4);
       }
       if (s.end) banner(ctx, r, s.end === 'crashed' ? 'Crashed' : s.end === 'finished' ? `${s.laps} laps!` : 'Out of time', s.end === 'finished' ? T.c('good') : s.end === 'crashed' ? T.c('critical') : '#ffffff');
     }
@@ -690,9 +763,10 @@
     ctx.strokeStyle = 'rgba(200,210,240,0.35)'; ctx.lineWidth = 1.2; ctx.stroke();
     // the pad: lit along its edge, its lights blinking (green once it has landed)
     const landed = s.end === 'landed', pc = landed ? rgbOf(T, 'good') : accent;
-    ctx.fillStyle = css(mix(pc, [255, 255, 255], 0.15)); ctx.fillRect(X(pad - PAD), Y(0), 2 * PAD * sc, Math.max(3, 0.45 * sc));
-    if (landed) { const gl = ctx.createRadialGradient(X(pad), Y(0), 0, X(pad), Y(0), PAD * sc * 1.4); gl.addColorStop(0, css(pc, 0.45)); gl.addColorStop(1, css(pc, 0)); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(X(pad), Y(0), PAD * sc * 1.4, 0, TAU); ctx.fill(); }
-    for (const e of [-PAD, PAD]) { ctx.fillStyle = Math.sin(t * 5) > 0 || landed ? css(mix(pc, [255, 255, 255], 0.4)) : 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.arc(X(pad + e), Y(0) - 3, 2.6, 0, TAU); ctx.fill(); }
+    const P = s.padHalf || PAD;
+    ctx.fillStyle = css(mix(pc, [255, 255, 255], 0.15)); ctx.fillRect(X(pad - P), Y(0), 2 * P * sc, Math.max(3, 0.45 * sc));
+    if (landed) { const gl = ctx.createRadialGradient(X(pad), Y(0), 0, X(pad), Y(0), P * sc * 1.4); gl.addColorStop(0, css(pc, 0.45)); gl.addColorStop(1, css(pc, 0)); ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(X(pad), Y(0), P * sc * 1.4, 0, TAU); ctx.fill(); }
+    for (const e of [-P, P]) { ctx.fillStyle = Math.sin(t * 5) > 0 || landed ? css(mix(pc, [255, 255, 255], 0.4)) : 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.arc(X(pad + e), Y(0) - 3, 2.6, 0, TAU); ctx.fill(); }
     // the wind: an arrow along the top, as long as it is strong
     if (s.wind) { const ax = V.x + V.w / 2, ay = V.y + 14, L = clamp(s.wind * 22, -V.w * 0.3, V.w * 0.3); ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax + L, ay); ctx.lineTo(ax + L - Math.sign(L) * 6, ay - 4); ctx.moveTo(ax + L, ay); ctx.lineTo(ax + L - Math.sign(L) * 6, ay + 4); ctx.stroke(); label(ctx, 'wind', ax, ay + 12, 10.5, 'rgba(255,255,255,0.6)', 'center', 600); }
     (o.ghosts || []).forEach((q, k) => { const g = q.k ?? k; drawRocket(ctx, X(q.x), Y(q.y), q.th, sc * (g ? 0.9 : 1), css(mix(rgbOf(T, GHOSTS[g % 8]), [255, 255, 255], 0.2), q.done ? 0.25 : g ? 0.55 : 1), null); });
@@ -734,6 +808,8 @@
     ctx.restore();
   }
   Object.assign(E.DRAW, { track: drawTrack, arena: drawArena, lander: drawLander });
+  // what the worlds of rl-worlds2.js and rl-worlds3.js draw with
+  E.kit = { clamp, TAU, DEG, wrapAngle, seeded, rgbOf, mix, css, clock, fontOf, label, rounded, banner, GHOSTS };
 
   Object.assign(E, { Track, Arena, Lander, buildTrack, trackOf, randomTrack, centerDist, castRay, mapOf, HW });
 })(typeof globalThis !== 'undefined' && globalThis.NA ? globalThis.NA : window.NA);

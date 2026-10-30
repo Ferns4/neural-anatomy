@@ -106,10 +106,12 @@
     const T = { current: null, body, bar };
     const btns = defs.map((d) => el('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', tabindex: '-1', dataset: { tab: d.id }, onclick: () => T.select(d.id) }, NA.shortLabel(d.label, d.short)));
     bar.append(...btns);
+    // (the arrows skip a tab that is hidden: a tab only some problems have)
     bar.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-      const i = defs.findIndex((d) => d.id === T.current), next = defs[(i + (e.key === 'ArrowRight' ? 1 : defs.length - 1)) % defs.length];
-      T.select(next.id); btns[defs.indexOf(next)].focus();
+      let i = defs.findIndex((d) => d.id === T.current);
+      for (let k = 0; k < defs.length; k++) { i = (i + (e.key === 'ArrowRight' ? 1 : defs.length - 1)) % defs.length; if (!btns[i].hidden) break; }
+      T.select(defs[i].id); btns[i].focus();
     });
     T.select = (id) => {
       T.current = id;
@@ -170,13 +172,15 @@
     };
     for (const d of defs) {
       const v = el('span', { class: 'ro-value', text: '—' }), k = el('span', { class: 'ro-label' });
-      root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null }, k, v));
+      root.append(el('div', { class: 'readout' + (d.keep ? ' ro-keep' : ''), title: d.title || null, dataset: { key: d.key } }, k, v));
       fill(k, d.label, d.short);
       map[d.key] = v; names[d.key] = { k, short: d.short };
     }
     const count = (s) => (/^-?\d{1,3}(,\d{3})+$/.test(s) ? NA.fmtCount(+s.replace(/,/g, '')) : s);
     return {
       set(key, text) { const n = map[key]; text = count(String(text)); if (n && n.textContent !== text) n.textContent = text; },
+      // its tooltip (the step's limit, say, where the bar has no room for it)
+      title(key, text) { const n = names[key]; if (n && n.k.parentNode.title !== text) n.k.parentNode.title = text; },
       // a readout that means something else for this setup (the builder's return, for learning from rewards)
       label(key, text, short) { const n = names[key]; if (!n) return; if (short !== undefined) n.short = short; if (n.k.dataset.label !== text + '|' + (n.short || '')) fill(n.k, text, n.short); },
     };

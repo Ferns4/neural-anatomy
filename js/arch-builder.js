@@ -13,10 +13,12 @@
   // ------------------------------------------------------------------ names, colours, shapes
   // the builder's palette: layers, sequences, images and reshapes, then the input and the output
   const TONE = { dense: 's1', activation: 's1', dropout: 's1', layernorm: 's1', attention: 's7', transformer: 's7', conv: 's4', pool: 's4', flatten: 's6', gap: 's6',
-    gated: 's1', batchnorm: 's1', noise: 's1', fourier: 's1', rnn: 's7', conv1d: 's7', position: 's7', seqpool: 's7', patches: 's4', avgpool: 's4', linear: 's5', knn: 's5', tree: 's5', forest: 's5', boost: 's5', parallel: 's3' };
+    gated: 's1', batchnorm: 's1', noise: 's1', fourier: 's1', rnn: 's7', conv1d: 's7', position: 's7', seqpool: 's7', patches: 's4', avgpool: 's4', linear: 's5', knn: 's5', tree: 's5', forest: 's5', boost: 's5', parallel: 's3',
+    sepconv: 's4', se: 's4', coords: 's4', augment: 's4', gmp: 's6', attnpool: 's7', ssm: 's7', rbf: 's1', maxout: 's1', moe: 's3' };
   const NAME = { dense: 'Dense', activation: 'Activation', dropout: 'Dropout', layernorm: 'LayerNorm', attention: 'Self-attention', transformer: 'Transformer', conv: 'Convolution', pool: 'Max pool', flatten: 'Flatten', gap: 'Global average pool',
     gated: 'Gated (GLU)', batchnorm: 'BatchNorm', noise: 'Gaussian noise', fourier: 'Fourier features', rnn: 'Recurrent', conv1d: 'Conv 1-D', position: 'Positions', seqpool: 'Sequence pool', patches: 'Patches', avgpool: 'Average pool',
-    linear: 'Linear model', knn: 'k-nearest neighbours', tree: 'Decision tree', forest: 'Random forest', boost: 'Gradient boosting', parallel: 'Parallel branches' };
+    linear: 'Linear model', knn: 'k-nearest neighbours', tree: 'Decision tree', forest: 'Random forest', boost: 'Gradient boosting', parallel: 'Parallel branches',
+    sepconv: 'Separable conv', se: 'Squeeze-excite', coords: 'Coordinates', augment: 'Random shifts', gmp: 'Global max pool', attnpool: 'Attention pool', ssm: 'State space', rbf: 'Radial basis', maxout: 'Maxout', moe: 'Mixture of experts' };
   const RNN_NAME = { lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' };
   // each recurrent cell's gates in PyTorch's order: [symbol, name, function]
   const RNN_GATES = { lstm: [['i', 'input gate', 'sigmoid'], ['f', 'forget gate', 'sigmoid'], ['g', 'candidate', 'tanh'], ['o', 'output gate', 'sigmoid']], gru: [['r', 'reset gate', 'sigmoid'], ['z', 'update gate', 'sigmoid'], ['n', 'candidate', 'tanh']], rnn: [['h', 'state', 'tanh']] };
@@ -49,9 +51,20 @@
     forest: 'compare 1 tree with 50, and inputs per question “all” with “√ of them”: the randomness is what makes the average work.',
     boost: 'set η to 1, then 0.05 with more rounds: big steps fit fast and overfit, small steps generalise.',
     parallel: 'switch the merge from join to add (all branches must then give the same shape), or empty one branch and add: a residual connection. Compare a run with one branch against one with three.',
+    sepconv: 'swap a convolution for it with the same filters: compare the parameter counts (top of each block) and the two runs’ scores. Then try dilation 2.',
+    se: 'open a gate and compare it on two pictures of different classes: the same channel is turned up for one and down for the other.',
+    coords: 'train once with it and once without on the same model, and compare: it helps most when the answer depends on where something is.',
+    augment: 'train with shifts of 0 and of 2 pixels on few examples, and compare the gap between the training and validation scores.',
+    gmp: 'swap it for the global average pool and compare: max keeps the single strongest response, the average every one.',
+    attnpool: 'open its weights on a few examples: it learns to put its weight on the positions that decide the answer. Compare it with Sequence pool (last or average).',
+    ssm: 'open a memory and walk back in time; compare one memory with 16 on the same series, and the layer with an LSTM of the same size.',
+    rbf: 'set the starting width to 0.1, then to 2, on the spiral: narrow bumps leave holes, wide ones blur the boundary.',
+    maxout: 'set its pieces to 2, 3 and 4 and compare the runs with a dense ReLU layer of the same width.',
+    moe: 'switch between all, top 2 and top 1, and open the gate on a few examples: which expert takes which kind of example?',
   };
   // the attribute each block gets in the Python tab's Model class (js/builder-py.js): self.dense3, self.conv1, …
-  const PYMOD = { dense: 'dense', dropout: 'drop', layernorm: 'norm', attention: 'attn', transformer: 'block', conv: 'conv', gated: 'glu', batchnorm: 'bn', noise: 'noise', rnn: 'rnn', conv1d: 'conv', patches: 'patch', parallel: 'par' };
+  const PYMOD = { dense: 'dense', dropout: 'drop', layernorm: 'norm', attention: 'attn', transformer: 'block', conv: 'conv', gated: 'glu', batchnorm: 'bn', noise: 'noise', rnn: 'rnn', conv1d: 'conv', patches: 'patch', parallel: 'par',
+    sepconv: 'sep', se: 'se', augment: 'aug', attnpool: 'apool', ssm: 'ssm', rbf: 'rbf', maxout: 'maxout', moe: 'moe' };
   const PYACT = { relu: (z) => `F.relu(${z})`, leaky: (z) => `F.leaky_relu(${z}, 0.05)`, elu: (z) => `F.elu(${z})`, gelu: (z) => `F.gelu(${z}, approximate="tanh")`, swish: (z) => `F.silu(${z})`,
     softplus: (z) => `F.softplus(${z})`, tanh: (z) => `torch.tanh(${z})`, sigmoid: (z) => `torch.sigmoid(${z})`, sine: (z) => `torch.sin(${z})`, gaussian: (z) => `torch.exp(-${z} ** 2)`, linear: (z) => z };
   const shapeText = (s) => (s && s.length ? s.join(' × ') : '?');
@@ -148,7 +161,8 @@
      each layer computed for the example is copied out at once. */
   const BUFS = { dense: ['z', 'a', 'out'], activation: ['out'], dropout: ['out'], layernorm: ['out', 'xhat', 'rstd'], attention: ['out'],
     transformer: ['h1', 'xh1', 'r1', 'mid', 'h2', 'xh2', 'r2', 'u', 'g', 'mo', 'out'], conv: ['z', 'a', 'out'], pool: ['out'], flatten: ['out'], gap: ['out'],
-    gated: ['z1', 'z2', 'a2', 'out'], batchnorm: ['out', 'xhat'], noise: ['out'], fourier: ['out'], rnn: ['out', 'gates', 'c'], conv1d: ['z', 'a', 'out'], position: ['out'], seqpool: ['out', 'arg'], patches: ['out'], avgpool: ['out'] };
+    gated: ['z1', 'z2', 'a2', 'out'], batchnorm: ['out', 'xhat'], noise: ['out'], fourier: ['out'], rnn: ['out', 'gates', 'c'], conv1d: ['z', 'a', 'out'], position: ['out'], seqpool: ['out', 'arg'], patches: ['out'], avgpool: ['out'],
+    sepconv: ['mid', 'z', 'out'], se: ['s', 'a1', 'g', 'out'], gmp: ['out', 'arg'], attnpool: ['att', 'out'], ssm: ['u', 'h', 'out'], rbf: ['d2', 'out'], maxout: ['z', 'out'], moe: ['ae', 'logits', 'gate', 'out'] };
   let FRESH = null, PROBE = null, PYCODE = null;
   function runProbe(model, d) {
     const va = d.nVa > 0, n = va ? d.nVa : d.nTr;
@@ -358,6 +372,16 @@
         case 'gated': return gatedValue(bi, idx);
         case 'position': return positionValue(bi, p.t, p.c);
         case 'parallel': return parallelValue(bi, idx);
+        case 'sepconv': return sepValue(bi, idx);
+        case 'se': return seValue(bi, idx);
+        case 'coords': return coordsValue(bi, idx);
+        case 'augment': return Object.assign(valueNode(PV(bi), idx), { sub: `passed through block ${blockNo(bi)} unchanged (pictures only move while training)` });
+        case 'gmp': return gmpValue(bi, idx);
+        case 'attnpool': return apValue(bi, idx);
+        case 'ssm': return ssmOut(bi, p.t, p.c);
+        case 'rbf': return rbfValue(bi, idx);
+        case 'maxout': return maxoutValue(bi, idx);
+        case 'moe': return moeValue(bi, idx);
       }
       return Dp.stored(X, pOf(bi).out[idx], nameOf(bi, idx));
     }
@@ -714,6 +738,304 @@
       const pe = () => Object.assign(Dp.lib(X, 'sine', { z: c % 2 ? ang + Math.PI / 2 : ang }), { title: `PE[${t}, ${c}] = ${c % 2 ? 'cos' : 'sin'}(${fmt(ang, 3)})`, sub: `angle = ${t} / 10000^(${2 * Math.floor(c / 2)}/${D})` });
       return sumNode(`${nameOf(bi, t * D + c)}: x + position`, `out = x + ${lay.learned ? 'P' : 'PE'}[${t}, ${c}]`, x, pv, () => valueNode(PV(bi), t * D + c), lay.learned ? () => Dp.stored(X, pv, `P[${t}, ${c}]: learned for position ${t}`) : pe,
         [lay.learned ? 'The position table is learned: each position has its own row of numbers, added to whatever arrives there.' : 'The original transformer\'s positions: sine and cosine waves of different speeds, a fixed pattern that is different at every position (and lets the model compare positions by their difference).'], lay.learned ? `out = x + ${pyAt(bi, 'pos')}[${t}, ${c}]` : `angle = ${t} / 10000 ** (${2 * Math.floor(c / 2)} / ${D})\nprint(math.${c % 2 ? 'cos' : 'sin'}(angle))`);
+    }
+
+    // ---- the newest parts: separable convolution, squeeze-and-excitation, coordinates, global max, attention pooling,
+    //      the state-space layer, radial basis units, maxout, experts
+    /* A weighted sum whose weights were computed for this example (attention weights, a gate), not learned: both rows
+       open what made them. o: { title, formula, tone, a, w, aName, wName, aLabel(k), wLabel(k), aNode(k), wNode(k), about, code } */
+    function mixNode(o) {
+      const n = o.a.length, prods = o.a.map((v, k) => v * o.w[k]), total = prods.reduce((p, v) => p + v, 0);
+      const R = W2({ t: [0, 0, 1, 0.2], w: [0, 0.3, 1, 0.17], a: [0, 0.55, 1, 0.17], p: [0, 0.8, 1, 0.18] }, { t: [0, 0, 1, 0.22], w: [0, 0.32, 1, 0.15], a: [0, 0.56, 1, 0.15], p: [0, 0.8, 1, 0.18] });
+      return Dp.lazy({
+        title: o.title, sub: `= ${fmt(total, 4)}`, tone: o.tone,
+        summary: (ctx, r, S) => S.bars(ctx, Float32Array.from(prods), r),
+        inner: (ctx, r, S) => {
+          const u = S.u(r, 8, 13), wr = S.place(r, R.w), ar = S.place(r, R.a), pr = S.place(r, R.p);
+          S.lines(ctx, [`${o.formula} = ${fmt(total, 4)}`, 'both rows were computed for this example: zoom into any bar for where it came from'], S.place(r, R.t), { mono: true, size: u * 0.9, strong: (k) => k === 0 });
+          S.caption(ctx, o.wName, wr, { size: u * 0.8, minW: 160 }); S.bars(ctx, Float32Array.from(o.w), wr);
+          S.caption(ctx, o.aName, ar, { size: u * 0.8, minW: 160 }); S.bars(ctx, Float32Array.from(o.a), ar);
+          S.caption(ctx, `the products, which add up to ${fmt(total, 3)}`, pr, { size: u * 0.8, minW: 160 }); S.bars(ctx, Float32Array.from(prods), pr);
+        },
+        grids: [
+          { id: 'w', rect: R.w, rows: 1, cols: n, make: (i, k) => o.wNode(k) },
+          { id: 'a', rect: R.a, rows: 1, cols: n, make: (i, k) => o.aNode(k) },
+          { id: 'p', rect: R.p, rows: 1, cols: n, make: (i, k) => Object.assign(Dp.fmul(X, o.w[k], o.a[k]), { title: `${o.wLabel(k)} × ${o.aLabel(k)}` }) },
+        ],
+        about: o.about, code: o.code,
+      });
+    }
+    // a separable convolution's depthwise step: channel c through its own filter, at output pixel (ox, oy)
+    function sepDepth(bi, c, oy, ox) {
+      const lay = layOf(bi), { H, k, s, dil, pad, C } = lay, Wd = lay.W, xin = inVals(bi), w = lay.dw.w, mod = pyName(bi), terms = [], src = [], tag = [];
+      for (let ky = 0; ky < k; ky++) for (let kx = 0; kx < k; kx++) {
+        const iy = oy * s + ky * dil - pad, ix = ox * s + kx * dil - pad, inside = iy >= 0 && iy < H && ix >= 0 && ix < Wd, at = (c * H + iy) * Wd + ix;
+        terms.push({ a: inside ? xin[at] : 0, w: w[(c * k + ky) * k + kx] }); src.push(inside ? at : -1); tag.push([ky, kx, ix, iy]);
+      }
+      const span = dil * (k - 1) + 1;
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · channel ${c + 1}'s own filter at (${ox}, ${oy})`, sub: `${k * k} inputs, no activation yet`, tone: 's4',
+        terms, bias: lay.db.w[c], act: null, zName: 'm', outName: 'm',
+        inLabel: (p) => (src[p] < 0 ? `padding at (${tag[p][2]}, ${tag[p][3]})` : nameOf(PV(bi), src[p])), wLabel: (p) => `depthwise[${c}, ${tag[p][0]}, ${tag[p][1]}]`,
+        inputNode: (p) => (src[p] < 0 ? Object.assign(Dp.stored(X, 0, 'zero padding'), { sub: 'past the edge of the picture' }) : valueNode(PV(bi), src[p])),
+        rowNames: [`a ${k} × ${k} window of channel ${c + 1} only${dil > 1 ? `, its taps ${dil} pixels apart` : ''}`, 'that channel’s own filter (learned)', 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.depthwise.weight[${c}].flatten()`, a: 'patch', b: `${mod}.depthwise.bias[${c}]` },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `patch = F.pad(grab['x'], [${pad}] * 4)[0, ${c}, ${oy * s}:${oy * s + span}:${dil}, ${ox * s}:${ox * s + span}:${dil}].flatten()`],
+        codeWhat: `as one number of ${mod}.depthwise, an nn.Conv2d(${C}, ${C}, ${k}, groups=${C}): each channel through its own filter`,
+        about: [`The depthwise step for channel ${c + 1} at column ${ox}, row ${oy}: that channel's own ${k} × ${k} filter laid over a window of that channel alone${dil > 1 ? `, its taps ${dil} pixels apart so that it spans ${span} × ${span}` : ''}. Unlike a full convolution it never looks at the other channels: mixing them is the next step's job.`, 'Zoom into an input bar for the number of the block below.'],
+      });
+    }
+    // ... and its output: the channels at one pixel mixed by the pointwise 1 × 1 convolution, then the activation
+    function sepValue(bi, idx) {
+      const lay = layOf(bi), { C, Q, Wo } = lay, f = Math.floor(idx / Q), q = idx % Q, oy = Math.floor(q / Wo), ox = q % Wo, mid = pOf(bi).mid, mod = pyName(bi), act = actOf(lay.fn.id);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · channel ${f + 1} at (${ox}, ${oy})`, sub: `${C} channels mixed${act ? ', ' + act.label : ''}`, tone: 's4',
+        terms: Array.from({ length: C }, (_, c) => ({ a: mid[c * Q + q], w: lay.pw.w[f * C + c] })), bias: lay.pb.w[f], act, outName: 'a',
+        inLabel: (c) => `channel ${c + 1} after its own filter`, wLabel: (c) => `pointwise[${f}, ${c}]`, inputNode: (c) => sepDepth(bi, c, oy, ox),
+        rowNames: [`the ${C} channels at this pixel, each after its own filter`, 'the 1 × 1 mix’s weights (learned)', 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.pointwise.weight[${f}].flatten()`, a: 'm', b: `${mod}.pointwise.bias[${f}]` },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `m = ${mod}.depthwise(grab['x'])[0, :, ${oy}, ${ox}]          # the ${C} channels here, after the depthwise step`],
+        codeWhat: `as one output of ${mod}.pointwise, an nn.Conv2d(${C}, ${lay.F}, 1)`,
+        about: [`Channel ${f + 1} at column ${ox}, row ${oy}: the pointwise step. The ${C} numbers at this pixel, one per channel after its own filter, are mixed by a weighted sum, as a 1 × 1 convolution does, plus a bias${act ? `, then ${act.label}` : ''}. Zoom into an input bar for the depthwise filter behind it.`],
+      });
+    }
+    // squeeze-and-excitation: a channel's average, a unit of the small network, a gate, and a number times its gate
+    const seIdx = (lay, c, p) => c * lay.cs + p * lay.ps;
+    const seName = (lay, c) => (lay.cs === 1 ? `feature ${c}` : `channel ${c + 1}`);
+    const sePy = (lay) => (lay.cs !== 1 ? "grab['x'].mean((2, 3))[0]" : lay.P > 1 ? "grab['x'].mean(1)[0]" : "grab['x'][0]");
+    function seSqueeze(bi, c) {
+      const lay = layOf(bi), { P } = lay, xin = inVals(bi);
+      if (P === 1) return Object.assign(valueNode(PV(bi), c), { sub: `${seName(lay, c)}: on a vector, the squeeze is the number itself` });
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · the average of ${seName(lay, c)}`, sub: `${P} numbers × 1/${P}`, tone: 's4',
+        terms: Array.from({ length: P }, (_, p) => ({ a: xin[seIdx(lay, c, p)], w: 1 / P })), bias: null, act: null, outName: 's',
+        rowNames: [`its ${P} numbers`, `weights: all 1/${P}`, 'products'], inLabel: (p) => nameOf(PV(bi), seIdx(lay, c, p)), wLabel: () => `1/${P}`,
+        inputNode: (p) => valueNode(PV(bi), seIdx(lay, c, p)), vars: { w: `torch.full((${P},), 1 / ${P})`, a: `x_c`, b: '' },
+        codeHead: [...pyGrab(pyName(bi), 'x', 'inp[0]'), `x_c = ${lay.cs !== 1 ? `grab['x'][0, ${c}].flatten()` : `grab['x'][0, :, ${c}]`}`],
+        about: [`The squeeze: ${seName(lay, c)} averaged over its ${P} ${lay.cs !== 1 ? 'pixels' : 'positions'}, one number that says how strongly it fired overall.`],
+      });
+    }
+    function seUnit(bi, j) {
+      const lay = layOf(bi), C = lay.C, s = pOf(bi).s, mod = pyName(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · middle unit ${j + 1}`, sub: `${C} averages, ReLU`, tone: 's4',
+        terms: Array.from({ length: C }, (_, c) => ({ a: s[c], w: lay.W1.w[j * C + c] })), bias: lay.b1.w[j], act: actOf('relu'), outName: 'h',
+        inLabel: (c) => `the average of ${seName(lay, c)}`, wLabel: (c) => `W₁[${j}, ${c}]`, inputNode: (c) => seSqueeze(bi, c),
+        rowNames: [`the ${C} averages (the squeeze)`, 'its weights (learned)', 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.squeeze.weight[${j}]`, a: 's', b: `${mod}.squeeze.bias[${j}]` },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `s = ${sePy(lay)}                  # the squeeze: one average each`],
+        about: [`Unit ${j + 1} of the small network's narrow middle: it weighs all ${C} averages at once, so it can respond to combinations, such as one feature being strong while another is weak.`],
+      });
+    }
+    function seGate(bi, c) {
+      const lay = layOf(bi), h = lay.h, a1 = pOf(bi).a1, mod = pyName(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · the gate of ${seName(lay, c)}`, sub: `${h} middle units, sigmoid`, tone: 's4',
+        terms: Array.from({ length: h }, (_, j) => ({ a: a1[j], w: lay.W2.w[c * h + j] })), bias: lay.b2.w[c], act: actOf('sigmoid'), outName: 'g',
+        inLabel: (j) => `middle unit ${j + 1}`, wLabel: (j) => `W₂[${c}, ${j}]`, inputNode: (j) => seUnit(bi, j),
+        rowNames: [`the ${h} middle units`, 'its weights (learned)', 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.excite.weight[${c}]`, a: 'h', b: `${mod}.excite.bias[${c}]` },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `h = F.relu(${mod}.squeeze(${sePy(lay)}))`],
+        about: [`The gate of ${seName(lay, c)}: a sigmoid between 0 (shut) and 1 (open), computed from the whole example's summary. Every number of ${seName(lay, c)} is multiplied by it, so the network turns this ${lay.cs === 1 ? 'feature' : 'channel'} up or down depending on what else it sees.`],
+      });
+    }
+    function seValue(bi, idx) {
+      const lay = layOf(bi), c = lay.cs === 1 ? idx % lay.C : Math.floor(idx / lay.P), x = inVals(bi)[idx], g = pOf(bi).g[c];
+      return prodNode(`${nameOf(bi, idx)}: x × its gate`, `out = x · g, the gate of ${seName(lay, c)}`, x, g, () => valueNode(PV(bi), idx), () => seGate(bi, c),
+        [`Squeeze-and-excitation scales every number by the gate of its ${lay.cs === 1 ? 'feature' : 'channel'}: here ${fmt(x, 3)} × ${fmt(g, 3)}. The gate is the same for all of ${seName(lay, c)}'s numbers and is worked out afresh for every example.`], [...pyGrab(pyName(bi), 'y', 'out[0]'), `print(grab['y'].flatten()[${idx}])                 # x times its ${lay.cs === 1 ? 'feature' : 'channel'}'s gate`].join('\n'));
+    }
+    // coordinate channels: the picture's own channels pass through, the new ones hold positions
+    function coordsValue(bi, idx) {
+      const lay = layOf(bi), { C, H } = lay, Wd = lay.W, HW = H * Wd, c = Math.floor(idx / HW), p = idx % HW;
+      if (c < C) return Object.assign(valueNode(PV(bi), idx), { sub: `channel ${c + 1}, passed on unchanged` });
+      const kk = c - C, v = lay.grid[kk * HW + p], x = p % Wd, y = Math.floor(p / Wd);
+      return Object.assign(Dp.stored(X, v, `${['the column', 'the row', 'the distance from the centre'][kk]} of pixel (${x}, ${y})`), { sub: [`column ${x} of 0…${Wd - 1}, scaled to −1…1`, `row ${y} of 0…${H - 1}, scaled to −1…1`, 'from 0 (the centre) to 1 (a corner)'][kk] });
+    }
+    // global max pool: the largest of a channel's (a feature's) numbers
+    function gmpValue(bi, c) {
+      const lay = layOf(bi), { P, cs, ps } = lay, xin = inVals(bi), im = cs !== 1, s = inS(bi);
+      const cells = Array.from({ length: P }, (_, p) => ({ v: xin[c * cs + p * ps], at: c * cs + p * ps, p })), best = cells.reduce((a, q) => (q.v > a.v ? q : a)), vals = Float32Array.from(cells.map((q) => q.v));
+      const where = (p) => (im ? `(${p % s[2]}, ${Math.floor(p / s[2])})` : tok(p)), br = W2([0, 0.32, 0.6, 0.56], [0, 0.3, 1, 0.3]);
+      return Dp.lazy({
+        title: `${blockTitle(bi)} · the largest of ${im ? `channel ${c + 1}` : `feature ${c}`}`, sub: `max of ${P} = ${fmt(best.v, 3)}`, tone: 's6',
+        summary: (ctx, q, S) => S.bars(ctx, vals, q, { color: (k) => (k === best.p ? theme.c('s6') : theme.c('muted', 0.6)) }),
+        inner: (ctx, q, S) => {
+          const u = S.u(q, 8, 13), b2 = S.place(q, br);
+          S.lines(ctx, [`y[${c}] = the largest of its ${P} numbers = ${fmt(best.v, 4)}`, `found at ${where(best.p)}`], S.place(q, [0, 0, 1, 0.2]), { mono: true, size: u * 0.92, strong: (k) => k === 0 });
+          S.caption(ctx, `every ${im ? 'pixel' : 'position'}, the largest marked: zoom into a bar`, b2, { size: u * 0.8, minW: 200 });
+          S.bars(ctx, vals, b2, { color: (k) => (k === best.p ? theme.c('s6') : theme.c('muted', 0.6)) });
+        },
+        grids: [{ id: 'all', rect: br, rows: 1, cols: P, make: (i, j) => valueNode(PV(bi), cells[j].at) }],
+        about: [`Global max pooling keeps the largest number of ${im ? `channel ${c + 1} over all its pixels` : `feature ${c} over all the positions`}: here ${fmt(best.v, 4)}, at ${where(best.p)}. It answers "did this pattern appear anywhere, and how strongly?" and forgets where. The gradient goes only to the winner.`],
+        code: `x = torch.randn${pyShape(s)}\ny = x.amax(${im ? '(2, 3)' : '1'})                                  # (1, ${s[im ? 0 : 1]})\nprint(y[0, ${c}] == x[0, ${im ? `${c}` : `:, ${c}`}].max())           # True`,
+      }, () => [Object.assign(valueNode(PV(bi), best.at), { id: 'max', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner, at ${where(best.p)}` })]);
+    }
+    // attention pooling: a position's score, its weight, and a number of the weighted average
+    const apAt = (lay, t, c) => t * lay.ts + c * lay.fs;
+    const apWhere = (lay, t, s) => (lay.fs !== 1 ? `pixel (${t % s[2]}, ${Math.floor(t / s[2])})` : tok(t));
+    function apScore(bi, t) {
+      const lay = layOf(bi), D = lay.D, xin = inVals(bi), w = lay.w.w, mod = pyName(bi), s = inS(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · the score of ${apWhere(lay, t, s)}`, sub: `${D} numbers · the query, no bias`, tone: 's7',
+        terms: Array.from({ length: D }, (_, c) => ({ a: xin[apAt(lay, t, c)], w: w[c] })), bias: null, act: null, zName: 's', outName: 's',
+        inLabel: (c) => nameOf(PV(bi), apAt(lay, t, c)), wLabel: (c) => `query[${c}]`, inputNode: (c) => valueNode(PV(bi), apAt(lay, t, c)),
+        rowNames: [`the ${D} numbers at ${apWhere(lay, t, s)}`, 'the query (learned, the same for every position)', 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.query.weight[0]`, a: 'x_t', b: '' },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `x_t = ${lay.fs !== 1 ? `grab['x'][0, :, ${Math.floor(t / s[2])}, ${t % s[2]}]` : `grab['x'][0, ${t}]`}`],
+        about: [`How well ${apWhere(lay, t, s)} matches the query: a dot product of its ${D} numbers with the learned query vector. A high score means "look here"; the softmax turns all the scores into weights.`],
+      });
+    }
+    // a computed weight: the score that made it (left) and the softmax over the row of scores (right)
+    function weightNode(title, sub, scores, j, label, scoreNode, about, tone) {
+      const rs = W2([[0, 0.3, 0.48, 0.66], [0.52, 0.3, 0.48, 0.66]], [[0, 0.28, 1, 0.33], [0, 0.65, 1, 0.33]]), m = Math.max(...scores), es = scores.map((v) => Math.exp(v - m)), z = es.reduce((p, v) => p + v, 0);
+      return Dp.lazy({
+        title, sub, tone,
+        summary: (ctx, r, S) => S.bars(ctx, Float32Array.from(es, (v) => v / z), r, { color: (k) => (k === j ? theme.c(tone) : theme.c('muted', 0.6)) }),
+        inner: (ctx, r, S) => S.lines(ctx, [`${label} = e^(s) / Σ e^(s) over ${scores.length} scores = ${fmt(es[j] / z, 4)}`, 'Zoom into the score, or into the softmax.'], S.place(r, [0, 0.02, 1, 0.2]), { mono: true, size: S.u(r, 8, 13), strong: (k) => k === 0 }),
+        about,
+      }, () => [Object.assign(scoreNode(), { id: 's', rect: rs[0] }), Object.assign(Dp.lib(X, 'softmax', { scores, j, label }), { id: 'soft', rect: rs[1] })]);
+    }
+    function apWeight(bi, t) {
+      const lay = layOf(bi), { T, D } = lay, xin = inVals(bi), w = lay.w.w, s = inS(bi);
+      const scores = Array.from({ length: T }, (_, u) => { let z = 0; for (let c = 0; c < D; c++) z += w[c] * xin[apAt(lay, u, c)]; return z; });
+      return weightNode(`${blockTitle(bi)} · the weight of ${apWhere(lay, t, s)}`, `softmax of ${T} scores: ${fmt(pOf(bi).att[t], 3)}`, scores, t, `a[${t}]`, () => apScore(bi, t),
+        [`The attention weight of ${apWhere(lay, t, s)}: its score against the query, passed through a softmax with every other ${lay.fs !== 1 ? 'pixel' : 'position'}'s score, so that the ${T} weights are positive and add up to 1.`], 's7');
+    }
+    function apValue(bi, c) {
+      const lay = layOf(bi), T = lay.T, xin = inVals(bi), att = pOf(bi).att, s = inS(bi), im = lay.fs !== 1;
+      return mixNode({
+        title: `${blockTitle(bi)} · number ${c}`, formula: `y[${c}] = Σ a_t · x_t[${c}] over ${T} ${im ? 'pixels' : 'positions'}`, tone: 's7',
+        a: Array.from({ length: T }, (_, t) => xin[apAt(lay, t, c)]), w: Array.from(att.subarray(0, T)),
+        aName: `${im ? `channel ${c + 1}` : `feature ${c}`} at every ${im ? 'pixel' : 'position'}`, wName: 'the attention weights a_t (they add up to 1)',
+        aLabel: (t) => `x[${t}]`, wLabel: (t) => `a[${t}]`, aNode: (t) => valueNode(PV(bi), apAt(lay, t, c)), wNode: (t) => apWeight(bi, t),
+        about: [`Number ${c} of the pooled vector: ${im ? `channel ${c + 1}` : `feature ${c}`} averaged over the ${im ? 'pixels' : 'positions'} with the attention weights. Where the weights are large, that ${im ? 'pixel' : 'position'} decides; the same weights are used for every number of the output.`, 'Zoom into a weight for its softmax, and from there into the score that matched the query.'],
+        code: [...pyGrab(pyName(bi), 'x', 'inp[0]'), `x = grab['x']${im ? '.flatten(2).transpose(1, 2)              # (1, pixels, channels)' : ''}`, `a = ${pyName(bi)}.query(x).softmax(1)                 # (1, ${T}, 1): the weights`, `print((a * x).sum(1)[0, ${c}])`].join('\n'),
+      });
+    }
+    // the state-space layer: u = B·x, the memory h = a·h₋₁ + (1 − a)·u, its decay a = σ(θ), the output f(C·h + c)
+    function ssmU(bi, t, j) {
+      const lay = layOf(bi), D = lay.D, xin = inVals(bi), mod = pyName(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · input to memory ${j + 1} at ${tok(t)}`, sub: `${D} inputs, no bias`, tone: 's7',
+        terms: Array.from({ length: D }, (_, p) => ({ a: xin[t * D + p], w: lay.Bm.w[j * D + p] })), bias: null, act: null, zName: 'u', outName: 'u',
+        inLabel: (p) => nameOf(PV(bi), t * D + p), wLabel: (p) => `B[${j}, ${p}]`, inputNode: (p) => valueNode(PV(bi), t * D + p),
+        rowNames: [`x at ${tok(t)}`, `row ${j} of B (learned)`, 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.B.weight[${j}]`, a: 'x_t', b: '' }, codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `x_t = grab['x'][0, ${t}]`],
+        about: [`What memory ${j + 1} is offered at ${tok(t)}: a learned mix of the ${D} numbers of this step, u = B·x. The memory takes in only a share 1 − a of it.`],
+      });
+    }
+    function ssmDecay(bi, j) {
+      const lay = layOf(bi), th = lay.theta.w[j], a = 1 / (1 + Math.exp(-th)), tau = -1 / Math.log(a);
+      return fnNode(`memory ${j + 1}: a = σ(θ) = ${fmt(a, 3)}`, 'sigmoid', th, () => Dp.stored(X, th, `θ[${j}], learned`),
+        [`How much memory ${j + 1} keeps from one step to the next: a = σ(θ) = ${fmt(a, 4)}. Each step it keeps a share a of what it held and takes in 1 − a of the new input, an exponential moving average whose memory fades by a factor of e in about ${fmt(tau, 2)} steps. θ is learned, so each memory finds its own time scale; the sigmoid keeps a between 0 and 1, so the memory never explodes.`]);
+    }
+    function ssmH(bi, t, j) {
+      const lay = layOf(bi), N = lay.N, r = pOf(bi), a = 1 / (1 + Math.exp(-lay.theta.w[j])), hp = t ? r.h[(t - 1) * N + j] : 0, u = r.u[t * N + j];
+      return sumNode(`${blockTitle(bi)} · memory ${j + 1} at ${tok(t)}`, 'h = a·h₋₁ + (1 − a)·u: keep a share of the old memory, take in the rest from the input', a * hp, (1 - a) * u,
+        () => prodNode('a · h₋₁: what it keeps', `a = ${fmt(a, 3)} of the memory before`, a, hp, () => ssmDecay(bi, j), () => (t ? ssmH(bi, t - 1, j) : Object.assign(Dp.stored(X, 0, 'the memory before the first step'), { sub: 'h starts at 0' })), ['What survives from the step before: the memory h₋₁ times a. Zoom into h₋₁ to go one step back in time.']),
+        () => prodNode('(1 − a) · u: what it takes in', `1 − a = ${fmt(1 - a, 3)} of the new input u`, 1 - a, u, () => Object.assign(ssmDecay(bi, j), { sub: `the factor is 1 − a = ${fmt(1 - a, 3)}` }), () => ssmU(bi, t, j), ['The new part: the input mix u, scaled by 1 − a so that the memory stays a weighted average of what it has seen.']),
+        [`Memory ${j + 1} at ${tok(t)}. Unlike an LSTM there is no squashing inside the loop: the memory is a plain weighted sum of every input so far, the most recent counting most. That is why the gradient through time neither fades nor explodes here, and why the whole loop can be computed for all steps at once (a parallel scan), which S4 and Mamba do on long sequences.`],
+        [...pyGrab(pyName(bi), 'x', 'inp[0]'), `a = torch.sigmoid(${pyName(bi)}.theta[${j}])            # memory ${j + 1}'s decay`, `u = ${pyName(bi)}.B(grab['x'])[0, :, ${j}]`, 'h = 0.0', `for t in range(${t + 1}):                          # one step at a time`, '    h = a * h + (1 - a) * u[t]', 'print(h)'].join('\n'));
+    }
+    function ssmOut(bi, t, k) {
+      const lay = layOf(bi), { N, U } = lay, r = pOf(bi), act = actOf(lay.fn.id), mod = pyName(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · output ${k + 1} at ${tok(t)}`, sub: `${N} memories${act ? ', ' + act.label : ''}`, tone: 's7',
+        terms: Array.from({ length: N }, (_, j) => ({ a: r.h[t * N + j], w: lay.Cm.w[k * N + j] })), bias: lay.cb.w[k], act, outName: 'y',
+        inLabel: (j) => `memory ${j + 1}`, wLabel: (j) => `C[${k}, ${j}]`, inputNode: (j) => ssmH(bi, t, j),
+        rowNames: [`the ${N} memories at ${tok(t)}`, `row ${k} of C (learned)`, 'products wᵢ·aᵢ'],
+        vars: { w: `${mod}.C.weight[${k}]`, a: 'h_t', b: `${mod}.C.bias[${k}]` },
+        codeHead: [...pyGrab(mod, 'x', 'inp[0]'), `a, u = torch.sigmoid(${mod}.theta), ${mod}.B(grab['x'][0])`, `h_t = torch.zeros(${N})`, `for t in range(${t + 1}):                          # the memories, step by step`, '    h_t = a * h_t + (1 - a) * u[t]'], codeWhat: `as output ${k} of ${mod}.C`,
+        about: [`Output ${k + 1} at ${tok(t)}: a weighted sum of the ${N} memories, each a moving average of the input with its own time scale${act ? `, bent by ${act.label}` : ''}. Short memories follow the latest steps; long ones carry what happened many steps ago.`, 'Zoom into a memory for how it got there, and back in time from there.'],
+      });
+    }
+    // radial basis units: the squared distance to a unit's centre, then the bump exp(−d² / 2σ²)
+    function rbfValue(bi, idx) {
+      const lay = layOf(bi), { nIn: F, U } = lay, t = Math.floor(idx / U), j = idx % U, xin = inVals(bi), cen = lay.c.w, sg = Math.exp(lay.ls.w[j]), r = pOf(bi), d2 = r.d2[idx], phi = r.out[idx], seqL = lay.rows > 1;
+      const xs = Float32Array.from({ length: F }, (_, i) => xin[t * F + i]), cs = Float32Array.from({ length: F }, (_, i) => cen[j * F + i]), diff = Float32Array.from(xs, (v, i) => v - cs[i]);
+      const R = W2({ t: [0, 0, 1, 0.22], x: [0, 0.32, 0.48, 0.14], c: [0, 0.56, 0.48, 0.14], d: [0, 0.8, 0.48, 0.16], exp: [0.55, 0.3, 0.45, 0.66] }, { t: [0, 0, 1, 0.2], x: [0, 0.28, 1, 0.1], c: [0, 0.44, 1, 0.1], d: [0, 0.6, 1, 0.1], exp: [0, 0.76, 1, 0.23] });
+      return Dp.lazy({
+        title: `${blockTitle(bi)} · unit ${j + 1}${seqL ? ` at ${tok(t)}` : ''}`, sub: `exp(−d² / 2σ²) = ${fmt(phi, 4)}`, tone: 's1',
+        summary: (ctx, q, S) => S.bars(ctx, diff, q),
+        inner: (ctx, q, S) => {
+          const u = S.u(q, 8, 13);
+          S.lines(ctx, [`φ = exp(−d² / 2σ²) = exp(−${fmt(d2, 3)} / (2 × ${fmt(sg, 3)}²)) = ${fmt(phi, 4)}`, `d² = Σ (xᵢ − cᵢ)² = ${fmt(d2, 4)}: the squared distance to the centre`], S.place(q, R.t), { mono: true, size: u * 0.88, strong: (k) => k === 0 });
+          for (const [key, cap, v] of [['x', 'the input x', xs], ['c', `unit ${j + 1}'s centre c (learned)`, cs], ['d', 'x − c', diff]]) { const rr = S.place(q, R[key]); S.caption(ctx, cap, rr, { size: u * 0.8, minW: 120 }); S.bars(ctx, v, rr); }
+        },
+        grids: [
+          { id: 'x', rect: R.x, rows: 1, cols: F, make: (a, i) => valueNode(PV(bi), t * F + i) },
+          { id: 'c', rect: R.c, rows: 1, cols: F, make: (a, i) => Dp.stored(X, cs[i], `centre[${j}, ${i}] (learned)`) },
+          { id: 'd', rect: R.d, rows: 1, cols: F, make: (a, i) => Object.assign(Dp.fadd(X, xs[i], -cs[i]), { title: `x${NA.sub(i + 1)} − c${NA.sub(i + 1)}` }) },
+        ],
+        about: [`Unit ${j + 1} answers how close the input is to its centre: d² adds up the squared differences, and the bump exp(−d² / 2σ²) turns the distance into a number between 0 and 1: 1 at the centre, ${fmt(Math.exp(-0.5), 2)} at a distance of σ = ${fmt(sg, 3)}, nearly 0 beyond 3σ. Training moves the centre toward the examples it should respond to and widens or narrows σ.`, 'The box on the right is the exponential, step by step.'],
+        code: [...pyGrab(pyName(bi), 'x', 'inp[0]'), `rbf, x = ${pyName(bi)}, grab['x']`, 'd2 = ((x[..., None, :] - rbf.centres) ** 2).sum(-1)   # the squared distance to each centre', `print(torch.exp(-d2 / (2 * torch.exp(2 * rbf.log_width)))${seqL ? `[0, ${t}, ${j}]` : `[0, ${j}]`})`].join('\n'),
+      }, () => [Object.assign(Dp.lib(X, 'exp', { x: -d2 / (2 * sg * sg) }), { id: 'exp', rect: R.exp, title: 'The exponential' })]);
+    }
+    // maxout: one piece (a weighted sum), and the unit, the largest of its pieces
+    function maxoutPiece(bi, t, j, p) {
+      const lay = layOf(bi), { nIn: F, k } = lay, xin = inVals(bi), row = j * k + p, mod = pyName(bi), seqL = lay.rows > 1;
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · unit ${j + 1}, piece ${p + 1}${seqL ? ` at ${tok(t)}` : ''}`, sub: `${F} inputs, no activation`, tone: 's1',
+        terms: Array.from({ length: F }, (_, i) => ({ a: xin[t * F + i], w: lay.W.w[row * F + i] })), bias: lay.b.w[row], act: null, zName: `z${NA.sub(p + 1)}`, outName: `z${NA.sub(p + 1)}`,
+        inLabel: (i) => nameOf(PV(bi), t * F + i), wLabel: (i) => `W[${row}, ${i}]`, inputNode: (i) => valueNode(PV(bi), t * F + i),
+        vars: { w: `${mod}.lin.weight[${row}]`, a: 'x', b: `${mod}.lin.bias[${row}]` }, codeHead: [...pyGrab(mod, 'x', 'inp[0][0]'), seqL ? `x = grab['x'][${t}]` : `x = grab['x']`], codeWhat: `as piece ${p + 1} of unit ${j + 1}: row ${row} of ${mod}.lin`,
+        about: [`Piece ${p + 1} of unit ${j + 1}: a plain weighted sum of the inputs with its own weights and bias, a straight line (a flat plane) over the inputs. The unit keeps whichever of its pieces is largest.`],
+      });
+    }
+    function maxoutValue(bi, idx) {
+      const lay = layOf(bi), { U, k } = lay, t = Math.floor(idx / U), j = idx % U, z = pOf(bi).z, vals = Float32Array.from({ length: k }, (_, p) => z[idx * k + p]);
+      let best = 0; for (let p = 1; p < k; p++) if (vals[p] > vals[best]) best = p;
+      const br = W2([0, 0.32, 0.6, 0.56], [0, 0.3, 1, 0.3]);
+      return Dp.lazy({
+        title: `${nameOf(bi, idx)}: the largest of ${k} pieces`, sub: `max(${Array.from(vals, (v) => fmt(v, 2)).join(', ')}) = ${fmt(vals[best], 3)}`, tone: 's1',
+        summary: (ctx, q, S) => S.bars(ctx, vals, q, { color: (p) => (p === best ? theme.c('s1') : theme.c('muted', 0.6)) }),
+        inner: (ctx, q, S) => {
+          const u = S.u(q, 8, 13), b2 = S.place(q, br);
+          S.lines(ctx, [`a = max(z₁, …, z${NA.sub(k)}) = ${fmt(vals[best], 4)}`, `piece ${best + 1} wins for this example`], S.place(q, [0, 0, 1, 0.2]), { mono: true, size: u * 0.92, strong: (p) => p === 0 });
+          S.caption(ctx, 'its pieces, the winner marked: zoom into one', b2, { size: u * 0.8, minW: 160 }); S.bars(ctx, vals, b2, { color: (p) => (p === best ? theme.c('s1') : theme.c('muted', 0.6)) });
+        },
+        grids: [{ id: 'z', rect: br, rows: 1, cols: k, make: (a, p) => maxoutPiece(bi, t, j, p) }],
+        about: [`A maxout unit has no activation function: it computes ${k} weighted sums and keeps the largest. The largest of straight pieces is a bent, convex shape, so the unit learns its own bend: two pieces can make a ReLU (one piece fixed at 0) or an absolute value, more make rounder shapes. Only the winning piece learns from this example.`],
+        code: [...pyGrab(pyName(bi), 'x', 'inp[0]'), `z = ${pyName(bi)}.lin(grab['x']).view(-1, ${U}, ${k})    # ${U} units × ${k} pieces, one row per ${lay.rows > 1 ? 'position' : 'example'}`, `print(z.max(-1).values[${lay.rows > 1 ? t : 0}, ${j}])`].join('\n'),
+      }, () => [Object.assign(maxoutPiece(bi, t, j, best), { id: 'win', rect: W2([0.66, 0.32, 0.34, 0.56], [0, 0.68, 1, 0.3]), title: `The winner: piece ${best + 1}` })]);
+    }
+    // a mixture of experts: an expert's unit, a gate's logit and weight, and the mixed output
+    function moeExpert(bi, t, e, j) {
+      const lay = layOf(bi), { nIn: F, U } = lay, xin = inVals(bi), row = e * U + j, act = actOf(lay.fn.id), mod = pyName(bi), seqL = lay.rows > 1;
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · expert ${e + 1}, unit ${j + 1}${seqL ? ` at ${tok(t)}` : ''}`, sub: `${F} inputs${act ? ', ' + act.label : ''}`, tone: 's3',
+        terms: Array.from({ length: F }, (_, i) => ({ a: xin[t * F + i], w: lay.We.w[row * F + i] })), bias: lay.be.w[row], act, outName: 'a',
+        inLabel: (i) => nameOf(PV(bi), t * F + i), wLabel: (i) => `expert ${e + 1}: W[${j}, ${i}]`, inputNode: (i) => valueNode(PV(bi), t * F + i),
+        vars: { w: `${mod}.experts[${e}].weight[${j}]`, a: 'x', b: `${mod}.experts[${e}].bias[${j}]` }, codeHead: [...pyGrab(mod, 'x', 'inp[0][0]'), seqL ? `x = grab['x'][${t}]` : `x = grab['x']`], codeWhat: `as unit ${j} of expert ${e + 1}, an nn.Linear`,
+        about: [`Unit ${j + 1} of expert ${e + 1}: an ordinary neuron. Each expert is a small dense layer of its own; the gate decides how much its answer counts for this example.`],
+      });
+    }
+    function moeLogit(bi, t, e) {
+      const lay = layOf(bi), F = lay.nIn, xin = inVals(bi), mod = pyName(bi);
+      return Dp.neuron(X, {
+        title: `${blockTitle(bi)} · the gate's score for expert ${e + 1}`, sub: `${F} inputs, no activation`, tone: 's3',
+        terms: Array.from({ length: F }, (_, i) => ({ a: xin[t * F + i], w: lay.Wg.w[e * F + i] })), bias: lay.bg.w[e], act: null, zName: 'l', outName: 'l',
+        inLabel: (i) => nameOf(PV(bi), t * F + i), wLabel: (i) => `gate W[${e}, ${i}]`, inputNode: (i) => valueNode(PV(bi), t * F + i),
+        vars: { w: `${mod}.gate.weight[${e}]`, a: 'x', b: `${mod}.gate.bias[${e}]` }, codeHead: [...pyGrab(mod, 'x', 'inp[0][0]'), lay.rows > 1 ? `x = grab['x'][${t}]` : `x = grab['x']`],
+        about: [`The gate's score for expert ${e + 1}: a weighted sum of the same input the experts see. The gate learns which kind of example each expert handles best.`],
+      });
+    }
+    function moeGate(bi, t, e) {
+      const lay = layOf(bi), E = lay.E, r = pOf(bi), g = r.gate[t * E + e], logits = Array.from(r.logits.subarray(t * E, (t + 1) * E)), chosen = NA.range(E).filter((q) => r.gate[t * E + q] > 0);
+      if (!(g > 0)) return Object.assign(moeLogit(bi, t, e), { title: `Expert ${e + 1}: not chosen`, sub: `its score ${fmt(logits[e], 3)} is not among the top ${lay.top}, so its weight is 0` });
+      return weightNode(`${blockTitle(bi)} · the weight of expert ${e + 1}`, `softmax over the ${chosen.length} chosen: ${fmt(g, 3)}`, chosen.map((q) => logits[q]), chosen.indexOf(e), `g${NA.sub(e + 1)}`, () => moeLogit(bi, t, e),
+        [`How much expert ${e + 1}'s answer counts here: the gate's score for it, passed through a softmax with the scores of the ${chosen.length === E ? 'other experts' : `other chosen expert${chosen.length === 2 ? '' : 's'} (the top ${lay.top})`}, so that the weights add up to 1.`], 's3');
+    }
+    function moeValue(bi, idx) {
+      const lay = layOf(bi), { E, U } = lay, t = Math.floor(idx / U), j = idx % U, r = pOf(bi), seqL = lay.rows > 1;
+      return mixNode({
+        title: `${nameOf(bi, idx)}: the experts' answers, weighed by the gate`, formula: `y = Σₑ gₑ · expertₑ[${j}]`, tone: 's3',
+        a: Array.from({ length: E }, (_, e) => r.ae[(t * E + e) * U + j]), w: Array.from(r.gate.subarray(t * E, (t + 1) * E)),
+        aName: `unit ${j + 1} of each of the ${E} experts`, wName: `the gate's weights${lay.top < E ? ` (top ${lay.top}; the others 0)` : ''}`,
+        aLabel: (e) => `expert ${e + 1}`, wLabel: (e) => `g${NA.sub(e + 1)}`, aNode: (e) => moeExpert(bi, t, e, j), wNode: (e) => moeGate(bi, t, e),
+        about: [`Number ${j} of the output${seqL ? ` at ${tok(t)}` : ''}: every expert's unit ${j + 1}, weighed by the gate's weights for this example${lay.top < E ? `. Only the top ${lay.top} expert${lay.top === 1 ? '' : 's'} have a weight; the rest count for nothing and learn nothing from it` : ''}.`, 'Zoom into a weight for the gate, or into an expert for its neuron.'],
+        code: [...pyGrab(pyName(bi), 'x', 'inp[0]'), `moe, x = ${pyName(bi)}, grab['x']${seqL ? `[:, ${t}]` : ''}`, 'logits = moe.gate(x)', ...(lay.top < E ? [`kth = logits.topk(${lay.top}, -1).values[..., -1:]`, 'logits = logits.masked_fill(logits < kth, float("-inf"))   # the others get no say'] : []), 'g = logits.softmax(-1)', `print(sum(g[0, e] * moe.act(moe.experts[e](x))[0, ${j}] for e in range(${E})))`].join('\n'),
+      });
     }
 
     // ---- attention: the projections, the heads, a query's weighted average
@@ -1606,7 +1928,7 @@ print(torch.allclose(out, block(x), atol=1e-6))    # True`;
           Object.assign(addLevel(i, 2), { id: 'add2', rect: R.add2 }),
         ]);
       }
-      const more = moreBlock(i, { b, c, sI, sO, base, have, lay, r, xin, pnum, mod, plain, sum });
+      const more = moreBlock(i, { b, c, sI, sO, base, have, lay, r, xin, pnum, mod, plain, sum }) || newestBlock(i, { b, c, sI, sO, base, have, lay, r, xin, pnum, mod, plain, sum });
       if (more) return more;
       return Object.assign(base, { inner: plainLevel([NAME[b.type] || b.type], prob), about: ['A block this view does not know how to draw.'], code: '' });
     }
@@ -1992,6 +2314,296 @@ print(torch.allclose(out, glu(x)))                 # True`;
           ],
           get about() { return [about0, 'Each row of the table is added to the same row of the input. Zoom into an output for the addition.']; },
           code,
+        });
+      }
+      return null;
+    }
+    // the levels of the newest blocks: separable convolution, squeeze-and-excitation, coordinates, random shifts, global
+    // max pool, attention pool, state space, radial basis units, maxout and a mixture of experts
+    function newestBlock(i, k) {
+      const { b, c, sI, sO, base, have, lay, r, xin, pnum, mod, plain, sum } = k;
+      const seqLabels = (T) => Array.from({ length: T }, (_, t) => (P && P.ids ? word(P.ids[t]) : String(t)));
+      const actName = (id) => ACT(id).label, pyAct = (id, z) => (PYACT[id] ? PYACT[id](z) : z), seqIn = !!sI && sI.length === 2;
+
+      if (b.type === 'sepconv') {
+        const F = c.filters, kk = c.k, dil = c.dilation || 1, st = c.stride || 1, C0 = sI ? sI[0] : '?', reach = dil * (kk - 1) + 1, full = sI ? sI[0] * kk * kk * F + F : 0;
+        base.sub = `${F} filters · ${kk}×${kk}${dil > 1 ? ` · dilation ${dil}` : ''}${st > 1 ? ` · stride ${st}` : ''} · ${actName(c.act)}`;
+        const about0 = `A separable convolution does a convolution's work in two steps. First each of the ${C0} input channel${C0 === 1 ? '' : 's'} goes through its own ${kk} × ${kk} filter (the depthwise step)${dil > 1 ? `, its taps ${dil} pixels apart so that it spans ${reach} × ${reach}` : ''}${st > 1 ? `, moving ${st} pixels at a time` : ''}. Then a 1 × 1 convolution mixes the channels at every pixel into ${F} outputs (the pointwise step), and ${actName(c.act)} bends them. Split like this it needs ${fmtInt(pnum)} learned numbers where a full convolution of the same size needs ${fmtInt(full)}: the idea behind Xception and MobileNet, which run on phones.`;
+        const code = `sep = ${mod}                                   # SeparableConv(${C0}, ${F}, ${kk}${st > 1 ? `, stride=${st}` : ''}${dil > 1 ? `, dilation=${dil}` : ''})
+x = torch.randn${sI ? pyShape(sI) : '(1, 8, 14, 14)'}
+m = sep.depthwise(x)                               # each channel through its own filter (groups=${C0})
+z = sep.pointwise(m)                               # a 1 x 1 mix of the channels: ${sO ? pyShape(sO) : ''}
+a = ${pyAct(c.act, 'z')}`;
+        if (!have) return plain([`a = ${actName(c.act)}(pointwise(depthwise(x)))`], [about0], code);
+        const { C, k: K } = lay, [, Ho, Wo] = sO, dw = lay.dw.w, pw = lay.pw.w, midS = [C, Ho, Wo];
+        const LY = W2({ t: [0, 0, 1, 0.14], k: [0, 0.22, 0.21, 0.36], pw: [0, 0.66, 0.21, 0.32], mid: [0.26, 0.2, 0.35, 0.78], out: [0.65, 0.2, 0.35, 0.78] },
+          { t: [0, 0, 1, 0.13], k: [0, 0.17, 0.46, 0.18], pw: [0.54, 0.2, 0.46, 0.15], mid: [0, 0.42, 1, 0.26], out: [0, 0.73, 1, 0.26] });
+        const vmid = tensorView(`spm${i}`, midS, r.mid, LY.mid, { id: 'm', caption: `after each channel's own filter: ${C} channels`, make: (q) => { const p = posOf(midS, q); return sepDepth(i, p.c, p.y, p.x); }, name: `${blockTitle(i)} (depthwise)`, tone: base.tone, tiles: 16 });
+        const vout = tensorView(`spo${i}`, sO, r.out, LY.out, { id: 'y', caption: `out: ${F} channel${F === 1 ? '' : 's'} of ${Ho} × ${Wo}, open one`, make: (q) => sepValue(i, q), name: blockTitle(i), tone: base.tone, tiles: 16 });
+        return Object.assign(base, {
+          summary: sum(`spS${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13), kr = S.place(q, LY.k), pr = S.place(q, LY.pw);
+            S.lines(ctx, [`a = ${actName(c.act)}(pointwise(depthwise(x)))`, `${shapeText(sI)} → ${shapeText(sO)} · ${fmtInt(pnum)} learned numbers (a full convolution: ${fmtInt(full)})`], S.place(q, LY.t), { mono: true, size: u * 0.88, strong: (k2) => k2 === 0 });
+            const L2 = tileLay(C, 16, kr.w, kr.h - u * 1.4), cs = Math.min(kr.w / L2.cols, (kr.h - u * 1.4) / L2.rows), m = maxAbs(dw);
+            S.text(ctx, `${C > L2.k ? `${L2.k} of ` : ''}${C} filters of ${K} × ${K}, one per channel`, kr.x, kr.y + u * 0.6, { size: u * 0.8, color: theme.c('muted'), maxW: kr.w });
+            for (let ch = 0; ch < L2.k; ch++) drawHeat(ctx, heatImg(cache, `spk${i}:${ch}`, K, K, (a2, b2) => dw[(ch * K + a2) * K + b2], { max: m }), { x: kr.x + (ch % L2.cols) * cs + 2, y: kr.y + u * 1.4 + Math.floor(ch / L2.cols) * cs + 2, w: cs - 4, h: cs - 4 }, K, K, true);
+            S.caption(ctx, `the 1 × 1 mix: ${F} × ${C}`, pr, { size: u * 0.8, minW: 90 }); drawHeat(ctx, heatImg(cache, `spw${i}`, F, C, (a2, b2) => pw[a2 * C + b2]), pr, F, C);
+            vmid.draw(ctx, q, S, u); vout.draw(ctx, q, S, u);
+          },
+          grids: [{ id: 'pw', rect: LY.pw, rows: F, cols: C, make: (f, ch) => Dp.stored(X, pw[f * C + ch], `pointwise[${f}, ${ch}]: how much output ${f + 1} takes from channel ${ch + 1}`) }, vmid.grid, vout.grid],
+          get about() { return [about0, 'Left: each channel’s own filter (top) and the 1 × 1 mix (bottom, one row per output). Middle: the channels after their own filters. Right: the output. Open an output cell for the mix behind it, and from there each channel’s filter.']; },
+          code,
+        });
+      }
+
+      if (b.type === 'se') {
+        const im = !!sI && sI.length === 3, C = sI ? (im ? sI[0] : sI[sI.length - 1]) : '?', h = sI ? NA.bx.seHidden(C, c.ratio) : '?', what = im ? 'channel' : 'feature';
+        base.sub = `${C} ${what}s → ${h} → ${C} gates`;
+        const about0 = `Squeeze-and-excitation lets the network turn its own ${what}s up or down, example by example. The squeeze: each ${what} is averaged over ${im ? 'its pixels' : seqIn ? 'the positions' : 'itself (on a vector each feature is already one number)'}, ${C} numbers that sum up the example. The excitation: a small network (${C} → ${h} ReLU unit${h === 1 ? '' : 's'} → ${C} sigmoids) turns them into ${C} gates between 0 and 1, and every number of a ${what} is multiplied by its gate. Attention over ${what}s, for few weights: it won the ImageNet challenge in 2017 and is part of EfficientNet and many image models since.`;
+        const code = `se = ${mod}                                     # SqueezeExcite(${C}, ${h}), defined in the script
+x = torch.randn${sI ? pyShape(sI) : '(1, 16, 7, 7)'}
+s = ${im ? 'x.mean((2, 3))' : seqIn ? 'x.mean(1)' : 'x'}                                     # the squeeze: one number per ${what}
+g = torch.sigmoid(se.excite(F.relu(se.squeeze(s))))   # the gates, between 0 and 1
+print(torch.allclose(se(x), x * g${im ? '[:, :, None, None]' : seqIn ? '[:, None, :]' : ''}))   # True`;
+        if (!have) return plain(['out = x · σ(W₂ · ReLU(W₁ · mean(x) + b₁) + b₂)'], [about0], code);
+        const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.22, 0.33, 0.76], s: [0.38, 0.25, 0.24, 0.18], h: [0.38, 0.52, 0.24, 0.16], g: [0.38, 0.78, 0.24, 0.18], out: [0.67, 0.22, 0.33, 0.76] },
+          { t: [0, 0, 1, 0.12], in: [0, 0.17, 0.47, 0.32], out: [0.53, 0.17, 0.47, 0.32], s: [0, 0.56, 1, 0.11], h: [0, 0.72, 1, 0.1], g: [0, 0.87, 1, 0.12] });
+        const vin = tensorView(`sei${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
+        const vout = tensorView(`seo${i}`, sO, r.out, LY.out, { id: 'y', caption: 'out: x × its gate, open one', make: (q2) => seValue(i, q2), name: blockTitle(i), tone: base.tone, tiles: 16 });
+        const rows = [['s', `the squeeze: ${C} averages`, r.s, (a2, cc) => seSqueeze(i, cc), C], ['h', `the middle: ${h} ReLU unit${h === 1 ? '' : 's'}`, r.a1, (a2, j) => seUnit(i, j), h], ['g', `the gates (0 to 1), one per ${what}`, r.g, (a2, cc) => seGate(i, cc), C]];
+        return Object.assign(base, {
+          summary: sum(`seS${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13);
+            S.lines(ctx, [`out = x · g,  g = σ(W₂ · ReLU(W₁ · s + b₁) + b₂),  s = the mean of each ${what}`, `${shapeText(sI)} → ${shapeText(sO)} · ${fmtInt(pnum)} learned numbers`], S.place(q, LY.t), { mono: true, size: u * 0.86, strong: (k2) => k2 === 0 });
+            vin.draw(ctx, q, S, u); vout.draw(ctx, q, S, u);
+            for (const [key, cap, vals] of rows) { const rr = S.place(q, LY[key]); S.caption(ctx, cap, rr, { size: u * 0.78, minW: 120 }); S.bars(ctx, vals, rr, key === 'g' ? { max: 1, positive: true } : {}); }
+          },
+          grids: [vin.grid, vout.grid, ...rows.map(([key, , , make, n]) => ({ id: key, rect: LY[key], rows: 1, cols: n, make }))],
+          get about() { let lo = 0, hi = 0; for (let q2 = 1; q2 < C; q2++) { if (r.g[q2] < r.g[lo]) lo = q2; if (r.g[q2] > r.g[hi]) hi = q2; } return [about0, `For this example the gates run from ${fmt(r.g[lo], 2)} (${seName(lay, lo)}, the most shut) to ${fmt(r.g[hi], 2)} (${seName(lay, hi)}). Open a gate for the small network behind it, or an output for a number times its gate.`]; },
+          code,
+        });
+      }
+
+      if (b.type === 'coords') {
+        const K = c.radius ? 3 : 2, Hh = sI ? sI[1] : 'H', Ww = sI ? sI[2] : 'W';
+        base.sub = c.radius ? '+ column, row and distance' : '+ column and row';
+        const about0 = `Adds ${K} channels to the picture that hold, at every pixel, its column and its row, each scaled to run from −1 to 1${c.radius ? ', and its distance from the centre' : ''}. A convolution uses the same filter everywhere, so on its own it cannot tell where in the picture it is: that makes it good at finding a pattern anywhere and poor at saying where. With coordinate channels the filters after it can use the position when it matters (CoordConv, 2018). Nothing is learned.`;
+        const code = `x = torch.randn${sI ? pyShape(sI) : '(1, 1, 14, 14)'}
+xy = coord_channels(${Hh}, ${Ww}, ${c.radius ? 'True' : 'False'})                  # (${K}, ${Hh}, ${Ww}), defined in the script
+out = torch.cat([x, xy.expand(len(x), -1, -1, -1)], 1)   # ${sO ? pyShape(sO) : ''}`;
+        if (!have) return plain([`out = [x, column, row${c.radius ? ', distance' : ''}]`], [about0], code);
+        const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.22, 0.42, 0.76], out: [0.5, 0.22, 0.5, 0.76] }, { t: [0, 0, 1, 0.13], in: [0, 0.2, 1, 0.33], out: [0, 0.6, 1, 0.39] });
+        const vin = tensorView(`cdi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
+        const vout = tensorView(`cdo${i}`, sO, r.out, LY.out, { id: 'y', caption: `out: ${sI[0]} channel${sI[0] === 1 ? '' : 's'}, then the ${K} coordinates`, make: (q2) => coordsValue(i, q2), name: blockTitle(i), tone: base.tone, tiles: 16 });
+        return Object.assign(base, {
+          summary: sum(`cdS${i}`, sO, r.out),
+          inner: (ctx, q, S) => { const u = S.u(q, 8, 13); S.lines(ctx, [`out = [x, column, row${c.radius ? ', distance' : ''}]`, `${shapeText(sI)} → ${shapeText(sO)}, no parameters`], S.place(q, LY.t), { mono: true, size: u * 0.9, strong: (k2) => k2 === 0 }); vin.draw(ctx, q, S, u); vout.draw(ctx, q, S, u); },
+          grids: [vin.grid, vout.grid],
+          about: [about0, `The last channels of the output are the coordinates: a ramp from left to right, one from top to bottom${c.radius ? ', and rings around the centre' : ''}. Open one to read a pixel's position.`],
+          code,
+        });
+      }
+
+      if (b.type === 'augment') {
+        const sh = c.shift, fl = !!c.flip;
+        base.sub = `up to ${sh} px${fl ? ', mirrored' : ''}, while training`;
+        const about0 = `Data augmentation inside the model: while training, every picture is moved by up to ${sh} pixel${sh === 1 ? '' : 's'} left or right and up or down (the pixels that come in are 0)${fl ? ', and half of them are mirrored left to right' : ''}, a new move for every picture at every step. The model never sees exactly the same picture twice, so it cannot memorise exact pixels and has to learn what stays the same when a picture moves. When the model is used, as on this example, nothing happens.`;
+        const code = `aug = ${mod}                                   # RandomShift(${sh}${fl ? ', flip=True' : ''}), defined in the script
+x = torch.randn${sI ? pyShape(sI) : '(1, 1, 14, 14)'}
+aug.train(); print((aug(x) - x).abs().sum())       # moved: other numbers
+aug.eval();  print(torch.equal(aug(x), x))         # when the model is used: True`;
+        if (!have) return plain(['while training: out = x, moved (and mirrored);  when used: out = x'], [about0], code);
+        const [C, H, Wd] = sI, rng = new NA.RNG(977 * (i + 1) + 31), oy = rng.int(2 * sh + 1) - sh, ox = rng.int(2 * sh + 1) - sh, mir = fl && rng.next() < 0.5, moved = new Float32Array(xin.length);
+        for (let ch = 0; ch < C; ch++) for (let y = 0; y < H; y++) for (let x = 0; x < Wd; x++) { const iy = y + oy, ix = (mir ? Wd - 1 - x : x) + ox; if (iy >= 0 && iy < H && ix >= 0 && ix < Wd) moved[(ch * H + y) * Wd + x] = xin[(ch * H + iy) * Wd + ix]; }
+        // out[y, x] = in[y + oy, x + ox]: the picture itself moves the other way
+        const dir = (v, neg, pos) => (v ? `${Math.abs(v)} px ${v > 0 ? neg : pos}` : ''), how = [dir(ox, 'left', 'right'), dir(oy, 'up', 'down')].filter(Boolean).join(' and ') || 'not at all';
+        const both = Math.max(maxAbs(xin), maxAbs(moved)), LY = W2({ t: [0, 0, 1, 0.16], in: [0, 0.24, 0.47, 0.74], tr: [0.53, 0.24, 0.47, 0.74] }, { t: [0, 0, 1, 0.16], in: [0, 0.24, 1, 0.34], tr: [0, 0.64, 1, 0.34] });
+        const vin = tensorView(`agi${i}`, sI, xin, LY.in, { id: 'y', max: both, caption: 'when the model is used, as here: unchanged', make: (q2) => Object.assign(valueNode(PV(i), q2), { sub: 'unchanged by random shifts when the model is used' }), name: `Block ${blockNo(i)}`, tone: base.tone, tiles: 16 });
+        const vtr = tensorView(`agt${i}`, sI, moved, LY.tr, { id: 't', max: both, caption: `one made-up training step: moved ${how}${mir ? ', mirrored' : ''}`, make: (q2) => Dp.stored(X, moved[q2], 'a pixel after the move (0 where it came in from outside)'), name: `Block ${blockNo(i)} (one training step)`, tone: base.tone, tiles: 16 });
+        return Object.assign(base, {
+          summary: sum(`agS${i}`, sO, r.out),
+          inner: (ctx, q, S) => { const u = S.u(q, 8, 13); S.lines(ctx, [`training: out = x moved by up to ${sh} px${fl ? ', mirrored half the time' : ''};   used: out = x`, 'a new random move for every picture at every step; nothing to learn'], S.place(q, LY.t), { mono: true, size: u * 0.9, strong: (k2) => k2 === 0 }); vin.draw(ctx, q, S, u); vtr.draw(ctx, q, S, u); },
+          grids: [vin.grid, vtr.grid],
+          about: [about0, 'The right-hand picture is one made-up training step, to show what a move does; on this example, as whenever the model is used, nothing changes.'],
+          code,
+        });
+      }
+
+      if (b.type === 'gmp') {
+        const im = !!sI && sI.length === 3;
+        base.sub = im ? 'the largest of each channel' : 'the largest of each feature';
+        const about0 = im ? `Global max pooling keeps the largest number of each channel over all its pixels: the whole picture becomes one short vector${sI ? ` of ${sI[0]} numbers` : ''}, whatever its size. It records how strongly each filter fired at its best spot and forgets where. Where global average pooling asks how much of a pattern there is, max asks whether it appears at all.` : 'Global max pooling keeps each feature\'s largest value over all the positions: did this pattern appear anywhere in the sequence, and how strongly? (Sequence pool set to "largest" does the same.)';
+        const code = `x = torch.randn${sI ? pyShape(sI) : '(1, 8, 7, 7)'}\ny = x.amax(${im ? '(2, 3)' : '1'})                                  # ${sO ? pyShape(sO) : ''}: the largest of each ${im ? 'channel' : 'feature'}`;
+        if (!have) return plain([im ? 'y[c] = the largest pixel of channel c' : 'y[c] = maxₜ x[t, c]'], [about0], code);
+        const LY = W2({ t: [0, 0, 1, 0.14], in: [0, 0.22, 0.6, 0.76], out: [0.66, 0.4, 0.34, 0.4] }, { t: [0, 0, 1, 0.14], in: [0, 0.22, 1, 0.46], out: [0, 0.77, 1, 0.2] });
+        const vin = tensorView(`gmi${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
+        return Object.assign(base, {
+          summary: sum(`gmS${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13), orr = S.place(q, LY.out);
+            S.lines(ctx, [im ? 'y[c] = the largest pixel of channel c' : 'y[c] = maxₜ x[t, c]', `${shapeText(sI)} → ${shapeText(sO)}, no parameters`], S.place(q, LY.t), { mono: true, size: u * 0.9, strong: (k2) => k2 === 0 });
+            vin.draw(ctx, q, S, u);
+            S.caption(ctx, 'the largest values: zoom into any', orr, { size: u * 0.8, minW: 140 }); S.bars(ctx, r.out, orr);
+          },
+          grids: [vin.grid, { id: 'y', rect: LY.out, rows: 1, cols: sO[0], make: (a2, q2) => gmpValue(i, q2) }],
+          about: [about0, 'Zoom into a bar of the result for the number that won.'],
+          code,
+        });
+      }
+
+      if (b.type === 'attnpool') {
+        const im = !!sI && sI.length === 3, T = sI ? (im ? sI[1] * sI[2] : sI[0]) : '?', D = sI ? (im ? sI[0] : sI[1]) : '?', place = im ? 'pixel' : 'position';
+        base.sub = `one learned query · ${T} ${place}s`;
+        const about0 = `Attention pooling turns ${im ? 'a picture' : 'a sequence'} into one vector by a weighted average of its ${place}s, with weights it works out for each example. A learned query vector (${D} numbers) is compared with every ${place} (a dot product); the scores go through a softmax, so the ${T} weights are positive and add up to 1, and the output is the weighted average. An average treats every ${place} alike and the last step keeps only one; this learns where to look. It is attention with a single, learned query, much as a transformer classifier gathers its answer into one token.`;
+        const code = `pool = ${mod}                                  # AttentionPool(${D}), defined in the script
+x = torch.randn${sI ? pyShape(sI) : '(1, 16, 32)'}${im ? '.flatten(2).transpose(1, 2)   # (1, pixels, channels)' : ''}
+a = pool.query(x).softmax(1)                       # (1, ${T}, 1): a weight for every ${place}
+y = (a * x).sum(1)                                 # (1, ${D}): the weighted average`;
+        if (!have) return plain(['a = softmax(x · q);   y = Σ aₜ · xₜ'], [about0], code);
+        const att = r.att, q0 = lay.w.w, where = (t) => apWhere(lay, t, sI);
+        let top = 0; for (let t = 1; t < T; t++) if (att[t] > att[top]) top = t;
+        const LY = W2({ t: [0, 0, 1, 0.14], in: [0.07, 0.22, 0.4, 0.76], a: [0.5, 0.22, 0.17, 0.76], q: [0.72, 0.24, 0.28, 0.26], out: [0.72, 0.64, 0.28, 0.34] },
+          { t: [0, 0, 1, 0.13], in: [0.12, 0.18, 0.62, 0.5], a: [0.78, 0.18, 0.22, 0.5], q: [0, 0.79, 0.47, 0.19], out: [0.53, 0.79, 0.47, 0.19] });
+        const vin = tensorView(`api${i}`, sI, xin, LY.in, { id: 'x', caption: `in: ${shapeText(sI)}`, make: (q2) => valueNode(PV(i), q2), name: `Block ${blockNo(i)} input`, tone: base.tone, tiles: 16 });
+        return Object.assign(base, {
+          summary: sum(`apS${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13), ar = S.place(q, LY.a), qr = S.place(q, LY.q), orr = S.place(q, LY.out);
+            S.lines(ctx, [`a = softmax(x · q) over ${T} ${place}s;   y = Σ aₜ · xₜ`, `${shapeText(sI)} → ${shapeText(sO)} · ${fmtInt(pnum)} learned numbers (the query) · most weight on ${where(top)}, ${fmtPct(att[top], 0)}`], S.place(q, LY.t), { mono: true, size: u * 0.86, strong: (k2) => k2 === 0 });
+            vin.draw(ctx, q, S, u);
+            S.caption(ctx, 'the weights a (they add up to 1)', ar, { size: u * 0.8, minW: 90 });
+            if (im) drawHeat(ctx, heatImg(cache, `apa${i}`, sI[1], sI[2], (y, x) => att[y * sI[2] + x], { seq: true }), ar, sI[1], sI[2], true);
+            else hbars(ctx, att, ar, { max: Math.max(...att), color: (t) => theme.c(t === top ? 's7' : 'muted', t === top ? 1 : 0.7) });
+            S.caption(ctx, `the query q: ${D} numbers (learned)`, qr, { size: u * 0.8, minW: 100 }); S.bars(ctx, q0, qr);
+            S.caption(ctx, 'out: the weighted average, open one', orr, { size: u * 0.8, minW: 100 }); S.bars(ctx, r.out, orr);
+          },
+          grids: [vin.grid,
+            im ? { id: 'a', rect: LY.a, rows: sI[1], cols: sI[2], square: true, make: (y, x) => apWeight(i, y * sI[2] + x) } : { id: 'a', rect: LY.a, rows: T, cols: 1, make: (t) => apWeight(i, t) },
+            { id: 'q', rect: LY.q, rows: 1, cols: D, make: (a2, cc) => Dp.stored(X, q0[cc], `query[${cc}] (learned)`) },
+            { id: 'y', rect: LY.out, rows: 1, cols: D, make: (a2, cc) => apValue(i, cc) }],
+          get about() { return [about0, `For this example ${fmtPct(att[top], 0)} of the weight goes to ${where(top)}. Open a weight for its score and the softmax, or an output number for the weighted average behind it.`]; },
+          code,
+        });
+      }
+
+      if (b.type === 'ssm') {
+        const N = c.state, U = c.units, T = sI ? sI[0] : '?', Din = sI ? sI[1] : '?';
+        base.sub = `${N} memories → ${U} · ${T} steps`;
+        const about0 = `A state-space layer reads the sequence one step at a time and keeps ${N} memories. Each memory is a moving average: at every step it keeps a share a of what it held and takes in the rest, 1 − a, from a learned mix of the input, h = a·h₋₁ + (1 − a)·B·x. Every memory has its own a, learned, from quick ones that follow the latest steps to slow ones that remember far back. The output at every step is a weighted sum of the memories, then ${actName(c.act)}.`;
+        const about1 = 'This is the core of the state-space models (S4 in 2021, Mamba in 2023) that rival transformers on long sequences. Inside the loop everything is linear, with no squashing as in an LSTM, so the memory neither fades nor explodes through time, and the whole loop can be worked out for all steps at once (a parallel scan) instead of one by one. Mamba also lets a depend on the input, so it can choose what to remember.';
+        const code = `ssm = ${mod}                                   # StateSpace(${Din}, ${N}, ${U}), defined in the script
+x = torch.randn${sI ? pyShape(sI) : '(1, 16, 1)'}
+a, u = torch.sigmoid(ssm.theta), ssm.B(x)          # the ${N} decays, and the input mixed for each memory
+h, hs = torch.zeros(${N}), []
+for t in range(x.shape[1]):                        # one step at a time
+    h = a * h + (1 - a) * u[0, t]
+    hs.append(h)
+y = ${pyAct(c.act, 'ssm.C(torch.stack(hs))')}                 # (${T}, ${U})`;
+        if (!have) return plain(['h = a·h₋₁ + (1 − a)·B·x;   y = f(C·h + c)'], [about0, about1], code);
+        const dec = Float32Array.from(lay.theta.w, (v) => 1 / (1 + Math.exp(-v))), labels = seqLabels(T);
+        const panels = [['x', `x (${Din})`, Din, (t, p) => xin[t * Din + p], (t, p) => valueNode(PV(i), t * Din + p)], ['u', `u = B·x (${N})`, N, (t, j) => r.u[t * N + j], (t, j) => ssmU(i, t, j)],
+          ['h', `h: the memories (${N})`, N, (t, j) => r.h[t * N + j], (t, j) => ssmH(i, t, j)], ['y', `y (${U})`, U, (t, k2) => r.out[t * U + k2], (t, k2) => ssmOut(i, t, k2)]];
+        const n = panels.length, cols = wide ? n : 2, x0 = wide ? 0.06 : 0.11, LY = { t: [0, 0, 1, 0.14], a: [x0, 0.21, 1 - x0, 0.08] };
+        { const rows = Math.ceil(n / cols), gap = wide ? 0.014 : 0.03, w0 = (1 - x0 - gap * (cols - 1)) / cols, y0 = 0.38, h0 = (0.98 - y0 - 0.07 * (rows - 1)) / rows; panels.forEach(([key], m) => { LY[key] = [x0 + (m % cols) * (w0 + gap), y0 + Math.floor(m / cols) * (h0 + 0.07), w0, h0]; }); }
+        return Object.assign(base, {
+          summary: sum(`smS${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13), ar = S.place(q, LY.a);
+            S.lines(ctx, [`h = a·h₋₁ + (1 − a)·B·x;   y = ${actName(c.act)}(C·h + c) · ${fmtInt(pnum)} learned numbers`, 'time runs down every panel, one row per step; zoom into a memory to walk back in time'], S.place(q, LY.t), { mono: true, size: u * 0.86, strong: (k2) => k2 === 0 });
+            S.caption(ctx, `each memory's a, from ${fmt(Math.min(...dec), 2)} (quick) to ${fmt(Math.max(...dec), 2)} (slow)`, ar, { size: u * 0.78, minW: 160 }); S.bars(ctx, dec, ar, { max: 1, positive: true });
+            panels.forEach(([key, cap, w2, get], m) => {
+              const pr = S.place(q, LY[key]);
+              S.caption(ctx, cap, pr, { size: u * 0.78, minW: 40 });
+              drawHeat(ctx, heatImg(cache, `ssm${i}:${key}`, T, w2, get), pr, T, w2);
+              if (m % cols === 0) rowLabels(ctx, S, labels, pr, { size: u * 0.74, maxW: Math.max(16, x0 * q.w - 4) });
+            });
+          },
+          grids: [{ id: 'a', rect: LY.a, rows: 1, cols: N, make: (a2, j) => ssmDecay(i, j) }, ...panels.map(([key, , w2, , make]) => ({ id: key, rect: LY[key], rows: T, cols: w2, make }))],
+          get about() { return [about0, about1, 'The bars at the top are the memories’ decays; the panels show the input, what each memory is offered, the memories themselves and the output, at every step. Zoom into a memory for its update, and from there one step back in time.']; },
+          code,
+        });
+      }
+
+      if (b.type === 'rbf' || b.type === 'maxout' || b.type === 'moe') {
+        const U = c.units, Fi = sI ? sI[sI.length - 1] : '?', T = seqIn ? sI[0] : 1, labels = seqIn ? seqLabels(T) : null;
+        const info = {
+          rbf: {
+            sub: `${U} bumps · width ${fmt(c.width, 2)} to start`, formula: 'φⱼ = exp(−‖x − cⱼ‖² / 2σⱼ²)',
+            about: `A layer of ${U} radial basis units. Each has a centre (${Fi} numbers) and a width σ, both learned, and answers how close the input is to its centre: φ = exp(−‖x − c‖² / 2σ²), 1 at the centre and fading to 0 away from it. Together the bumps cover the input space, and the next layer adds them up with its weights: an RBF network, one of the oldest kinds of neural network (1988). A ReLU neuron splits the space with a straight line; an RBF unit marks out a round patch of it.${seqIn ? ' On a sequence the same units run at every position.' : ''}`,
+            code: `rbf = ${mod}                                   # RBF(${Fi}, ${U}, ${NA.fmtCode(c.width, 3)}), defined in the script\nx = torch.randn${sI ? pyShape(sI) : '(1, 2)'}\nd2 = ((x[..., None, :] - rbf.centres) ** 2).sum(-1)   # the squared distance to each centre\nphi = torch.exp(-d2 / (2 * torch.exp(2 * rbf.log_width)))   # ${sO ? pyShape(sO) : ''}`,
+          },
+          maxout: {
+            sub: `${U} units · ${c.pieces} pieces each`, formula: `aⱼ = max over ${c.pieces} pieces of (Wₚ·x + bₚ)`,
+            about: `A maxout layer of ${U} units. Each unit computes ${c.pieces} weighted sums of the input, its pieces, and keeps the largest. It needs no activation function: the largest of a few straight lines is already a bent, convex shape, so each unit learns its own bend. With two pieces it can be a ReLU (one piece learning to stay at 0), an absolute value or a leaky ramp; with more, rounder shapes. Proposed in 2013 to work with dropout; the price is ${c.pieces} times the weights of a dense layer as wide.${seqIn ? ' On a sequence the same units run at every position.' : ''}`,
+            code: `mx = ${mod}                                    # Maxout(${Fi}, ${U}, ${c.pieces}), defined in the script\nx = torch.randn${sI ? pyShape(sI) : '(1, 8)'}\nz = mx.lin(x).view(*x.shape[:-1], ${U}, ${c.pieces})          # every unit's pieces\na = z.max(-1).values                               # ${sO ? pyShape(sO) : ''}: the largest piece of each unit`,
+          },
+          moe: {
+            sub: `${c.experts} experts of ${U} · ${c.top ? `top ${c.top}` : 'all, weighted'}`, formula: `y = Σₑ gₑ · expertₑ(x),  g = softmax(gate(x))${c.top ? ` over the top ${c.top}` : ''}`,
+            about: `A mixture of ${c.experts} experts. Each expert is a small dense layer of ${U} ${actName(c.act)} units; the gate, a dense layer with one output per expert, scores the experts for each example, and a softmax turns the scores into weights.${c.top ? ` Only the top ${c.top} expert${c.top === 1 ? '' : 's'} by score take part, their weights renormalised; the rest get no say and no gradient, so different experts can specialise in different kinds of example.` : ' Every expert takes part, weighted.'} The output is the weighted sum of the experts' answers. Large language models such as Mixtral use this with hundreds of millions of weights per expert: only the chosen few run for each token, so the model holds far more knowledge than it computes with.${seqIn ? ' On a sequence the gate chooses afresh at every position.' : ''}`,
+            code: `moe = ${mod}                                   # MixtureOfExperts(${Fi}, ${U}, ${c.experts}, top=${c.top}), defined in the script\nx = torch.randn${sI ? pyShape(sI) : '(1, 8)'}\ng = moe.gate(x).softmax(-1)                        # the gate's weights${c.top ? ` (before keeping the top ${c.top})` : ''}\nprint(g, moe(x).shape)`,
+          },
+        }[b.type];
+        base.sub = info.sub;
+        if (!have) return plain([info.formula], [info.about], info.code);
+        const F = lay.nIn, Uu = lay.U, R = lay.rows;
+        // the plane of two inputs, for radial basis units on points: each centre with a circle of radius σ
+        if (b.type === 'rbf' && F === 2 && !seqIn) {
+          const cen = lay.c.w, sg = Float32Array.from(lay.ls.w, Math.exp), LY = W2({ t: [0, 0, 1, 0.14], pl: [0, 0.22, 0.5, 0.76], out: [0.56, 0.4, 0.44, 0.4] }, { t: [0, 0, 1, 0.12], pl: [0.1, 0.18, 0.8, 0.56], out: [0, 0.8, 1, 0.18] });
+          let best = 0; for (let j = 1; j < Uu; j++) if (r.out[j] > r.out[best]) best = j;
+          return Object.assign(base, {
+            summary: sum(`rbS${i}`, sO, r.out),
+            inner: (ctx, q, S) => {
+              const u = S.u(q, 8, 13), pr = S.place(q, LY.pl), side = Math.min(pr.w, pr.h), ox = pr.x + (pr.w - side) / 2, oy = pr.y, E = 1.5, Xp = (v) => ox + ((v + E) / (2 * E)) * side, Yp = (v) => oy + ((E - v) / (2 * E)) * side;
+              S.lines(ctx, [info.formula, `${Uu} centres and widths, ${fmtInt(pnum)} learned numbers · the dot is this example`], S.place(q, LY.t), { mono: true, size: u * 0.9, strong: (k2) => k2 === 0 });
+              S.frame(ctx, { x: ox, y: oy, w: side, h: side });
+              ctx.save(); ctx.beginPath(); ctx.rect(ox, oy, side, side); ctx.clip();
+              for (let j = 0; j < Uu; j++) {
+                const cx = Xp(cen[2 * j]), cy = Yp(cen[2 * j + 1]), rad = (sg[j] / (2 * E)) * side;
+                ctx.fillStyle = theme.c(base.tone, 0.05 + 0.5 * r.out[j]); ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = theme.c(base.tone, j === best ? 0.95 : 0.45); ctx.lineWidth = j === best ? 2 : 1; ctx.stroke();
+                ctx.fillStyle = theme.c('ink-2'); ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, Math.PI * 2); ctx.fill();
+              }
+              ctx.fillStyle = theme.c('focus'); ctx.beginPath(); ctx.arc(Xp(xin[0]), Yp(xin[1]), 4, 0, Math.PI * 2); ctx.fill();
+              ctx.restore();
+              S.caption(ctx, `the plane of the two inputs (−${E} to ${E}): a circle of radius σ round each centre`, { x: ox, y: oy, w: side, h: side }, { size: u * 0.78, minW: 200 });
+              const orr = S.place(q, LY.out); S.caption(ctx, 'out: each unit’s answer φ, open one', orr, { size: u * 0.8, minW: 140 }); S.bars(ctx, r.out, orr, { max: 1, positive: true });
+            },
+            grids: [{ id: 'y', rect: LY.out, rows: 1, cols: Uu, make: (a2, j) => rbfValue(i, j) }],
+            get about() { return [info.about, `For this example unit ${best + 1} is the nearest (outlined): φ = ${fmt(r.out[best], 3)}. The circles show each centre and its width σ in the plane of the two inputs, darker where the unit answers more. Open a bar for the distance and the bump behind it.`]; },
+            code: info.code,
+          });
+        }
+        // otherwise: the input, what the layer keeps per unit (centres, weights, the gate), and the output
+        const mid = {
+          rbf: { cap: `centres: ${Uu} × ${F} (learned)`, rows: Uu, cols: F, get: (j, p) => lay.c.w[j * F + p], open: (j, p) => Dp.stored(X, lay.c.w[j * F + p], `centre[${j}, ${p}] (learned)`) },
+          maxout: { cap: `weights: ${Uu} units × ${lay.k} pieces, by ${F} inputs`, rows: Uu * (lay.k || 1), cols: F, get: (j, p) => lay.W.w[j * F + p], open: (j, p) => Dp.stored(X, lay.W.w[j * F + p], `W[${j}, ${p}]: unit ${Math.floor(j / lay.k) + 1}, piece ${(j % lay.k) + 1}`) },
+          moe: { cap: `the gate's weights: ${lay.E} experts × ${F} (learned)`, rows: lay.E, cols: F, get: (e, p) => lay.Wg && lay.Wg.w[e * F + p], open: (e, p) => Dp.stored(X, lay.Wg.w[e * F + p], `gate W[${e}, ${p}]: expert ${e + 1}'s score for input ${p}`) },
+        }[b.type];
+        const outOpen = (t, j) => (b.type === 'rbf' ? rbfValue(i, t * Uu + j) : b.type === 'maxout' ? maxoutValue(i, t * Uu + j) : moeValue(i, t * Uu + j));
+        const gates = b.type === 'moe' ? { rows: R, cols: lay.E, get: (t, e) => r.gate[t * lay.E + e], open: (t, e) => moeGate(i, t, e) } : null;
+        const LY = W2(gates ? { t: [0, 0, 1, 0.14], x: [0.08, 0.22, 0.24, 0.76], w: [0.36, 0.22, 0.2, 0.34], g: [0.36, 0.64, 0.2, 0.34], o: [0.62, 0.22, 0.38, 0.76] } : { t: [0, 0, 1, 0.14], x: [0.08, 0.22, 0.26, 0.76], w: [0.39, 0.22, 0.26, 0.76], o: [0.7, 0.22, 0.3, 0.76] },
+          gates ? { t: [0, 0, 1, 0.13], x: [0.14, 0.18, 0.86, 0.18], w: [0.14, 0.42, 0.4, 0.2], g: [0.6, 0.42, 0.4, 0.2], o: [0.14, 0.68, 0.86, 0.3] } : { t: [0, 0, 1, 0.13], x: [0.14, 0.18, 0.86, 0.22], w: [0.14, 0.45, 0.86, 0.22], o: [0.14, 0.72, 0.86, 0.26] });
+        return Object.assign(base, {
+          summary: sum(`${b.type}S${i}`, sO, r.out),
+          inner: (ctx, q, S) => {
+            const u = S.u(q, 8, 13), at = (key) => S.place(q, LY[key]), xr = at('x'), wr = at('w'), orr = at('o');
+            S.lines(ctx, [info.formula, `${shapeText(sI)} → ${shapeText(sO)} · ${fmtInt(pnum)} learned numbers`], at('t'), { mono: true, size: u * 0.88, strong: (k2) => k2 === 0 });
+            S.caption(ctx, `input: ${seqIn ? `${T} positions × ` : ''}${F}`, xr, { size: u * 0.8, minW: 100 }); drawHeat(ctx, heatImg(cache, `${b.type}x${i}`, R, F, (t, p) => xin[t * F + p]), xr, R, F);
+            if (seqIn) rowLabels(ctx, S, labels, xr, { size: u * 0.76, maxW: Math.max(18, xr.x - q.x - 2) });
+            S.caption(ctx, mid.cap, wr, { size: u * 0.8, minW: 100 }); drawHeat(ctx, heatImg(cache, `${b.type}w${i}`, mid.rows, mid.cols, mid.get), wr, mid.rows, mid.cols);
+            if (gates) { const gr = at('g'); S.caption(ctx, `the gate's weights g${c.top ? ` (top ${c.top}, the rest 0)` : ''}`, gr, { size: u * 0.8, minW: 100 }); drawHeat(ctx, heatImg(cache, `moeg${i}`, gates.rows, gates.cols, gates.get, { seq: true, max: 1 }), gr, gates.rows, gates.cols); }
+            S.caption(ctx, `out: ${seqIn ? `${T} × ` : ''}${Uu}, open one`, orr, { size: u * 0.8, minW: 100 }); drawHeat(ctx, heatImg(cache, `${b.type}o${i}`, R, Uu, (t, j) => r.out[t * Uu + j]), orr, R, Uu);
+          },
+          grids: [
+            { id: 'x', rect: LY.x, rows: R, cols: F, make: (t, p) => valueNode(PV(i), t * F + p) },
+            { id: 'w', rect: LY.w, rows: mid.rows, cols: mid.cols, make: mid.open },
+            ...(gates ? [{ id: 'g', rect: LY.g, rows: gates.rows, cols: gates.cols, make: gates.open }] : []),
+            { id: 'o', rect: LY.o, rows: R, cols: Uu, make: outOpen },
+          ],
+          get about() { return [info.about, `Zoom into an output number for the computation behind it${b.type === 'moe' ? ', or into a gate weight for how the gate chose' : ''}.`]; },
+          code: info.code,
         });
       }
       return null;
@@ -2559,10 +3171,12 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
     //      of tokens, or of feature maps), wired by their weights; operations that act on every number alone (an
     //      activation, a norm, dropout, pooling) are thin pills between them. A column opens its layer, a node its
     //      neuron, token or channel, exactly as in the boxes view; a part of your own is a dashed box whose tab opens it.
-    const SHORT = { parallel: 'Parallel', conv: 'Conv', conv1d: 'Conv1d', transformer: 'Transf.', attention: 'Attention', patches: 'Patches', fourier: 'Fourier', gated: 'GLU', rnn: 'RNN', dense: 'Dense', position: 'Pos.', forest: 'Forest', boost: 'Boosting', knn: 'k-NN', linear: 'Linear', tree: 'Tree' };
-    const PILLS = new Set(['activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'pool', 'avgpool', 'flatten', 'gap', 'seqpool', 'position']);
+    const SHORT = { parallel: 'Parallel', conv: 'Conv', conv1d: 'Conv1d', transformer: 'Transf.', attention: 'Attention', patches: 'Patches', fourier: 'Fourier', gated: 'GLU', rnn: 'RNN', dense: 'Dense', position: 'Pos.', forest: 'Forest', boost: 'Boosting', knn: 'k-NN', linear: 'Linear', tree: 'Tree',
+      sepconv: 'SepConv', ssm: 'SSM', rbf: 'RBF', maxout: 'Maxout', moe: 'MoE' };
+    const PILLS = new Set(['activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'pool', 'avgpool', 'flatten', 'gap', 'seqpool', 'position', 'se', 'coords', 'augment', 'gmp', 'attnpool']);
     const sampled = (n, m) => (n <= m ? NA.range(n) : m <= 1 ? [0] : Array.from({ length: m }, (_, k) => Math.round((k * (n - 1)) / (m - 1))));
-    const pillText = (b) => { const c = cfgOf(b); return { activation: ACT(c.act).label, dropout: `dropout ${Math.round(c.p * 100)}%`, noise: `noise σ ${c.sigma}`, layernorm: 'LayerNorm', batchnorm: 'BatchNorm', pool: `max pool ${c.size}×${c.size}`, avgpool: `avg pool ${c.size}×${c.size}`, flatten: 'flatten', gap: 'global average', seqpool: `${c.mode} position${c.mode === 'last' ? '' : 's'}`, position: `+ positions` }[b.type] || NAME[b.type] || b.type; };
+    const pillText = (b) => { const c = cfgOf(b); return { activation: ACT(c.act).label, dropout: `dropout ${Math.round(c.p * 100)}%`, noise: `noise σ ${c.sigma}`, layernorm: 'LayerNorm', batchnorm: 'BatchNorm', pool: `max pool ${c.size}×${c.size}`, avgpool: `avg pool ${c.size}×${c.size}`, flatten: 'flatten', gap: 'global average', seqpool: `${c.mode} position${c.mode === 'last' ? '' : 's'}`, position: `+ positions`,
+      se: 'channel gates', coords: '+ coordinates', augment: `shifts ±${c.shift}`, gmp: 'global max', attnpool: 'attention pool' }[b.type] || NAME[b.type] || b.type; };
     // one position of a sequence, as its vector of numbers
     function vectorNode(title, sub, vals, make, about, code) {
       const v = Float32Array.from(vals), br = W2([0, 0.3, 1, 0.5], [0, 0.3, 1, 0.45]);

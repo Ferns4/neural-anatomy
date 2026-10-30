@@ -1,21 +1,56 @@
 /* builder-evo.js — evolution for the networks of the model builder's "Learn from rewards" (builder-rl.js hands
-   it the world and the network you built). Three methods:
+   it the world and the network you built). Six methods:
    · a genetic algorithm: a population of networks plays, each judged by the return of its best moves; the best
      few pass on unchanged and the rest are children of parents picked by a tournament (the best of 3), from the
      top fifth, or by rank; mixed weight by weight, neuron by neuron, or not at all; mutated by plain random
      nudges to one weight in ten, or by "safe" ones, each nudge divided by how much the moves depend on that
-     weight. With grow and prune on, a child may also gain or lose a neuron or a whole layer: a new neuron starts
-     with outgoing weights of 0 and a new layer passing its input straight through (or at random), so neither
-     changes what the network does at first, and a removed layer is folded into the next. A size penalty (the
-     fitness less a little for every 100 weights) keeps them small.
+     weight. With grow and prune on, a child may also gain or lose a neuron, or gain a hidden layer. A new neuron
+     starts with outgoing weights of 0, so it changes nothing until mutations put it to work. A new layer starts
+     with one neuron (or a few at random, or as wide as what it reads, for comparison): a narrow layer is a
+     bottleneck that passes on only the signals the next layer leans on most, so unlike a new neuron it changes
+     what the network does, and selection keeps it only if the child still does well; later "+1 neuron" changes
+     widen it without changing anything. A layer goes when its last neuron is pruned, folded into the next. A size
+     penalty (the fitness less a little for every 100 weights) keeps them small.
+   · novelty search (Lehman and Stanley, 2011): the same breeding, but a member is judged by how different its
+     behaviour is (where it ended up, how it played: two numbers each world measures) from its nearest neighbours
+     in its generation and in an archive of behaviours met before, optionally mixed with the reward. It never aims
+     at the goal, so a goal that a straight climb leads away from (the deceptive maze) can still be found on the
+     way. The network on show is the best by score found so far.
    · evolution strategies: one network, nudged in many random directions at once; how each nudged copy does says
      which way is uphill (an estimate of the gradient, with no backpropagation), and Adam takes a step that way.
+   · the cross-entropy method: a bell curve (a Gaussian) over the weights, its middle and its spread for every
+     weight; each generation samples networks from it and refits it to the best fifth, with a small floor under
+     the spread so it never stops looking.
    · MAP-Elites: a grid of 12 × 12 styles of play (two numbers each world measures, such as average speed and
      which side of the track it keeps); each new network goes to the cell of its style and stays if it beats the
      one there, so it finds the best of every style rather than one best.
+   · evolutionary reinforcement learning (ERL, Khadka and Tumer, 2018): a genetic algorithm whose every move goes
+     into a replay memory that a DQN learns from by gradient steps between generations; every few generations the
+     DQN's network joins the population in place of its worst member, and breeds if it does well.
    Every member is judged on the same starts, a few members per call (step(deadline)), so a big world never
    stalls the page; and every member keeps the path it took, so a whole generation can be shown at once. Runs in
-   the page and in node. */
+   the page and in node.
+
+   What the depth views draw (builder-viz.js), kept cheap:
+   · evo.history[k], one a generation: { gen, best, mean, weights, units, adj, div, divW } and by method
+       div: behaviour diversity, the mean distance of the members' behaviours (world.behavior(): 2 numbers in
+            [0, 1]) from their centroid; null when the world measures none
+       divW: weight diversity, the root mean square over members and weights of each weight's distance from the
+            members' mean, among the members of the best's shape; null when fewer than 2 share it
+       spread (the cross-entropy method): the mean per-weight spread σ its generation was drawn with
+       filled (MAP-Elites): how many of the 144 cells hold an elite
+       rlLoss (ERL): the DQN's average loss over its gradient steps after this generation (null before it learns)
+   · evo.last = { gen, members, best, mean }: members best first, each { id, parents, fit, adj, units, weights, beh,
+       trace, end, op, born } and by method
+       id: a number, unique in the run; parents: [] (the first generation, random or sampled ones, the DQN's
+            network), [id] (a mutated copy) or [id, id] (two parents mixed); an elite passed on unchanged keeps its id
+       op: what made it ('mutated', 'mixed and mutated', '+1 neuron in layer 2', …; null: unchanged)
+       nov (novelty search): its novelty; fromRL (ERL): true for the DQN's network copied into the population
+   · evo.lineage(id = the best): the line of first parents from the oldest ancestor still known to that member,
+       oldest first: [{ id, gen, fit, op, units }] (gen: the generation it was first judged in, fit: its fitness
+       then). A map of records is kept, pruned to the ancestors of the current population (and the network on
+       show, MAP-Elites' elites), at most EV.KEEP of them; evo.bestId() is the best's id.
+   · evo.novArchive (novelty search): [{ beh: [x, y], gen }], the behaviours kept as stepping stones. */
 (function (NA) {
   'use strict';
   const EV = {};
@@ -23,6 +58,9 @@
 
   // ------------------------------------------------------------------ architectures that grow and shrink
   EV.LIMITS = { layers: 6, units: 48 };
+  // how wide a new hidden layer starts: one neuron (the default), a few at random, or as wide as what it reads
+  EV.LAYER_SIZE = { one: 'One neuron', some: 'A few, at random', whole: 'A whole layer' };
+  EV.layerSize = (v) => (EV.LAYER_SIZE[v] ? v : 'one');
   // a model evolution can reshape: Dense blocks only (one activation each, no shortcut), on a list of numbers
   EV.evolvable = (blocks, input) => !!input && input.kind === 'vector' && blocks.every((b) => b.type === 'dense' && !b.residual && !Array.isArray(b.acts) && !b.grp);
   const unitsOf = (blocks) => blocks.map((b) => Math.max(1, Math.round(b.units) || 1));
@@ -71,16 +109,32 @@
     L[h] = { W, b, U: U - 1, I }; L[h + 1] = { W: W2, b: nx.b, U: nx.U, I: U - 1 };
     return { blocks: g.blocks.map((x, i) => (i === h ? withUnits(x, U - 1) : x)), w: join(L), op: `−1 neuron in layer ${h + 1}` };
   }
-  /* A new layer at position p (0: straight after the input), as wide as what it reads: its weights the identity, so
-     it passes its input straight through (exactly, after a ReLU layer), or at random. */
-  function addLayer(g, p, mode, rng, io) {
+  /* A new hidden layer at position p (0: straight after the input), reading the I numbers there. size 'whole': I
+     neurons, its weights the identity, so it passes its input straight through (exactly, after a ReLU layer), or
+     at random. 'one' (1 neuron) or 'some' (1 to I − 1, at random): a narrow layer. It passes on the signals the
+     next layer leans on most (the inputs whose columns of the next layer's weights are largest, in absolute size):
+     each of its neurons picks one of them (a weight of 1; or its weights at random), and the next layer reads them
+     with those same columns. What it leaves out is lost, so it changes what the network does: a bottleneck. */
+  function addLayer(g, p, mode, rng, io, size = 'whole') {
     if (g.blocks.length >= EV.LIMITS.layers) return null;
-    const sz = EV.sizes(g.blocks, io.nIn, io.K), U = sz[p];
+    const sz = EV.sizes(g.blocks, io.nIn, io.K), I = sz[p], L = split(sz, g.w), nx = L[p];
+    const U = size === 'whole' ? I : size === 'some' ? 1 + rng.int(Math.max(1, Math.min(I - 1, EV.LIMITS.units))) : 1;
     if (U > EV.LIMITS.units) return null;
-    const L = split(sz, g.w), W = new Float32Array(U * U), b = new Float32Array(U);
-    if (mode === 'random') { const sd = Math.sqrt(2 / U); for (let i = 0; i < W.length; i++) W[i] = rng.gauss(0, sd); }
-    else for (let i = 0; i < U; i++) W[i * U + i] = 1;
-    L.splice(p, 0, { W, b, U, I: U });
+    const W = new Float32Array(U * I), b = new Float32Array(U);
+    if (size === 'whole') {
+      if (mode === 'random') { const sd = Math.sqrt(2 / U); for (let i = 0; i < W.length; i++) W[i] = rng.gauss(0, sd); }
+      else for (let i = 0; i < U; i++) W[i * U + i] = 1;
+    } else {
+      // the inputs the next layer leans on most (the first of equals first), and its columns for them
+      const col = new Float64Array(I);
+      for (let r = 0; r < nx.U; r++) for (let j = 0; j < I; j++) col[j] += Math.abs(nx.W[r * I + j]);
+      const keep = NA.range(I).sort((a, c) => col[c] - col[a] || a - c).slice(0, U), W2 = new Float32Array(nx.U * U);
+      if (mode === 'random') { const sd = Math.sqrt(2 / I); for (let i = 0; i < W.length; i++) W[i] = rng.gauss(0, sd); }
+      else keep.forEach((j, k) => { W[k * I + j] = 1; });
+      for (let r = 0; r < nx.U; r++) keep.forEach((j, k) => { W2[r * U + k] = nx.W[r * I + j]; });
+      L[p] = { W: W2, b: nx.b, U: nx.U, I: U };
+    }
+    L.splice(p, 0, { W, b, U, I });
     const like = g.blocks[p - 1] || g.blocks[p] || { act: 'relu' }, blocks = g.blocks.slice();
     blocks.splice(p, 0, { type: 'dense', units: U, act: like.act || 'relu' });
     return { blocks, w: join(L), op: `+1 layer (${U}) at ${p + 1}${mode === 'random' ? ', random' : ''}` };
@@ -99,20 +153,28 @@
     blocks.splice(h, 1);
     return { blocks, w: join(L), op: `−1 layer (${a.U}) at ${h + 1}` };
   }
-  // one change to the architecture: a neuron more (most often) or less, a layer more or less
-  EV.mutateArch = function (g, rng, mode, io) {
-    const n = g.blocks.length, ops = [['neuron+', n ? 3 : 0], ['neuron-', n ? 2 : 0], ['layer+', n < EV.LIMITS.layers ? 1.4 : 0], ['layer-', n ? 1 : 0]];
+  // the last neuron of hidden layer h pruned: the layer goes, folded into the next
+  function pruneLast(g, h, io) { const r = removeLayer(g, h, io); if (r) r.op = `−1 neuron: layer ${h + 1} gone`; return r; }
+  /* One change to the architecture: a neuron more (most often) or less, a layer more. size: how wide a new layer
+     starts ('one', 'some' or 'whole'). With 'whole' a whole layer can also go at once (folded into the next);
+     otherwise a layer goes only when its last neuron is pruned. */
+  EV.mutateArch = function (g, rng, mode, io, size = 'one') {
+    const n = g.blocks.length, whole = size === 'whole', units = unitsOf(g.blocks);
+    const ops = [['neuron+', n ? 3 : 0], ['neuron-', n ? 2 : 0], ['layer+', n < EV.LIMITS.layers ? 1.4 : 0], ['layer-', n && whole ? 1 : 0]];
     const total = ops.reduce((s, o) => s + o[1], 0);
     for (let tries = 0; tries < 8; tries++) {
       let u = rng.next() * total, op = ops[0][0];
       for (const [name, wgt] of ops) { u -= wgt; if (u <= 0) { op = name; break; } }
-      const r = op === 'neuron+' ? addNeuron(g, rng.int(n), rng, io) : op === 'neuron-' ? (() => { const h = rng.int(n); return removeNeuron(g, h, weakest(g, h, io), io); })()
-        : op === 'layer+' ? addLayer(g, rng.int(n + 1), mode, rng, io) : removeLayer(g, rng.int(n), io);
+      let r;
+      if (op === 'neuron+') r = addNeuron(g, rng.int(n), rng, io);
+      else if (op === 'neuron-') { const h = rng.int(n); r = units[h] <= 1 && !whole ? pruneLast(g, h, io) : removeNeuron(g, h, weakest(g, h, io), io); }
+      else if (op === 'layer+') r = addLayer(g, rng.int(n + 1), mode, rng, io, size);
+      else r = removeLayer(g, rng.int(n), io);
       if (r) return r;
     }
     return null;
   };
-  Object.assign(EV, { split, join, addNeuron, removeNeuron, addLayer, removeLayer, weakest });
+  Object.assign(EV, { split, join, addNeuron, removeNeuron, addLayer, removeLayer, pruneLast, weakest });
 
   // ------------------------------------------------------------------ networks for every architecture met
   class Nets {
@@ -127,24 +189,55 @@
     make(blocks) { const m = NA.bx.build(blocks, this.input, this.output, { seed: 1 }); m.evoBlocks = blocks; m.evoChk = NA.bx.check(blocks, this.input, this.output); return m; }
   }
 
+  // ------------------------------------------------------------------ measures of a population
+  // how spread out weights are: the root mean square, over members and weights, of each weight's distance from the mean
+  function spreadOf(list) {
+    if (list.length < 2) return null;
+    const n = list[0].length, mean = new Float64Array(n);
+    for (const w of list) for (let i = 0; i < n; i++) mean[i] += w[i] / list.length;
+    let s = 0;
+    for (const w of list) for (let i = 0; i < n; i++) { const d = w[i] - mean[i]; s += d * d; }
+    return Math.sqrt(s / (list.length * n || 1));
+  }
+  // how spread out behaviours are: their mean distance from their centroid
+  function behSpread(behs) {
+    const B = behs.filter(Boolean);
+    if (!B.length) return null;
+    let cx = 0, cy = 0;
+    for (const b of B) { cx += b[0] / B.length; cy += b[1] / B.length; }
+    let s = 0;
+    for (const b of B) s += Math.hypot(b[0] - cx, b[1] - cy);
+    return s / B.length;
+  }
+  // each value's rank from 0 (the lowest) to 1 (the highest)
+  function ranks(v) { const n = v.length, r = new Float64Array(n); NA.range(n).sort((a, b) => v[a] - v[b]).forEach((k, i) => { r[k] = n > 1 ? i / (n - 1) : 0; }); return r; }
+  const argmax = (o, base, n) => { let a = 0; for (let k = 1; k < n; k++) if (o[base + k] > o[base + a]) a = k; return a; };
+  EV.spreadOf = spreadOf; EV.behSpread = behSpread;
+
   // ------------------------------------------------------------------ the population
   EV.SELECT = { tournament: 'A tournament: the best of 3 at random', truncation: 'The top fifth, at random', rank: 'By rank: the better, the likelier' };
   EV.CROSS = { uniform: 'Weight by weight: each from one parent or the other', neuron: 'Neuron by neuron: each neuron whole, with all its weights, from one parent', none: 'No mixing: a copy of one parent' };
   EV.MUTATE = { plain: 'Plain: one weight in ten nudged at random', safe: 'Safe: each nudge divided by how much the moves depend on that weight' };
   EV.PENALTY = { off: 0, light: 0.0005, strong: 0.003 };
+  EV.NOVELTY = { novelty: 'Novelty only', half: 'Half novelty, half reward' };
   EV.GRID = 12;
+  EV.KEEP = 400; // records kept for lineages, at most
+  EV.ARCHIVE = 1000; // behaviours novelty search keeps, at most (the oldest go first)
   /* T: the trainer (world, the network on show, rng, policy); s: the settings (pop, sigma, select, cross, mutate,
-     grow, penalty, newLayer; esSigma, esLr for evolution strategies). */
+     grow, penalty, newLayer, layerSize; esSigma, esLr for evolution strategies; novK, novMix, novAdd for novelty
+     search; cemElite, cemSigma, cemFloor for the cross-entropy method; erlSteps, erlEvery, erlLr for ERL). */
   class Evolution {
     constructor(T, s, blocks) {
-      Object.assign(this, { T, kind: T.method, rng: T.rng, world: T.world, gen: 0, history: [], last: null, job: null });
+      Object.assign(this, { T, kind: T.method, rng: T.rng, world: T.world, gen: 0, history: [], last: null, job: null, nextId: 1, records: new Map() });
       const net = T.net;
       this.io = { nIn: T.inSize, K: T.K };
       this.nets = new Nets(net.input, net.output);
       this.blocks = blocks || net.evoBlocks || [];
       this.size = Math.max(4, Math.round(s.pop) || 24); this.sigma = s.sigma > 0 ? s.sigma : 0.2;
       this.select = EV.SELECT[s.select] ? s.select : 'tournament'; this.cross = EV.CROSS[s.cross] ? s.cross : 'uniform'; this.mutation = EV.MUTATE[s.mutate] ? s.mutate : 'plain';
-      this.grow = !!s.grow && EV.evolvable(this.blocks, net.input); this.penalty = this.grow ? EV.PENALTY[s.penalty] ?? EV.PENALTY.light : 0; this.newLayer = s.newLayer === 'random' ? 'random' : 'identity';
+      // grow and prune: the genetic algorithm's alone
+      this.grow = this.kind === 'ga' && !!s.grow && EV.evolvable(this.blocks, net.input); this.penalty = this.grow ? EV.PENALTY[s.penalty] ?? EV.PENALTY.light : 0;
+      this.newLayer = s.newLayer === 'random' ? 'random' : 'identity'; this.layerSize = EV.layerSize(s.layerSize);
       const W = (NA.brl.WORLD[T.worldId] || {});
       this.episodes = (W.gaEpisodes || 2) + (T.ws.random || T.ws.slip || (T.worldId === 'track' && T.ws.track === 'random') ? 2 : 0); this.scale = W.scale || 1;
       const w0 = net.getWeights();
@@ -153,24 +246,39 @@
         this.esSigma = s.esSigma > 0 ? s.esSigma : 0.05; this.esLr = s.esLr > 0 ? s.esLr : 0.03; this.pairs = Math.max(2, Math.round(this.size / 2));
       } else if (this.kind === 'me') {
         this.archive = new Map(); this.w0 = w0; this.batch = this.size; this.axes = (NA.rlEnvs.WORLDS[T.worldId] || {}).axes || ['style 1', 'style 2'];
+      } else if (this.kind === 'cem') {
+        // the bell curve over the weights: its middle the network you built, the same spread for every weight
+        this.cemSigma = s.cemSigma > 0 ? s.cemSigma : 0.3; this.cemElite = s.cemElite > 0 && s.cemElite < 1 ? s.cemElite : 0.2; this.cemFloor = s.cemFloor >= 0 ? s.cemFloor : 0.05;
+        this.mu = Float32Array.from(w0); this.sd = new Float32Array(w0.length).fill(this.cemSigma);
       } else {
         // the first generation: the network you built and copies of it, each moved at random (the same architecture)
-        this.pop = NA.range(this.size).map((k) => { const w = Float32Array.from(w0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); return { blocks: this.blocks, w, op: null, born: 0 }; });
+        this.pop = NA.range(this.size).map((k) => { const w = Float32Array.from(w0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); return { blocks: this.blocks, w, op: k ? 'a copy moved at random' : 'the network you built', born: 0, id: this.newId(), parents: [] }; });
+        // novelty search: judged by how new its behaviour is (a world that measures none: by its return, as the genetic algorithm)
+        this.novel = this.kind === 'novelty' && typeof this.world.behavior === 'function';
+        if (this.novel) { this.novArchive = []; this.novK = Math.max(1, Math.round(s.novK) || 10); this.novMix = EV.NOVELTY[s.novMix] ? s.novMix : 'novelty'; this.novAdd = Math.max(1, Math.round(s.novAdd) || 2); this.champ = null; }
+        if (this.kind === 'erl') {
+          // the DQN: a network like yours (and its target network), learning from every move the population makes
+          this.q = T.makeNet(); this.q.setWeights(w0); this.qTarget = T.makeNet(); this.qTarget.setWeights(w0);
+          this.buf = []; this.bufNext = 0; this.bufCap = this.io.nIn > 64 ? 5000 : 20000; this.rlUpdates = 0; this.rlLoss = null;
+          this.erlSteps = Math.max(1, Math.round(s.erlSteps) || 200); this.erlEvery = Math.max(1, Math.round(s.erlEvery) || 5); this.erlLr = s.erlLr > 0 ? s.erlLr : 0.001; this.gamma = T.gamma;
+        }
       }
     }
+    newId() { return this.nextId++; }
     // how many weights an architecture has
     weightsOf(blocks) { return EV.weights(EV.sizes(blocks, this.io.nIn, this.io.K)); }
     /* One member's episodes with its best moves, all from the same starts this generation: its fitness (the average
        return), its style (behavior), the path it took and its ending (the first episode), and some of what it saw
-       (for safe mutations). */
+       (for safe mutations). ERL keeps every move in its replay memory. */
     play(net, seed, keep) {
-      const W = this.world, rng = new NA.RNG(seed), T = this.T, seen = [];
+      const W = this.world, rng = new NA.RNG(seed), T = this.T, seen = [], mem = this.buf;
       let total = 0, beh = null, trace = null, end = null;
       for (let k = 0; k < this.episodes; k++) {
         let o = W.reset(rng), done = false, steps = 0;
         while (!done) {
           if (keep && k === 0 && seen.length < 32 && steps % 5 === 0) seen.push(Float32Array.from(o));
-          const t = W.step(T.policy(o, net), rng);
+          const a = T.policy(o, net), t = W.step(a, rng);
+          if (mem) this.remember(o, a, t.r, t.done ? null : t.obs);
           total += t.r; o = t.obs; done = t.done; steps++;
         }
         if (k === 0) { beh = W.behavior ? W.behavior() : null; trace = keep && W.trace ? Float32Array.from(W.trace) : null; end = W.end || null; }
@@ -178,9 +286,9 @@
       }
       return { fit: total / this.episodes, beh, trace, end, seen };
     }
-    step(deadline) { return this.kind === 'es' ? this.stepES(deadline) : this.kind === 'me' ? this.stepME(deadline) : this.stepGA(deadline); }
+    step(deadline) { const k = this.kind; return k === 'es' ? this.stepES(deadline) : k === 'me' ? this.stepME(deadline) : k === 'cem' ? this.stepCEM(deadline) : this.stepGA(deadline); }
 
-    // ---------------------------------------------------------------- a genetic algorithm
+    // ---------------------------------------------------------------- a genetic algorithm (and novelty search, ERL)
     stepGA(deadline) {
       const P = this.pop;
       if (!this.job) this.job = { i: 0, seed: 1000 + this.gen, res: [] };
@@ -193,27 +301,41 @@
         if (deadline && now() > deadline && J.i < P.length) return { partial: true, done: J.i, of: P.length };
       }
       this.job = null;
-      // the fitness each is selected by: its return, less the size penalty
-      const n = P.length, fit = J.res.map((r) => r.fit), adj = P.map((g, k) => fit[k] - this.penalty * this.scale * (this.weightsOf(g.blocks) / 100));
+      // the fitness each is selected by: its return, less the size penalty; novelty search: how new its behaviour is
+      const n = P.length, fit = J.res.map((r) => r.fit);
+      let adj, nov = null;
+      if (this.novel) {
+        nov = this.novelty(J.res.map((r) => r.beh));
+        if (this.novMix === 'half') { const a = ranks(nov), b = ranks(fit); adj = NA.range(n).map((k) => 0.5 * a[k] + 0.5 * b[k]); } else adj = Array.from(nov);
+      } else adj = P.map((g, k) => fit[k] - this.penalty * this.scale * (this.weightsOf(g.blocks) / 100));
       const order = NA.range(n).sort((a, b) => adj[b] - adj[a]), best = P[order[0]];
       let mean = 0; for (const f of fit) mean += f / n;
-      this.record(order.map((k) => ({ fit: fit[k], adj: adj[k], units: unitsOf(P[k].blocks), weights: this.weightsOf(P[k].blocks), beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: P[k].op, born: P[k].born })), fit[order[0]], mean, best);
-      // the next generation: the best two unchanged, then children
-      const next = [this.copy(best), this.copy(P[order[1]])], sens = new Map();
+      // what is shown: the members best first (novelty search: by their return, the novelty each had beside it)
+      const shown = this.novel ? NA.range(n).sort((a, b) => fit[b] - fit[a]) : order, same = P.filter((g) => Nets.key(g.blocks) === Nets.key(best.blocks)).map((g) => g.w);
+      if (this.novel) this.keepNovel(J.res, nov);
+      if (this.kind === 'erl') this.learnRL();
+      this.record(shown.map((k) => ({ id: P[k].id, parents: P[k].parents, fit: fit[k], adj: adj[k], units: unitsOf(P[k].blocks), weights: this.weightsOf(P[k].blocks), beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: P[k].op, born: P[k].born, nov: nov ? nov[k] : undefined, fromRL: P[k].fromRL || undefined })),
+        fit[shown[0]], mean, this.novel ? null : best, this.kind === 'erl' ? { divW: spreadOf(same), rlLoss: this.rlLoss } : { divW: spreadOf(same) });
+      if (this.novel) this.champion(P[shown[0]], fit[shown[0]]);
+      // the next generation: the best two unchanged (op null: passed on as they were), then children
+      const next = [best, P[order[1]]].map((g) => Object.assign(this.copy(g), { op: null })), sens = new Map();
       while (next.length < n) {
         const ia = this.pick(order, adj), a = P[ia];
-        let child = this.copy(a);
-        child.born = this.gen + 1; child.op = null;
-        if (this.cross !== 'none') { const b = P[this.pick(order, adj)]; if (b !== a && Nets.key(a.blocks) === Nets.key(b.blocks)) child.w = this.mix(a, b); }
+        let child = this.copy(a), mixed = false;
+        Object.assign(child, { born: this.gen + 1, id: this.newId(), parents: [a.id], fromRL: undefined });
+        if (this.cross !== 'none') { const b = P[this.pick(order, adj)]; if (b !== a && Nets.key(a.blocks) === Nets.key(b.blocks)) { child.w = this.mix(a, b); child.parents = [a.id, b.id]; mixed = true; } }
         if (this.mutation === 'safe' && !sens.has(ia)) sens.set(ia, this.sensitivity(a, J.res[ia].seen));
         this.mutate(child.w, this.mutation === 'safe' ? sens.get(ia) : null);
-        if (this.grow && this.rng.next() < 0.25) { const r = EV.mutateArch(child, this.rng, this.newLayer, this.io); if (r) Object.assign(child, r); }
+        child.op = mixed ? 'mixed and mutated' : 'mutated';
+        if (this.grow && this.rng.next() < 0.25) { const r = EV.mutateArch(child, this.rng, this.newLayer, this.io, this.layerSize); if (r) Object.assign(child, r); }
         next.push(child);
       }
+      // ERL: every few generations the DQN's network takes the place of the worst
+      if (this.kind === 'erl' && (this.gen + 1) % this.erlEvery === 0) next[n - 1] = { blocks: this.blocks, w: this.q.getWeights(), op: 'the DQN’s network', born: this.gen + 1, id: this.newId(), parents: [], fromRL: true };
       this.pop = next; this.gen++;
       return { loss: -mean, gradNorm: 0 };
     }
-    copy(g) { return { blocks: g.blocks, w: Float32Array.from(g.w), op: g.op, born: g.born }; }
+    copy(g) { return { blocks: g.blocks, w: Float32Array.from(g.w), op: g.op, born: g.born, id: g.id, parents: g.parents, fromRL: g.fromRL }; }
     // a parent, by the selection chosen (order: the population best first; adj: their fitness)
     pick(order, adj) {
       const n = order.length, rng = this.rng;
@@ -266,15 +388,40 @@
       const scale = idx.length ? (sg * 0.7979 * idx.length) / (sum || 1) : 0;
       for (let k = 0; k < idx.length; k++) w[idx[k]] += d[k] * scale;
     }
-    // what a generation leaves behind: its members (best first), the history, and the network on show (the best)
-    record(members, best, mean, g) {
+    /* What a generation leaves behind: its members (best first), the history (with how spread out the members'
+       behaviours and weights are: extra adds the method's own), its members' records for lineages, and the network
+       on show (the best, g; null: the method shows its own). */
+    record(members, best, mean, g, extra) {
       const top = members[0];
       this.last = { gen: this.gen, members, best, mean };
-      this.history.push({ gen: this.gen, best, mean, weights: top.weights, units: top.units, adj: top.adj });
+      this.history.push(Object.assign({ gen: this.gen, best, mean, weights: top.weights, units: top.units, adj: top.adj, div: behSpread(members.map((m) => m.beh)), divW: null }, extra));
       if (this.history.length > 2000) this.history = this.history.filter((h, i) => i % 2 === 0 || i === this.history.length - 1);
+      for (const m of members) if (m.id && !this.records.has(m.id)) this.records.set(m.id, { id: m.id, gen: this.gen, fit: m.fit, op: m.op || null, units: m.units, parents: m.parents || [] });
       const T = this.T;
       T.lastEp = best; T.retEma = mean; T.genBest = best; T.genMean = mean;
       if (g) this.show(g.blocks, g.w);
+      this.keepLineage();
+    }
+    // the records worth keeping: the ancestors (first parents) of the members just judged, of the network on show and of MAP-Elites' elites
+    keepLineage() {
+      const R = this.records, keep = new Set(), roots = (this.last ? this.last.members.map((m) => m.id) : []).concat(this.champ ? [this.champ.id] : [], this.archive ? [...this.archive.values()].map((e) => e.id) : []);
+      for (const id of roots) { let q = R.get(id); while (q && !keep.has(q.id)) { keep.add(q.id); q = q.parents.length ? R.get(q.parents[0]) : null; } }
+      for (const id of [...R.keys()]) if (!keep.has(id)) R.delete(id);
+      if (R.size > EV.KEEP) { const root = new Set(roots), old = [...R.values()].filter((q) => !root.has(q.id)).sort((a, b) => a.gen - b.gen); for (const q of old.slice(0, R.size - EV.KEEP)) R.delete(q.id); }
+    }
+    // the best's id: the network on show (novelty search), MAP-Elites' best elite, or the best of the last generation
+    bestId() {
+      if (this.champ) return this.champ.id;
+      if (this.archive && this.archive.size) { let b = null; for (const e of this.archive.values()) if (!b || e.fit > b.fit) b = e; return b.id; }
+      return this.last && this.last.members.length ? this.last.members[0].id : null;
+    }
+    // the line of first parents that led to a member, the oldest known first
+    lineage(id) {
+      if (id === undefined || id === null) id = this.bestId();
+      const out = [], seen = new Set();
+      let q = this.records.get(id);
+      while (q && !seen.has(q.id)) { seen.add(q.id); out.push({ id: q.id, gen: q.gen, fit: q.fit, op: q.op, units: q.units }); q = q.parents.length ? this.records.get(q.parents[0]) : null; }
+      return out.reverse();
     }
     // the network on show: the same model with new weights, or a model of a new architecture
     show(blocks, w) {
@@ -283,11 +430,77 @@
       T.net.setWeights(w);
     }
 
+    // ---------------------------------------------------------------- novelty search
+    // how new each behaviour is: its mean distance to its k nearest among the generation's others and the archive
+    novelty(behs) {
+      const k = this.novK, A = this.novArchive, n = behs.length, out = new Float64Array(n), d = [];
+      for (let i = 0; i < n; i++) {
+        const b = behs[i];
+        if (!b) continue;
+        d.length = 0;
+        for (let j = 0; j < n; j++) if (j !== i && behs[j]) d.push(Math.hypot(b[0] - behs[j][0], b[1] - behs[j][1]));
+        for (const e of A) d.push(Math.hypot(b[0] - e.beh[0], b[1] - e.beh[1]));
+        d.sort((x, y) => x - y);
+        const m = Math.min(k, d.length);
+        let s = 0;
+        for (let q = 0; q < m; q++) s += d[q];
+        out[i] = m ? s / m : 0;
+      }
+      return out;
+    }
+    // the archive: the most novel behaviours of every generation, so a place once visited stops being new
+    keepNovel(res, nov) {
+      const top = NA.range(res.length).filter((k) => res[k].beh).sort((a, b) => nov[b] - nov[a]).slice(0, this.novAdd);
+      for (const k of top) this.novArchive.push({ beh: [res[k].beh[0], res[k].beh[1]], gen: this.gen });
+      if (this.novArchive.length > EV.ARCHIVE) this.novArchive.splice(0, this.novArchive.length - EV.ARCHIVE);
+    }
+    /* The network on show: novelty search never aims at the reward, so the best by score found so far is kept aside.
+       The generation's best by return is scored (its best moves, as the page scores the one on show) and replaces it
+       if it scores higher, or as high with a higher return. */
+    champion(g, fit) {
+      const net = this.nets.get(g.blocks), T = this.T;
+      net.setWeights(g.w);
+      this.judge = this.judge || NA.rlEnvs.make(T.worldId, T.ws);
+      const sc = this.judge.score((o) => T.policy(o, net), new NA.RNG(777)), c = this.champ;
+      if (!c || sc > c.score || (sc === c.score && fit > c.fit)) { this.champ = { id: g.id, blocks: g.blocks, w: Float32Array.from(g.w), fit, score: sc, gen: this.gen }; this.show(g.blocks, g.w); }
+    }
+
+    // ---------------------------------------------------------------- ERL: a DQN learning from the population's moves
+    remember(o, a, r, o2) {
+      const e = { o: Float32Array.from(o), a, r, o2: o2 ? Float32Array.from(o2) : null }, B = this.buf;
+      if (B.length < this.bufCap) B.push(e); else { B[this.bufNext] = e; this.bufNext = (this.bufNext + 1) % this.bufCap; }
+    }
+    /* Gradient steps of a DQN on moves drawn from the memory, as builder-rl.js's DQN learns: toward reward + γ × the
+       next state's value (double DQN: the network picks the next move, its target network says what it is worth),
+       a Huber loss, Adam; the target network refreshed every 500 steps. Returns the average loss. */
+    learnRL() {
+      const buf = this.buf, B = 32, nIn = this.io.nIn, K = this.io.K, nA = this.T.nA, g = this.gamma, opt = { id: 'adam', lr: this.erlLr, clip: 1 };
+      if (buf.length < 64) return null;
+      const X = new Float32Array(B * nIn), X2 = new Float32Array(B * nIn), y = new Float64Array(B), batch = new Array(B);
+      let total = 0;
+      for (let s = 0; s < this.erlSteps; s++) {
+        for (let b = 0; b < B; b++) { const q = buf[this.rng.int(buf.length)]; batch[b] = q; X.set(q.o, b * nIn); if (q.o2) X2.set(q.o2, b * nIn); }
+        if (g) {
+          const q2 = Float64Array.from(this.qTarget.forward(X2, B, false)), pickNext = this.q.forward(X2, B, false);
+          for (let b = 0; b < B; b++) y[b] = batch[b].r + (batch[b].o2 ? g * q2[b * K + argmax(pickNext, b * K, nA)] : 0);
+        } else for (let b = 0; b < B; b++) y[b] = batch[b].r;
+        const r = this.q.stepWith(X, B, (out, d) => {
+          let loss = 0;
+          for (let b = 0; b < B; b++) { const i = b * K + batch[b].a, err = out[i] - y[b], ae = Math.abs(err); loss += ae <= 1 ? 0.5 * err * err : ae - 0.5; d[i] = Math.max(-1, Math.min(1, err)) / B; }
+          return loss / B;
+        }, opt);
+        total += r.loss;
+        if (++this.rlUpdates % 500 === 0) this.qTarget.setWeights(this.q.getWeights());
+      }
+      this.rlLoss = total / this.erlSteps;
+      return this.rlLoss;
+    }
+
     // ---------------------------------------------------------------- evolution strategies
     noise(seed, n) { const r = new NA.RNG(seed), e = new Float32Array(n); for (let i = 0; i < n; i++) e[i] = r.gauss(); return e; }
     stepES(deadline) {
       const n = this.theta.length, N = 2 * this.pairs;
-      if (!this.job) this.job = { i: 0, seed: 1000 + this.gen, seeds: NA.range(this.pairs).map(() => 1 + this.rng.int(2e9)), res: [], w: new Float32Array(n) };
+      if (!this.job) this.job = { i: 0, seed: 1000 + this.gen, seeds: NA.range(this.pairs).map(() => 1 + this.rng.int(2e9)), res: [], w: new Float32Array(n), ids: NA.range(N).map(() => this.newId()) };
       const J = this.job, net = this.nets.get(this.blocks);
       while (J.i < N) {
         const e = this.noise(J.seeds[J.i >> 1], n), sg = (J.i & 1 ? -1 : 1) * this.esSigma;
@@ -302,17 +515,52 @@
       const fit = J.res.map((r) => r.fit), order = NA.range(N).sort((a, b) => fit[a] - fit[b]), u = new Float32Array(N);
       order.forEach((k, r) => { u[k] = r / (N - 1) - 0.5; });
       const g = new Float32Array(n);
-      for (let k = 0; k < this.pairs; k++) { const e = this.noise(J.seeds[k], n), c = (u[2 * k] - u[2 * k + 1]) / (N * this.esSigma); for (let i = 0; i < n; i++) g[i] += c * e[i]; }
+      let ee = 0;
+      for (let k = 0; k < this.pairs; k++) { const e = this.noise(J.seeds[k], n), c = (u[2 * k] - u[2 * k + 1]) / (N * this.esSigma); for (let i = 0; i < n; i++) { g[i] += c * e[i]; ee += e[i] * e[i]; } }
       // Adam, going uphill
       const b1 = 0.9, b2 = 0.999, t = ++this.t, c1 = 1 - b1 ** t, c2 = 1 - b2 ** t;
       let gn = 0;
       for (let i = 0; i < n; i++) { const gi = g[i]; gn += gi * gi; this.m[i] = b1 * this.m[i] + (1 - b1) * gi; this.v[i] = b2 * this.v[i] + (1 - b2) * gi * gi; this.theta[i] += (this.esLr * (this.m[i] / c1)) / (Math.sqrt(this.v[i] / c2) + 1e-8); }
       let mean = 0; for (const f of fit) mean += f / N;
       const sorted = NA.range(N).sort((a, b) => fit[b] - fit[a]), wn = this.weightsOf(this.blocks), units = unitsOf(this.blocks);
-      this.record(sorted.map((k) => ({ fit: fit[k], adj: fit[k], units, weights: wn, beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end })), fit[sorted[0]], mean, null);
+      // (the nudged copies sit around θ, each weight σ·ε from it: their spread is σ times the root mean square of ε)
+      this.record(sorted.map((k) => ({ id: J.ids[k], parents: [], fit: fit[k], adj: fit[k], units, weights: wn, beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: k & 1 ? 'nudged one way' : 'nudged the other way', born: this.gen })), fit[sorted[0]], mean, null,
+        { divW: this.esSigma * Math.sqrt(ee / (this.pairs * n || 1)) });
       this.T.net.setWeights(this.theta); // on show: the mean of the population, the network that learns
       this.gradNorm = Math.sqrt(gn); this.gen++;
       return { loss: -mean, gradNorm: this.gradNorm };
+    }
+
+    // ---------------------------------------------------------------- the cross-entropy method
+    stepCEM(deadline) {
+      const n = this.mu.length, N = this.size;
+      if (!this.job) {
+        // a generation drawn from the bell curve: each weight its middle plus its spread times a random number
+        const kids = NA.range(N).map(() => { const w = new Float32Array(n); for (let i = 0; i < n; i++) w[i] = this.mu[i] + this.sd[i] * this.rng.gauss(); return w; });
+        let spread = 0; for (let i = 0; i < n; i++) spread += this.sd[i] / n;
+        this.job = { i: 0, seed: 1000 + this.gen, kids, res: [], ids: kids.map(() => this.newId()), spread };
+      }
+      const J = this.job, net = this.nets.get(this.blocks);
+      while (J.i < N) {
+        net.setWeights(J.kids[J.i]);
+        J.res[J.i] = this.play(net, J.seed, true);
+        J.i++;
+        if (deadline && now() > deadline && J.i < N) return { partial: true, done: J.i, of: N };
+      }
+      this.job = null;
+      // the best fifth (the elite) refits the bell curve: its mean, and each weight's spread among them, never below the floor
+      const fit = J.res.map((r) => r.fit), order = NA.range(N).sort((a, b) => fit[b] - fit[a]), E = Math.max(2, Math.round(N * this.cemElite));
+      const mu = new Float64Array(n), v = new Float64Array(n), f2 = this.cemFloor * this.cemFloor;
+      for (let k = 0; k < E; k++) { const w = J.kids[order[k]]; for (let i = 0; i < n; i++) mu[i] += w[i] / E; }
+      for (let k = 0; k < E; k++) { const w = J.kids[order[k]]; for (let i = 0; i < n; i++) { const d = w[i] - mu[i]; v[i] += (d * d) / E; } }
+      for (let i = 0; i < n; i++) { this.mu[i] = mu[i]; this.sd[i] = Math.sqrt(v[i] + f2); }
+      let mean = 0; for (const f of fit) mean += f / N;
+      const wn = this.weightsOf(this.blocks), units = unitsOf(this.blocks);
+      this.record(order.map((k, r) => ({ id: J.ids[k], parents: [], fit: fit[k], adj: fit[k], units, weights: wn, beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: r < E ? 'drawn; in the elite' : 'drawn', born: this.gen })), fit[order[0]], mean, null,
+        { divW: spreadOf(J.kids), spread: J.spread });
+      this.T.net.setWeights(this.mu); // on show: the middle of the bell curve
+      this.gen++;
+      return { loss: -mean, gradNorm: 0 };
     }
 
     // ---------------------------------------------------------------- MAP-Elites
@@ -321,15 +569,17 @@
       if (!this.job) {
         // a batch: random networks while the grid is nearly empty, then mutated copies of elites picked at random
         const elites = [...this.archive.values()], kids = NA.range(this.batch).map(() => {
-          const w = elites.length < this.batch ? Float32Array.from(this.w0, (v) => v + this.rng.gauss(0, 0.5)) : Float32Array.from(elites[this.rng.int(elites.length)].w);
-          if (elites.length >= this.batch) this.mutate(w, null);
-          return w;
+          if (elites.length < this.batch) return { w: Float32Array.from(this.w0, (v) => v + this.rng.gauss(0, 0.5)), parents: [], op: 'random' };
+          const e = elites[this.rng.int(elites.length)], w = Float32Array.from(e.w);
+          this.mutate(w, null);
+          return { w, parents: [e.id], op: 'mutated' };
         });
+        for (const k of kids) k.id = this.newId();
         this.job = { i: 0, seed: 1000 + this.gen, kids, res: [] };
       }
       const J = this.job, net = this.nets.get(this.blocks);
       while (J.i < J.kids.length) {
-        net.setWeights(J.kids[J.i]);
+        net.setWeights(J.kids[J.i].w);
         J.res[J.i] = this.play(net, J.seed, true);
         J.i++;
         if (deadline && now() > deadline && J.i < J.kids.length) return { partial: true, done: J.i, of: J.kids.length };
@@ -339,14 +589,14 @@
       J.res.forEach((r, k) => {
         mean += r.fit / J.res.length;
         const c = this.cellOf(r.beh), cur = this.archive.get(c);
-        if (c >= 0 && (!cur || r.fit > cur.fit)) { this.archive.set(c, { w: J.kids[k], fit: r.fit, beh: r.beh, trace: r.trace, end: r.end, gen: this.gen }); added++; }
+        if (c >= 0 && (!cur || r.fit > cur.fit)) { this.archive.set(c, { w: J.kids[k].w, fit: r.fit, beh: r.beh, trace: r.trace, end: r.end, gen: this.gen, id: J.kids[k].id }); added++; }
       });
       const all = [...this.archive.values()].sort((a, b) => b.fit - a.fit), top = all[0], wn = this.weightsOf(this.blocks), units = unitsOf(this.blocks);
       const order = NA.range(J.res.length).sort((a, b) => J.res[b].fit - J.res[a].fit);
       this.added = added;
-      this.record(order.map((k) => ({ fit: J.res[k].fit, adj: J.res[k].fit, units, weights: wn, beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end })), top ? top.fit : 0, mean, null);
+      this.record(order.map((k) => ({ id: J.kids[k].id, parents: J.kids[k].parents, fit: J.res[k].fit, adj: J.res[k].fit, units, weights: wn, beh: J.res[k].beh, trace: J.res[k].trace, end: J.res[k].end, op: J.kids[k].op, born: this.gen })), top ? top.fit : 0, mean, null,
+        { divW: spreadOf(J.kids.map((q) => q.w)), filled: this.archive.size });
       this.last.filled = this.archive.size; this.last.added = added;
-      this.history[this.history.length - 1].filled = this.archive.size;
       if (top) this.T.net.setWeights(top.w); // on show: the best of all the styles
       this.gen++;
       return { loss: -mean, gradNorm: 0 };
@@ -361,16 +611,16 @@
   /* For problems with examples and answers: a few networks (6) learn side by side, each taking a step of your
      optimiser on the same batch. Every generation (a number of steps) each is judged on the validation examples
      by its loss there (finer than accuracy, so a network that has just grown is not tied with its parent), plus
-     the size penalty, and the worse half are replaced by copies of the better half,
-     weights and all, each changed by one mutation of its architecture: a neuron or a layer more or less, the new
-     ones not changing what it computes. Population-based training, with the architecture evolving instead of the
-     learning rate. The best network so far is the one on show. */
+     the size penalty, and the worse half are replaced by copies of the better half, weights and all, each changed
+     by one mutation of its architecture: a neuron more or less, or a new layer (of one neuron by default: a
+     bottleneck the copy then learns to use, and widens neuron by neuron). Population-based training, with the
+     architecture evolving instead of the learning rate. The best network so far is the one on show. */
   EV.PENALTY_EX = { off: 0, light: 0.004, strong: 0.015 }; // added to the validation loss for every 100 weights
   class Grower {
-    // o: blocks, input, output, seed, init, size, every (steps a generation), penalty, newLayer, judge(model) → { score, loss }
+    // o: blocks, input, output, seed, init, size, every (steps a generation), penalty, newLayer, layerSize, judge(model) → { score, loss }
     constructor(o) {
       Object.assign(this, { input: o.input, output: o.output, init: o.init, every: Math.max(10, o.every || 150), judge: o.judge, rng: new NA.RNG((o.seed || 1) * 7907 + 3), t: 0, gen: 0, history: [] });
-      this.penalty = EV.PENALTY_EX[o.penalty] ?? EV.PENALTY_EX.light; this.newLayer = o.newLayer === 'random' ? 'random' : 'identity';
+      this.penalty = EV.PENALTY_EX[o.penalty] ?? EV.PENALTY_EX.light; this.newLayer = o.newLayer === 'random' ? 'random' : 'identity'; this.layerSize = EV.layerSize(o.layerSize);
       this.io = { nIn: o.input.dim, K: o.output.kind === 'classes' ? o.output.k : o.output.k || 1 };
       const n = Math.max(2, o.size || 6);
       this.members = NA.range(n).map((k) => ({ blocks: o.blocks, model: k === 0 && o.model ? o.model : this.make(o.blocks, (o.seed || 1) * 31 + k), born: 0, op: null, score: null, fit: null }));
@@ -394,7 +644,7 @@
       this.history.push({ gen: this.gen, step: this.t, score: this.best.score, loss: this.best.loss, weights: this.best.weights, units: unitsOf(this.best.blocks), members: order.map((m) => ({ score: m.score, loss: m.loss, weights: m.weights, units: unitsOf(m.blocks), op: m.op })) });
       // the worse half: copies of the better half, each with one change to its architecture
       for (let k = half; k < order.length; k++) {
-        const parent = order[k - half], g = { blocks: parent.blocks, w: parent.model.getWeights() }, r = EV.mutateArch(g, this.rng, this.newLayer, this.io) || g;
+        const parent = order[k - half], g = { blocks: parent.blocks, w: parent.model.getWeights() }, r = EV.mutateArch(g, this.rng, this.newLayer, this.io, this.layerSize) || g;
         const child = order[k];
         child.blocks = r.blocks; child.model = this.make(r.blocks, 1); child.model.setWeights(r.w); child.op = r.op || 'a copy'; child.born = this.gen + 1; child.score = null;
       }

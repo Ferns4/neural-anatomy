@@ -310,10 +310,10 @@
     look: [
       'The shapes between the blocks show how the data changes size on its way through. A block outlined in red does not fit; its button adds what is missing.',
       'The dots on a dense block are its neurons. While training they show how often each one fires: a dot that goes hollow is a dead neuron. Click one to give it its own activation.',
-      'Runs lists every run with what changed since the one before and its validation score; the chart overlays their curves.',
+      'Runs lists every run with what changed since the one before and its score; the chart overlays their curves.',
       'Architecture opens the model you built: a block, a neuron’s weighted sum on the example, and on down to the transistors, as in every other model.',
       'Python writes the whole setup (the data, the model, the loss and the training loop) as a PyTorch script.',
-      'Learn from rewards (in the problem list): a world instead of a dataset. The Input block chooses how the model sees it, the Output block how it learns (DQN, REINFORCE, actor-critic, PPO or a genetic algorithm), and the results play it live.',
+      'Learn from rewards (in the problem list): 18 worlds instead of a dataset. The Input block chooses how the model sees one, the Reward tab what it is paid for (a table of amounts, or a formula of your own), the Output block how it learns (DQN, REINFORCE, actor-critic, PPO, or evolution: a genetic algorithm, novelty search, evolution strategies, the cross-entropy method, MAP-Elites), and the results play it live.',
     ],
     try: [
       { text: 'Train with no hidden layer on the two spirals.', label: 'Linear on spirals', action: 'spiralLinear',

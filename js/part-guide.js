@@ -390,6 +390,9 @@
     const mid = H / 2, pulse = (t % 2) / 2;
     ctx.clearRect(0, 0, W, H);
     if (String(type).startsWith('rl-')) { drawRL(type, ctx, W, H, t, { c, line, dot, box, label, rnd, mid }); return; }
+    // parts whose guides live in another file (NA.partGuide.drawMore[type], with the same helpers)
+    const more = NA.partGuide.drawMore && NA.partGuide.drawMore[type];
+    if (more) { more(ctx, W, H, t, { c, ink, muted, line, dot, box, label, rnd, mid, pulse, theme, clamp }); return; }
     if (type === 'dense' || type === 'neuron' || type === 'gated') {
       const ins = type === 'neuron' ? 3 : 4, outs = type === 'neuron' ? 1 : 3, x0 = W * 0.22, x1 = W * 0.7;
       const yi = (i) => mid + (i - (ins - 1) / 2) * (H / (ins + 1)), yo = (j) => mid + (j - (outs - 1) / 2) * (H / (outs + 1.5));
@@ -498,11 +501,14 @@
     dqn: 'q = model(x).gather(1, a[:, None])[:, 0]                 # Q of the moves made\nwith torch.no_grad():\n    best = model(x2).argmax(1)                              # double DQN: the network picks,\n    y = r + gamma * alive * target(x2).gather(1, best[:, None])[:, 0]   # the target network values\nloss = F.smooth_l1_loss(q, y)',
     pg: 'logp = model(x).log_softmax(1)[range(len(a)), a]       # log π(move) for every move played\nadv = (G - G.mean()) / G.std()                         # better or worse than usual\nloss = -(adv * logp).mean()',
     a2c: 'out = model(x)\nlogp = out[:, :n].log_softmax(1)[range(len(a)), a]\nadv = R - out[:, n].detach()                           # rewards + γ·V(where it ended) − V(here)\nloss = -(adv * logp).mean() + 0.25 * ((out[:, n] - R) ** 2).mean()',
-    ppo: 'ratio = (logp_new - logp_old).exp()                    # how far the policy has moved\nloss = -torch.min(ratio * adv, ratio.clamp(0.8, 1.2) * adv).mean()',
+    ppo: 'ratio = (logp_new - logp_old).exp()                    # how far the policy has moved\nloss = -torch.min(ratio * adv, ratio.clamp(0.8, 1.2) * adv).mean()\nloss = loss - 0.01 * entropy.mean()                    # a little exploring',
     ga: 'fit = [play(w) for w in population]                    # each network plays\nparents = [tournament(population, fit) for _ in range(2)]\nchild = torch.where(torch.rand(n) < 0.5, *parents)      # each weight from one parent\nchild += (torch.rand(n) < 0.1) * sigma * torch.randn(n) # a few mutate',
-    grow: 'child = mutate(copy(parent))\nif random.random() < 0.25:                             # a quarter of the children change shape\n    child = random.choice([add_neuron, remove_neuron, add_layer, remove_layer])(child)\nfitness = total_reward - penalty * n_weights / 100     # of two that play as well, the smaller wins',
+    grow: 'child = mutate(copy(parent))\nif random.random() < 0.25:                             # a quarter of the children change shape\n    child = random.choice([add_neuron, remove_neuron, add_layer])(child)\n# add_layer: one neuron, passing on the signal the next layer leans on most;\n# remove_neuron on a layer\'s last neuron removes the layer (folded into the next)\nfitness = total_reward - penalty * n_weights / 100     # of two that play as well, the smaller wins',
     es: 'eps = torch.randn(pairs, n)                            # random directions\nf = [play(theta + sigma * e) - play(theta - sigma * e) for e in eps]   # (ranked, on the page)\ngrad = sum(fk * e for fk, e in zip(f, eps)) / (2 * pairs * sigma)\ntheta += lr * grad                                     # (with Adam, on the page)',
     me: 'cell = style_cell(play(w))                             # e.g. (average speed, side of the track): one of 12 x 12\nif cell not in archive or fit > archive[cell][0]:\n    archive[cell] = (fit, w)                           # the best of each style is kept\nw = mutate(random.choice(list(archive.values()))[1])   # new ones come from any elite',
+    novelty: 'styles = [play(w)[1] for w in population]             # what each did: e.g. where it ended up\ndef novelty(s):                                        # mean distance to its k nearest, now and before\n    return mean(sorted(dist(s, t) for t in styles + archive)[1:k + 1])\nfit = [novelty(s) for s in styles]                     # chosen for what is new, not for reward\narchive += most_novel(styles, 2)                       # a place once reached stops being new',
+    cem: 'samples = [mu + sd * torch.randn_like(mu) for _ in range(n)]   # a generation from the bell curve\nfit = [play(w) for w in samples]\nelite = torch.stack(best_of(samples, fit, n // 5))     # the best fifth\nmu = elite.mean(0)                                     # the middle moves to them\nsd = (elite.var(0) + floor ** 2).sqrt()                # the spread: how much they disagree',
+    erl: 'for w in population:\n    play(w, memory)                                    # every move goes into the replay memory\nfor _ in range(200):\n    dqn_step(q_net, sample(memory, 32))                # the DQN learns from all of them\npopulation = breed(population)                         # the genetic algorithm, as usual\nif gen % 5 == 4:\n    population[-1] = copy(q_net)                       # the DQN joins in place of the worst',
   };
   Object.assign(G, {
     'rl-dqn': {
@@ -516,7 +522,7 @@
       code: RL_CODE.dqn, try: 'rlmaze',
     },
     'rl-pg': {
-      what: 'A way to learn from rewards that trains the policy itself. Your network gives one score per action; softmax turns them into the probability of playing each. After an episode or two, every move it made becomes more likely in proportion to how much better than usual the return after it was, and less likely if worse.',
+      what: 'A way to learn from rewards that trains the policy itself. Your network gives one score per action; softmax turns them into the probability of playing each. Once it has played whole episodes adding up to at least 64 moves (one long episode, or many short ones), every move it made becomes more likely in proportion to how much better than usual the return after it was, and less likely if worse.',
       how: ['Play whole episodes, drawing each move from the probabilities.', 'For each move, add up the rewards that came after it (discounted by γ): its return.', 'Compare with the batch’s average return: the advantage.', 'One gradient step raises log π(move) by its advantage, plus a little bonus for staying uncertain (entropy).'],
       math: ['∇J = E[ A · ∇ log π(a | s) ]', 'A = (G − mean G) / spread of G'],
       params: 'none of its own: it trains the network you built',
@@ -530,16 +536,16 @@
       math: ['A = r + γ·V(s′) − V(s)', 'loss = −A · log π(a | s) + ¼ (V(s) − R)²'],
       params: 'none of its own; its one extra output (the critic) is part of the output layer',
       use: ['When single moves should be judged without waiting for the end of the episode.', 'Steadier than REINFORCE: the critic is the baseline.'],
-      watch: ['A large learning rate throws the policy about: it may never settle.', 'The critic has to learn too: early on its values are guesses.'],
+      watch: ['A large learning rate throws the policy about: it may never settle.', 'The critic has to learn too: early on its values are guesses.', 'Rewards in the hundreds would give the critic huge errors that crowd out the policy’s share of a clipped step: Normalise rewards (on by default) divides them by their running spread.'],
       code: RL_CODE.a2c, try: 'catch',
     },
     'rl-ppo': {
-      what: 'Proximal policy optimisation: actor-critic with a safety catch. It plays 128 moves, then takes 16 small steps on them, each clipped so no action’s probability moves more than 20% away from the policy that played. It is the usual choice today, from robots to tuning chatbots with human feedback.',
-      how: ['Play 16 moves in each of 8 copies of the world; keep each move’s probability.', 'Work out advantages (GAE, λ = 0.95) and scale them to spread 1.', 'Take 16 steps over the batch in minibatches; each compares the new probability with the old one.', 'Where the ratio is already beyond 0.8–1.2 in the helpful direction, that move adds nothing more.'],
-      math: ['ratio = π_new(a | s) / π_old(a | s)', 'loss = −min(ratio·A, clip(ratio, 0.8, 1.2)·A) + ¼ (V − R)²'],
+      what: 'Proximal policy optimisation: actor-critic with a safety catch. It plays 128 moves, then takes 16 small steps on them. Once the probability of a move has changed by 20% from the policy that played it, the clip stops pushing it further, so the policy changes in small, steady steps (the steps for other moves can still carry it a little past). It is the usual choice today, from robots to tuning chatbots with human feedback.',
+      how: ['Play 16 moves in each of 8 copies of the world; keep each move’s probability.', 'Work out advantages (GAE, λ = 0.95) and scale them to spread 1.', 'Take 16 steps over the batch in minibatches; each compares the new probability with the old one.', 'Where the ratio is already beyond 0.8–1.2 in the helpful direction, that move adds nothing more.', 'A small bonus for staying uncertain (entropy) keeps it exploring.'],
+      math: ['ratio = π_new(a | s) / π_old(a | s)', 'loss = −min(ratio·A, clip(ratio, 0.8, 1.2)·A) + ¼ (V − R)² − 0.01·H(π)'],
       params: 'none of its own; like actor-critic, the critic is one extra output',
       use: ['The default for most problems: steady, and forgiving of its settings.'],
-      watch: ['Each batch is reused 4 times: the steps are many but the play is the same 128 moves.'],
+      watch: ['Each batch is reused 4 times: the steps are many but the play is the same 128 moves.', 'Rewards in the hundreds would give the critic huge errors that crowd out the policy’s share of a clipped step: Normalise rewards (on by default) divides them by their running spread.'],
       code: RL_CODE.ppo, try: 'catch',
     },
     'rl-ga': {
@@ -552,12 +558,13 @@
       code: RL_CODE.ga, try: 'pole',
     },
     'rl-grow': {
-      what: 'A genetic algorithm that evolves the network itself, not only its weights: a child may gain or lose a neuron, or a whole layer. A new neuron starts with outgoing weights of 0 and a new layer passing its input straight through, so neither changes what the network does until mutation puts it to work; a removed layer is folded into the next. A small size penalty decides between two that play equally well, so networks grow only when growing pays.',
-      how: ['Every network plays; its fitness is its return, less a little for every 100 weights.', 'The best two pass on unchanged; parents are picked, mixed and mutated as in the genetic algorithm.', 'A quarter of the children also change shape: a neuron more (most often) or less, or a layer more or less.', 'Removing a neuron takes the one the next layer listens to least; a removed layer is folded into the next.'],
-      math: ['fitness = return − penalty × weights / 100', 'new neuron: incoming weights random, outgoing 0', 'new layer: W = I, b = 0   (ReLU(I·h) = h when h ≥ 0)', 'removed layer: W = W₂W₁, b = W₂b₁ + b₂'],
+      what: 'A genetic algorithm that evolves the network itself, not only its weights: a child may gain or lose a neuron, or gain a new hidden layer. A new neuron starts with outgoing weights of 0, so it changes nothing until mutation puts it to work. A new layer starts with a single neuron that passes on the signal the next layer leans on most: a bottleneck, so unlike a new neuron it changes what the network does, and selection keeps it only if the child still plays well. Later “+1 neuron” changes widen it without changing anything, and a layer goes when its last neuron is pruned. A small size penalty decides between two that play equally well, so networks grow only when growing pays.',
+      deep: ['Starting small and adding one neuron at a time is the idea behind NEAT (Stanley and Miikkulainen, 2002): the smallest change first, kept only if it pays. You can set new layers to start with a few neurons, or as a whole layer as wide as what it reads, passing its input straight through (the older way here), to compare.'],
+      how: ['Every network plays; its fitness is its return, less a little for every 100 weights.', 'The best two pass on unchanged; parents are picked, mixed and mutated as in the genetic algorithm.', 'A quarter of the children also change shape: a neuron more (most often) or less, or a new layer of one neuron.', 'Removing a neuron takes the one the next layer listens to least; removing the last neuron of a layer folds the layer into the next.'],
+      math: ['fitness = return − penalty × weights / 100', 'new neuron: incoming weights random, outgoing 0', 'new layer of one neuron: weight 1 on the input j the next layer leans on most (the largest Σ|W₂[:, j]|), read by the next layer with W₂[:, j]', 'last neuron removed: W = W₂W₁, b = W₂b₁ + b₂   (the layer folded into the next)'],
       params: 'none of its own: each member is a network of its own shape (Dense layers, at most 6 of up to 48 neurons)',
       use: ['To find how big a network a problem needs: start with no hidden layer and watch it grow.', 'Small policies: on the rocket and the track the winners often shrink to a few dozen weights.'],
-      watch: ['Only a model of Dense blocks on a list of numbers can change shape; any other evolves its weights only.', 'With no size penalty, networks drift bigger: growing costs nothing.'],
+      watch: ['A new one-neuron layer squeezes everything through one number: right after it appears the child usually plays worse, and most such children are not chosen. Those that are kept widen neuron by neuron.', 'Only a model of Dense blocks on a list of numbers can change shape; any other evolves its weights only.', 'With no size penalty, networks drift bigger: growing costs nothing.'],
       code: RL_CODE.grow, try: 'arena',
     },
     'rl-es': {
@@ -577,6 +584,35 @@
       use: ['To see the many ways a world can be played, not just one.', 'Deceptive problems, where the way to the best goes through styles that score worse at first.'],
       watch: ['The best score climbs more slowly than a genetic algorithm’s: the effort is spread over every style.', 'The styles are the world’s own two measures; the levers have none to tell apart.'],
       code: RL_CODE.me, try: 'track',
+    },
+    'rl-novelty': {
+      what: 'Novelty search (Lehman and Stanley, 2011): a genetic algorithm that ignores the reward. Each network is judged by how different its behaviour is, two numbers the world measures (in the deceptive maze, where it ended up), from the behaviours of its generation and of an archive of earlier ones. Doing something new is what pays, so the population spreads out over every way of behaving, and a goal that every step toward the reward leads away from can still be found. The network on show is the best by score found along the way.',
+      deep: ['In the deceptive maze, the reward for getting closer leads straight into a wall below the goal, and a genetic algorithm usually ends up pressed against it (it reached the goal in 1 of 5 runs here; novelty search in 5 of 5). Novelty search fills the maze with endings instead: once the space below the wall is covered, only going round it is new, then the corridor beyond, then the goal.'],
+      how: ['Every network plays; the world measures its behaviour: two numbers from 0 to 1 (in the maze, where it ended up).', 'Its novelty: the average distance from its behaviour to the 10 nearest, among its generation and the archive.', 'The two most novel behaviours of each generation join the archive, so a place once reached stops being new.', 'Parents are picked by novelty (or half novelty, half reward), then mixed and mutated as in the genetic algorithm.', 'The generation’s best by reward is scored; if it beats the best so far, it becomes the network on show.'],
+      math: ['novelty(x) = (1/k) Σᵢ ‖b(x) − b(μᵢ)‖   (μᵢ: its k nearest behaviours)', 'archive ← archive + the 2 most novel of each generation', 'half and half: fitness = ½·rank(novelty) + ½·rank(reward)'],
+      params: 'none of its own: the population is copies of your network’s weights; the archive keeps behaviours, not networks',
+      use: ['Deceptive problems, where the reward points the wrong way: the deceptive maze is the classic.', 'To see what a world allows: the archive maps the behaviours it can reach.'],
+      watch: ['In a world with many ways to be different that do not matter, it wanders: half novelty, half reward keeps it nearer the goal.', 'The two numbers are everything: a behaviour that misses what matters leads nowhere.', 'The levers have no behaviour to tell apart: there it is the genetic algorithm.'],
+      code: RL_CODE.novelty, try: 'trap',
+    },
+    'rl-cem': {
+      what: 'The cross-entropy method: a bell curve (a Gaussian) over the network’s weights, a middle and a spread for each one. Every generation draws networks from it, plays them, and refits the bell curve to the best fifth: the middle moves to their average, and each weight’s spread becomes how much they disagree about it. A floor under the spread keeps it looking. The middle is the network on show.',
+      deep: ['It is a cousin of evolution strategies: both move a cloud of networks uphill, but where evolution strategies estimates a gradient from every score, the cross-entropy method simply moves to where the winners were. With few weights it is quick and steady: on the rocket, the Linear template (32 weights) landed in 5 of 5 runs. With many, most random directions do nothing and the winners’ average is mostly noise: the Small MLP (468 weights) landed in 1 of 5.'],
+      how: ['Draw a generation of networks: each weight its middle plus its spread times a random number.', 'Play them all from the same starts.', 'Keep the best fifth (the elite).', 'New middle: the elite’s average. New spread: how far the elite’s weights lie from it, never below the floor.'],
+      math: ['wₖ = μ + σ ⊙ εₖ,   εₖ ~ N(0, I)', 'μ ← mean of the elite,   σ² ← variance of the elite + floor²'],
+      params: 'none of its own: a middle and a spread for each of your network’s weights',
+      use: ['Small networks, a few dozen to a few hundred weights.', 'Problems where only a score at the end counts: Tetris players were famously trained this way (Szita and Lőrincz, 2006).'],
+      watch: ['Too small a floor and the spread collapses: it stops looking and settles wherever it is.', 'Many weights need many samples: on the Small MLP it is slower than the genetic algorithm.'],
+      code: RL_CODE.cem, try: 'lander',
+    },
+    'rl-erl': {
+      what: 'Evolutionary reinforcement learning (ERL, Khadka and Tumer, 2018): a genetic algorithm and a DQN side by side. Every move the population makes, good or bad, goes into a replay memory, and between generations the DQN, a network like yours, learns Q-values from it by gradient steps. Every few generations the DQN’s network is copied into the population in place of the worst member: if it plays well it breeds, so what the gradient learned spreads through evolution, and evolution’s exploring feeds the gradient.',
+      how: ['Every network of the population plays; each of its moves goes into the replay memory.', 'Breed the next generation as the genetic algorithm does.', 'The DQN takes 200 gradient steps on batches of 32 moves drawn from the memory (double DQN, with a target network).', 'Every 5 generations the DQN’s network takes the place of the worst member.'],
+      math: ['target = r + γ · Q_target(s′, argmax Q(s′, ·))', 'loss = Huber(Q(s, a) − target)', 'every 5 generations: population[worst] ← Q'],
+      params: 'none of its own: the population is copies of your network; the DQN is one more copy, with its target network',
+      use: ['Worlds where many moves teach something: the DQN learns from all of them, not only from the best.', 'When evolution finds rewards that a gradient method alone would miss, and a gradient method could polish what evolution finds.'],
+      watch: ['The DQN learns from moves it did not choose: its Q-values can be off for a while, and its copy simply loses to the population until they are right.', 'Each generation also takes gradient steps: a little slower than the genetic algorithm.'],
+      code: RL_CODE.erl, try: 'lander',
     },
   });
 
@@ -653,18 +689,20 @@
         const r = 1 + 0.35 * Math.sin(t * 1.6), rc = Math.min(1.2, Math.max(0.8, r));
         dot(x0 + (x1 - x0) * phase, y(r), 3, c('muted'));
         dot(x0 + (x1 - x0) * phase, y(rc), 4.5, c('s2'));
-        label('steps kept within ±20%', (x0 + x1) / 2, H - 9, { maxW: W * 0.42 });
+        label('pushed no further than ±20%', (x0 + x1) / 2, H - 9, { maxW: W * 0.42 });
       }
     } else if (type === 'rl-grow') {
-      // a network whose shape changes: a new neuron (its outgoing weights 0: dashed), a new layer, one pruned
-      const STEPS = [{ s: [2], op: 'grow and prune: the shape evolves with the weights' }, { s: [3], op: '+1 neuron: its outgoing weights start at 0', at: [1, 2] }, { s: [3, 3], op: '+1 layer: it passes values straight through', at: [2, -1] },
-        { s: [4, 3], op: '+1 neuron', at: [1, 3] }, { s: [4, 2], op: '−1 neuron: the one listened to least' }, { s: [4], op: '−1 layer: folded into the next' }, { s: [3], op: '−1 neuron' }];
+      // a network whose shape changes: a new neuron (its outgoing weights 0: dashed), a new layer of one neuron (it
+      // passes on one signal: the line it reads bright, the ones it cuts off faint), widening, pruned to nothing
+      const STEPS = [{ s: [2], op: 'grow and prune: the shape evolves with the weights' }, { s: [3], op: '+1 neuron: its outgoing weights start at 0', at: [1, 2] },
+        { s: [3, 1], op: '+1 layer of one neuron: it passes on one signal', at: [2, 0], layer: true }, { s: [3, 2], op: '+1 neuron: the new layer widens', at: [2, 1] },
+        { s: [4, 2], op: '+1 neuron', at: [1, 3] }, { s: [4, 1], op: '−1 neuron: the one listened to least' }, { s: [4], op: '−1 neuron, its last: the layer is folded into the next' }, { s: [3], op: '−1 neuron' }];
       const st = STEPS[Math.floor(t / 2.2) % STEPS.length], sh = [3, ...st.s, 2], n = sh.length, at = st.at || [-1, -1], fresh = Math.min(1, (t % 2.2) / 1.2);
       const x = (i) => W * 0.12 + (i / (n - 1)) * W * 0.76, y = (i, j) => mid - 8 + (j - (sh[i] - 1) / 2) * Math.min(15, (H - 44) / 3);
       const isNew = (i, j) => i === at[0] && (at[1] < 0 || j === at[1]);
       for (let i = 0; i + 1 < n; i++) for (let a = 0; a < sh[i]; a++) for (let b = 0; b < sh[i + 1]; b++) {
-        const zero = isNew(i, a) && at[1] >= 0;
-        ctx.setLineDash(zero ? [3, 3] : []); line(x(i), y(i, a), x(i + 1), y(i + 1, b), zero ? c('s2', 0.8) : c('line-2'), 1); ctx.setLineDash([]);
+        const zero = isNew(i, a) && at[1] >= 0 && !st.layer, into = st.layer && i + 1 === at[0];
+        ctx.setLineDash(zero ? [3, 3] : []); line(x(i), y(i, a), x(i + 1), y(i + 1, b), zero ? c('s2', 0.8) : into ? (a === 0 ? c('s2', 0.9) : c('line-2', 0.25)) : c('line-2'), into && a === 0 ? 1.6 : 1); ctx.setLineDash([]);
       }
       sh.forEach((m, i) => { for (let j = 0; j < m; j++) { dot(x(i), y(i, j), 4.5, c(i === 0 ? 's3' : i === n - 1 ? 's2' : 's1', 0.9)); if (isNew(i, j)) { ctx.strokeStyle = c('s2', 1 - 0.6 * fresh); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x(i), y(i, j), 6 + 5 * fresh, 0, Math.PI * 2); ctx.stroke(); } } });
       label(st.op, W / 2, H - 9, { maxW: W - 12 });
@@ -691,6 +729,51 @@
       }
       label('average speed →', gx + side / 2, gy + side + 9, { maxW: side + 20 });
       label('144 styles, the best of each kept', W * 0.74, mid, { maxW: W * 0.48 });
+    } else if (type === 'rl-novelty') {
+      // the deceptive maze from above: endings fill it, the archive faint and this generation bright; the space below
+      // the wall fills first, then up past its open end, then along the top to the goal
+      const bh = H - 16, bw = Math.min(W * 0.52, bh * 1.25), bx = W * 0.05, by = 6, wy = by + bh * 0.42, gap = bx + bw * 0.8, n = Math.floor(8 + 72 * ((t % 9) / 9));
+      box(bx, by, bw, bh, c('panel-2'), c('line-2'));
+      line(bx, wy, gap, wy, c('ink'), 2.5);
+      for (let i = 0; i < n; i++) {
+        const f = i / 80, u = rnd(i * 3 + 1), v = rnd(i * 5 + 2), fresh = i >= n - 8;
+        const px = f < 0.5 ? bx + bw * (0.05 + 0.9 * u) : f < 0.7 ? gap + (bx + bw - gap) * (0.15 + 0.7 * u) : bx + bw * (0.1 + 0.85 * (1 - ((f - 0.7) / 0.3) * u));
+        const py = f < 0.5 ? wy + 6 + (by + bh - wy - 12) * v : by + 6 + (wy - by - 12) * v;
+        dot(px, py, fresh ? 2.8 : 2, fresh ? c('s2') : c('s1', 0.4));
+      }
+      dot(bx + bw * 0.14, by + bh * 0.16, 5, c('good'));
+      dot(bx + bw * 0.14, by + bh * 0.82, 4, c('s3'));
+      const rx = bx + bw + (W - bx - bw) / 2, room = W - bx - bw - 10;
+      label('the endings spread out:', rx, mid - 9, { maxW: room });
+      label('only what is new is chosen', rx, mid + 9, { maxW: room });
+    } else if (type === 'rl-cem') {
+      // fitness contours (the best at the right); the bell curve (an ellipse) and the networks drawn from it; the best
+      // fifth ringed; the next bell curve round them, smaller
+      const cx = W * 0.8, cy = mid - 4, R = Math.min(W * 0.3, H * 0.5);
+      for (let r = 1; r <= 4; r++) { ctx.strokeStyle = c('line-2'); ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(cx, cy, (R * r) / 4 * 1.6, (R * r) / 4 * 0.75, 0, 0, Math.PI * 2); ctx.stroke(); }
+      dot(cx, cy, 3, c('muted'));
+      const k = Math.floor(t / 1.8) % 6, f = (t % 1.8) / 1.8, P = (j) => [W * 0.14 + (cx - W * 0.14) * (j / 6), cy + H * 0.16 * Math.sin(j * 1.3)], [mx, my] = P(k), [nx, ny] = P(k + 1), s0 = 22 * Math.pow(0.8, k) + 5;
+      ctx.strokeStyle = c('s7', 0.8); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(mx, my, s0 * 1.4, s0 * 0.8, 0, 0, Math.PI * 2); ctx.stroke();
+      const pts = Array.from({ length: 10 }, (_, i) => { const a = rnd(k * 31 + i) * Math.PI * 2, r = Math.sqrt(rnd(k * 17 + i + 5)) * s0; return [mx + Math.cos(a) * r * 1.4, my + Math.sin(a) * r * 0.8]; });
+      const elite = pts.map((p, i) => [Math.hypot(p[0] - cx, (p[1] - cy) * 2), i]).sort((a, b) => a[0] - b[0]).slice(0, 2).map((e) => e[1]);
+      pts.forEach((p, i) => { const e = elite.includes(i); dot(p[0], p[1], 3, c(e ? 's2' : 'muted')); if (e && f > 0.35) { ctx.strokeStyle = c('s2'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, Math.PI * 2); ctx.stroke(); } });
+      if (f > 0.7) { ctx.setLineDash([3, 3]); ctx.strokeStyle = c('s7'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(nx, ny, s0 * 0.8 * 1.4, s0 * 0.8 * 0.8, 0, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+      label('draw from the bell curve; refit it to the best fifth', W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-erl') {
+      // a population (bars) whose moves stream into a replay memory that a DQN learns from; every other generation in
+      // the picture, the DQN's copy (its colour) takes the worst place
+      const n = 8, x0 = W * 0.04, pw = W * 0.34, bw = pw / n, gen = Math.floor(t / 2.4), ph = (t % 2.4) / 2.4, inj = gen % 2 === 1;
+      const fit = Array.from({ length: n }, (_, i) => 0.3 + 0.6 * rnd(i + gen * 7)).sort((a, b) => b - a);
+      fit.forEach((v, i) => { const h = (H - 40) * v, dq = inj && i === n - 1; ctx.fillStyle = c(dq ? 's7' : i < 2 ? 's2' : 's1', dq || i < 2 ? 0.95 : 0.55); ctx.fillRect(x0 + i * bw + 2, H - 24 - h, bw - 4, h); });
+      const mx = W * 0.46, mw = W * 0.17, qx = W * 0.76, qw = W * 0.2;
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = c('ink-2', 0.22 + 0.1 * (i % 2)); ctx.fillRect(mx, 12 + i * 11, mw, 8); }
+      box(qx, mid - 15, qw, 30, c('s7', 0.85), c('line-2'));
+      label('DQN', qx + qw / 2, mid, { color: c('panel'), w: 700, maxW: qw - 4 });
+      dot(x0 + pw + (mx - x0 - pw) * ph, 16 + 50 * rnd(gen * 3 + Math.floor(t * 2)), 3, c('s1'));
+      dot(mx + mw + (qx - mx - mw) * ph, 16 + 50 * rnd(gen * 5 + Math.floor(t * 2)) * (1 - ph) + (mid - 16) * ph, 3, c('s3'));
+      label('population', x0 + pw / 2, H - 9, { maxW: pw + 8 });
+      label('memory', mx + mw / 2, H - 9, { maxW: mw + 16 });
+      label(inj ? 'its copy joins' : 'learns', qx + qw / 2, H - 9, { maxW: qw + 16, color: inj ? c('s7') : undefined });
     } else {
       // a population of networks by fitness; the best two kept; the next generation bred from the fitter ones
       const n = 10, x0 = W * 0.06, w = W * 0.88, bw = w / n, gen = Math.floor(t / 2);
@@ -716,5 +799,6 @@
     requestAnimationFrame(frame);
   }
 
-  NA.partGuide = { G, render, details, draw, inModel };
+  // drawMore: pictures for the guides another file adds to G (js/part-guide2.js)
+  NA.partGuide = { G, render, details, draw, inModel, drawMore: {} };
 })(window.NA);

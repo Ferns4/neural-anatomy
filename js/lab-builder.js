@@ -4,7 +4,7 @@
    one before, so you can see what a change did. The engine is js/builder-engine.js; problems are in
    js/builder-tasks.js, pictures of the results in js/builder-viz.js and the PyTorch version in js/builder-py.js.
    Learning from rewards has no examples with answers: the network acts in a world (js/rl-envs.js) and a method
-   from js/builder-rl.js (DQN, REINFORCE, actor-critic, PPO or a genetic algorithm) turns what happens into steps. */
+   from js/builder-rl.js (DQN, REINFORCE, actor-critic, PPO, or one of evolution's methods) turns what happens into steps. */
 (function (NA) {
   'use strict';
   const { el, clear, clamp, fmt, fmtPct, fmtInt, theme } = NA;
@@ -32,6 +32,10 @@
       hint: 'Rescales each feature over the batch to mean 0 and spread 1: the trick that made deep CNNs trainable.' },
     { type: 'fourier', group: 'Layers', label: 'Fourier', name: 'Fourier features', make: () => ({ type: 'fourier', features: 16, scale: 1 }),
       hint: 'Adds sines and cosines of the inputs at random frequencies: sharp, wiggly functions become easy.' },
+    { type: 'rbf', group: 'Layers', label: 'RBF', name: 'Radial basis units', make: () => ({ type: 'rbf', units: 16, width: 0.5 }),
+      hint: 'Units that answer how close the input is to their own learned centre: bumps that cover the input space.' },
+    { type: 'maxout', group: 'Layers', label: 'Maxout', name: 'Maxout', make: () => ({ type: 'maxout', units: 16, pieces: 2 }),
+      hint: 'Each unit keeps the largest of a few weighted sums, so it learns its own bend instead of using a fixed activation.' },
     { type: 'attention', group: 'Sequences', label: 'Attention', name: 'Self-attention', make: () => ({ type: 'attention', heads: 2, causal: true, residual: true }),
       hint: 'Lets every position look at the others. Needs a sequence.' },
     { type: 'transformer', group: 'Sequences', label: 'Transformer', name: 'Transformer block', make: () => ({ type: 'transformer', heads: 2, mlp: 4, causal: true }),
@@ -44,6 +48,10 @@
       hint: 'Adds a vector for each position, so attention can tell first from last.' },
     { type: 'seqpool', group: 'Sequences', label: 'Seq. pool', name: 'Sequence pool', make: () => ({ type: 'seqpool', mode: 'last' }),
       hint: 'Turns a sequence into one vector: its last step, its largest values or the average.' },
+    { type: 'attnpool', group: 'Sequences', label: 'Attn. pool', name: 'Attention pool', make: () => ({ type: 'attnpool' }),
+      hint: 'Turns a sequence (or a picture) into one vector by a weighted average: it learns where to look for each example.' },
+    { type: 'ssm', group: 'Sequences', label: 'State space', name: 'State-space layer', make: () => ({ type: 'ssm', state: 16, units: 16, act: 'gelu' }),
+      hint: 'A memory of moving averages with learned time scales, read one step at a time: the idea behind S4 and Mamba.' },
     { type: 'conv', group: 'Images', label: 'Conv', name: 'Convolution', make: () => ({ type: 'conv', filters: 8, k: 3, stride: 1, act: 'relu' }),
       hint: 'Small learned filters slid over an image: each finds one local pattern.' },
     { type: 'pool', group: 'Images', label: 'Max pool', name: 'Max pool', make: () => ({ type: 'pool', size: 2 }),
@@ -52,12 +60,24 @@
       hint: 'Averages each 2 × 2 patch: halves the picture, smoothly.' },
     { type: 'patches', group: 'Images', label: 'Patches', name: 'Patches', make: () => ({ type: 'patches', size: 2, dim: 32 }),
       hint: 'Cuts the picture into small squares and turns each into a token: how a vision transformer sees.' },
+    { type: 'sepconv', group: 'Images', label: 'Separable', name: 'Separable convolution', make: () => ({ type: 'sepconv', filters: 16, k: 3, dilation: 1, stride: 1, act: 'relu' }),
+      hint: 'A filter for each channel on its own, then a 1 × 1 mix: most of a convolution for far fewer weights (MobileNet). Dilation widens its view.' },
+    { type: 'se', group: 'Images', label: 'Squeeze-excite', name: 'Squeeze-and-excitation', make: () => ({ type: 'se', ratio: 4 }),
+      hint: 'Rates each channel from its average and turns it up or down: the network learns which features matter for this picture.' },
+    { type: 'coords', group: 'Images', label: 'Coordinates', name: 'Coordinate channels', make: () => ({ type: 'coords', radius: false }),
+      hint: 'Adds two channels holding each pixel’s column and row, so the filters after it know where they are.' },
+    { type: 'augment', group: 'Images', label: 'Shifts', name: 'Random shifts', make: () => ({ type: 'augment', shift: 2, flip: false }),
+      hint: 'Moves each picture a pixel or two at random while training (and can mirror it): the model learns that small moves do not matter.' },
     { type: 'flatten', group: 'Reshape', label: 'Flatten', name: 'Flatten', make: () => ({ type: 'flatten' }),
       hint: 'Lines all the numbers up into one vector, for dense layers.' },
     { type: 'gap', group: 'Reshape', label: 'Global pool', name: 'Global average pool', make: () => ({ type: 'gap' }),
       hint: 'Averages each channel over every position: one vector, whatever the size.' },
+    { type: 'gmp', group: 'Reshape', label: 'Global max', name: 'Global max pool', make: () => ({ type: 'gmp' }),
+      hint: 'Keeps each channel’s largest value anywhere: did this pattern appear at all?' },
     { type: 'parallel', group: 'Combine', label: 'Parallel', name: 'Parallel branches', make: () => ({ type: 'parallel', merge: 'concat', auto: true, branches: [[], []] }),
       hint: 'Two to four branches side by side on the same input, joined or added at the end: Inception modules, wide-and-deep models, mixtures.' },
+    { type: 'moe', group: 'Combine', label: 'Experts', name: 'Mixture of experts', make: () => ({ type: 'moe', experts: 4, units: 16, top: 2, act: 'relu' }),
+      hint: 'Several small expert layers and a gate that chooses, for each example, which of them answer.' },
     { type: 'linear', group: 'Classic ML', label: 'Linear model', name: 'Linear model', make: () => ({ type: 'linear', lambda: 0 }), classic: true,
       hint: 'Linear regression for numbers, logistic regression for classes: one weight per input, the classic baseline.' },
     { type: 'knn', group: 'Classic ML', label: 'k-NN', name: 'k-nearest neighbours', make: () => ({ type: 'knn', k: 5, weights: 'uniform' }), classic: true,
@@ -80,11 +100,17 @@
     { type: 'rl-ga', group: 'Rewards', label: 'Evolution', name: 'Genetic algorithm', method: 'ga', world: 'pole',
       hint: 'No gradients: copies of your network play, the fittest have children with mixed, mutated weights.' },
     { type: 'rl-grow', group: 'Rewards', label: 'Grow & prune', name: 'Grow and prune (evolving the network itself)', method: 'ga', grow: true, world: 'arena',
-      hint: 'Evolution that reshapes the network: children can gain or lose neurons and whole layers, and a size penalty keeps them small.' },
+      hint: 'Evolution that reshapes the network: children can gain or lose neurons, and gain new layers of one neuron that widen later; a size penalty keeps them small.' },
     { type: 'rl-es', group: 'Rewards', label: 'ES', name: 'Evolution strategies', method: 'es', world: 'arena',
       hint: 'One network nudged in many random directions: the nudges that did better show which way to step. A gradient made from scores alone.' },
     { type: 'rl-me', group: 'Rewards', label: 'MAP-Elites', name: 'MAP-Elites (many styles)', method: 'me', world: 'track',
       hint: 'The best network for every style of play, in a grid of 12 × 12 styles, instead of a single best.' },
+    { type: 'rl-novelty', group: 'Rewards', label: 'Novelty', name: 'Novelty search', method: 'novelty', world: 'trap',
+      hint: 'Evolution that ignores the reward: the networks that behave most unlike anything seen before have the children. It walks past dead ends that look like progress.' },
+    { type: 'rl-cem', group: 'Rewards', label: 'Cross-entropy', name: 'Cross-entropy method', method: 'cem', world: 'lander',
+      hint: 'A bell curve over the weights: draw networks from it, keep the best fifth, refit the curve to them, again and again.' },
+    { type: 'rl-erl', group: 'Rewards', label: 'ERL', name: 'ERL (evolution and DQN)', method: 'erl', world: 'lander',
+      hint: 'A genetic algorithm whose every move teaches a DQN; every few generations the DQN’s network joins the population.' },
   ];
   const isClassic = (type) => !!(PART[type] && PART[type].classic);
   const PART = Object.fromEntries(PARTS.map((p) => [p.type, p]));
@@ -126,6 +152,16 @@
     tree: 'Learns a flowchart of yes-or-no questions such as "is x₁ ≤ 0.3?", choosing at each step the question that best separates the answers. Its boundaries are made of straight, axis-aligned steps.',
     forest: 'Grows many deep trees, each on a random resample of the data and choosing among a random few inputs at each question, then averages their votes. One tree overfits; the average of many different ones is steady.',
     boost: 'Adds small trees one at a time, each trained on what the trees so far still get wrong (the gradient of the loss). Shrinkage (η) and penalties (λ, γ) keep each tree modest. This is how XGBoost and LightGBM work, and why they win on tables.',
+    sepconv: 'A convolution in two steps: a small filter slides over each channel on its own, then a 1 × 1 convolution mixes the channels. It sees as much as a full convolution with far fewer weights; dilation spreads its filter out so it sees further.',
+    se: 'Averages each channel, passes the averages through a small network, and multiplies each channel by the gate it gets (0 to 1): attention over channels, decided afresh for every picture.',
+    coords: 'Adds channels that hold each pixel’s column and row. A convolution looks the same everywhere, so on its own it cannot tell where it is; with these channels it can.',
+    augment: 'While training, moves each picture by a pixel or two (and can mirror it), so the model never sees exactly the same picture twice. Nothing changes when the model is used.',
+    gmp: 'Keeps the largest value of each channel over all positions: whether a pattern appeared anywhere, and how strongly.',
+    attnpool: 'Scores every position with one learned query, turns the scores into weights with a softmax and takes the weighted average: one vector, from the positions that matter for this example.',
+    ssm: 'Keeps a set of memories that are moving averages of the input with learned time scales, step by step, and reads its output from them. Linear inside the loop, so it remembers long and trains steadily.',
+    rbf: 'Each unit has a centre and a width and answers how close the input is to its centre: 1 at the centre, near 0 far away. The layer covers the inputs with bumps for the next layer to combine.',
+    maxout: 'Each unit computes a few weighted sums and keeps the largest. It needs no activation function: the largest of straight pieces is already a bend, and it learns which bend.',
+    moe: 'Several small dense layers (experts) and a gate. For each example the gate rates the experts, and the output is their answers weighted by those ratings, often only the top one or two.',
   };
 
   // small line icons (24 × 24), drawn with the current text colour
@@ -168,6 +204,16 @@
     'rl-grow': ['C5 19 1.7', 'C12 19 1.7', 'C19 19 1.7', 'C8.5 11.5 1.7', 'C15.5 11.5 1.7', 'C12 4 1.7', 'M6 17.4l1.6-4.3', 'M12 17.3v-4', 'M18 17.4l-1.6-4.3', 'M9.6 10l1.6-4.3', 'M14.4 10l-1.6-4.3'],
     'rl-es': ['C8 12 1.8', 'M8 12l-4-5', 'M8 12l-4 5', 'M8 12l3-7', 'M8 12l3 7', 'M8 12h12', 'M17 9l3 3-3 3'],
     'rl-me': ['M4 4h16v16H4z', 'M9.33 4v16', 'M14.67 4v16', 'M4 9.33h16', 'M4 14.67h16', 'C6.67 6.67 1.3', 'C12 12 1.3', 'C17.33 17.33 1.3', 'C17.33 6.67 1.3', 'C6.67 17.33 1.3'],
+    sepconv: ['M3 3h7v7H3z', 'M3 14h7v7H3z', 'M10 6.5h3', 'M10 17.5h3', 'M13 6.5l4 5.5', 'M13 17.5l4-5.5', 'C19 12 2'],
+    se: ['M6 3v18', 'M12 3v18', 'M18 3v18', 'M4 15h4', 'M10 8h4', 'M16 17h4'],
+    coords: ['M4 3v17h17', 'M2 6l2-3 2 3', 'M18 18l3 2-3 2', 'C13 9 1.8', 'M13 11v9', 'M4 9h7'],
+    augment: ['M8 8h8v8H8z', 'M12 1v4', 'M12 19v4', 'M1 12h4', 'M19 12h4', 'M10 3l2-2 2 2', 'M10 21l2 2 2-2', 'M3 10l-2 2 2 2', 'M21 10l2 2-2 2'],
+    gmp: ['M3 19l4-6 3 3 4-9 3 6 4-3', 'C14 7 1.8', 'M14 3v2'],
+    attnpool: ['M3 5h4', 'M3 12h4', 'M3 19h4', 'M7 5l10 7', 'M7 12h10', 'M7 19l10-7', 'C19 12 2'],
+    ssm: ['M3 20h18', 'M3 4c4 0 6 14 18 15', 'M3 9c5 0 8 9 18 10', 'M3 4v16'],
+    rbf: ['M2 20h20', 'M3 19c4 0 5-12 9-12s5 12 9 12', 'C12 7 1.5', 'M12 9v10'],
+    maxout: ['M3 19L21 9', 'M3 9l18 10', 'M3 5l9 5 9-5'],
+    moe: ['C5 12 2', 'M7 12l4-7', 'M7 12h4', 'M7 12l4 7', 'M12 3h8v4h-8z', 'M12 10h8v4h-8z', 'M12 17h8v4h-8z'],
   };
   function icon(type) {
     const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
@@ -194,6 +240,9 @@
   BL.setup = { problem: 'spiral', ps: {}, blocks: [], loss: { id: 'xent', smooth: 0, delta: 0.2 }, train: Object.assign({}, DEFAULT_TRAIN), custom: { points: [] } };
 
   BL.problem = function () { return BT.byId[this.setup.problem]; };
+  // what a run counts in: evolution in generations, everything else in steps
+  const keepsBest = (L) => { const s = L.run && L.run.cfg ? (L.run.cfg.ps || {})[L.run.cfg.problem] || {} : {}; return s.keepBest !== false; };
+  BL.unitOf = function (run) { return run && run.family === 'control' && NA.brl.isEvo(run.method) ? 'generation' : 'step'; };
   BL.ps = function () { const id = this.setup.problem; return this.setup.ps[id] || (this.setup.ps[id] = BT.defaults(BT.byId[id])); };
   BL.family = function () { return this.problem().family; };
   const bid = () => 'b' + BL.nextId++;
@@ -292,6 +341,7 @@
     this.save();
     this.archStale = true;
     this.recheck();
+    this.syncTabs(); // (a problem that learns from rewards has a Reward tab; on a phone the panel may be out of sight)
     const T = this.setup.train;
     if (this.hyperRoot && this.hyperKey() !== this._hyperKey) this.buildHyper();
     this.renderWorkbench(); this.renderLeft(); this.inspDirty = true; this.resultsDirty = true; this.pyDirty = true;
@@ -319,6 +369,9 @@
   }
   function tidy(S) {
     S.custom = S.custom && Array.isArray(S.custom.points) ? S.custom : { points: [] };
+    // the maze's inputs by their names before version 29 (the exit: the goal)
+    const mz = S.ps && S.ps.rlmaze, OLD = { 'the exit': 'the goal', 'which way the exit is': 'which way the goal is' };
+    if (mz && Array.isArray(mz.hide)) mz.hide = mz.hide.map((h) => OLD[h] || h);
     S.train = Object.assign({}, DEFAULT_TRAIN, S.train);
     // fresh ids for blocks, copies and parts, so none can clash with ones made later
     const pmap = {}, gmap = {};
@@ -398,7 +451,7 @@
     if (this.agent) { run.method = d.method; run.bestVm = null; run.grow = !!(this.agent.evo && this.agent.evo.grow); this.demo = null; this.watchCell = null; this.genReplay = null; }
     // grow and prune while it learns (problems with answers): a few networks side by side, reshaped every generation
     this.grower = !this.agent && !classic && T.grow && NA.bevo.evolvable(cfg.blocks, d.input) && d.output.kind !== 'tokens'
-      ? new NA.bevo.Grower({ blocks: cfg.blocks, model, input: d.input, output: d.output, seed: T.seed, init: T.init, every: T.growEvery || 150, penalty: T.growPenalty || 'light', newLayer: T.growNew || 'identity', judge: (m) => this.judgeModel(m) }) : null;
+      ? new NA.bevo.Grower({ blocks: cfg.blocks, model, input: d.input, output: d.output, seed: T.seed, init: T.init, every: T.growEvery || 150, penalty: T.growPenalty || 'light', newLayer: T.growNew || 'identity', layerSize: T.growWidth || 'one', judge: (m) => this.judgeModel(m) }) : null;
     if (this.grower) run.grow = true;
     this.order = null; this.epochPos = 0; this.rng = new NA.RNG(T.seed * 977 + n);
     if (this.seqView) this.seqView.cont = null; // written by the new model once it has trained a little
@@ -483,12 +536,15 @@
       const g = ps.gamma, ev = this.agent && this.agent.evo, h = ev && ev.history.length ? ev.history[ev.history.length - 1] : null;
       const rule = m === 'dqn' ? G.dqn({ gamma: g, eps: x.eps, loss: x.loss }) : m === 'pg' ? G.pg({ gamma: g, ret: x.ret }) : m === 'a2c' ? G.a2c({ gamma: g, ret: x.ret }) : m === 'ppo' ? G.ppo({ gamma: g, ret: x.ret })
         : m === 'es' ? G.es({ pop: ps.pop, sigma: ps.esSigma, lr: ps.esLr, best: x.best, mean: x.mean }) : m === 'me' ? G.me({ batch: ps.pop, sigma: ps.sigma, filled: h && h.filled, axes: NA.rlEnvs.WORLDS[d.world].axes, best: x.best })
-          : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean, select: ps.select, cross: ps.cross, mutate: ps.mutate, grow: run.grow, penalty: ev ? ev.penalty * ev.scale : 0, units: h && h.units, weights: h && h.weights });
+          : m === 'cem' && ev ? G.cem({ pop: ev.size, elite: Math.max(2, Math.round(ev.size * ev.cemElite)), spread: h && h.spread, floor: ev.cemFloor, best: x.best })
+            : m === 'novelty' && ev && ev.novel ? G.novelty({ pop: ev.size, k: ev.novK, mix: ev.novMix, archive: ev.novArchive.length, best: x.best })
+              : m === 'erl' && ev ? G.erl({ pop: ev.size, sigma: ev.sigma, steps: ev.erlSteps, every: ev.erlEvery, loss: ev.rlLoss, best: x.best })
+                : G.ga({ pop: ps.pop, sigma: ps.sigma, best: x.best, mean: x.mean, select: ps.select, cross: ps.cross, mutate: ps.mutate, grow: run.grow, penalty: ev ? ev.penalty * ev.scale : 0, units: h && h.units, weights: h && h.weights, layerSize: ps.layerSize });
       return [pays, rule, NA.brl.isEvo(m) ? null : step];
     }
     if (run.grow && this.grower) {
       const gw = this.grower, h = gw.history.length ? gw.history[gw.history.length - 1] : null;
-      return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step, G.grow({ size: gw.members.length, every: gw.every, penalty: gw.penalty, units: h && h.units, weights: h && h.weights, score: h && h.score, value: BT.isValue(d.family) })];
+      return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step, G.grow({ size: gw.members.length, every: gw.every, penalty: gw.penalty, units: h && h.units, weights: h && h.weights, score: h && h.score, value: BT.isValue(d.family), layerSize: gw.layerSize })];
     }
     return [G.loss(run.cfg.loss.id, x.loss, { of: 'on the training examples, smoothed' }), step,
       before ? G.change('step', { step: before.step, v: before.x && before.x.loss, moved: moved(before) }, { step: f.step, v: x.loss, moved: moved(f) }, 'L') : null];
@@ -540,7 +596,15 @@
         r = this.grower ? this.grower.step(X, Y, B, loss, opt) : this.model.step(X, Y, B, loss, opt);
         if (this.grower && this.grower.best.model !== this.model) { this.model = this.grower.best.model; run.params = this.model.paramCount; this.archStale = true; this.vizVersion++; this._region = null; }
       }
-      if (!Number.isFinite(r.loss) || r.loss > 1e6) { this.finish('diverged'); NA.ui.toast.show(`Run ${run.n} blew up: the loss became ${Number.isFinite(r.loss) ? 'enormous' : 'NaN'}. Try a learning rate ten times smaller.`); break; }
+      // evolution has no learning rate and its "loss" is a fitness, as big as the rewards make it: only no number at all stops it
+      const evo = !!(this.agent && this.agent.evo);
+      if (!Number.isFinite(r.loss) || (r.loss > 1e6 && !evo)) {
+        this.finish('diverged');
+        NA.ui.toast.show(evo ? `Run ${run.n} stopped: a fitness came out as no number at all. Some reward gave no number (a division by zero in a reward formula?).`
+          : this.agent ? `Run ${run.n} blew up: the loss became ${Number.isFinite(r.loss) ? 'enormous' : 'NaN'}. Rewards that add up to very large returns are hard for the network to reach (try smaller amounts, or normalising the rewards); or try a learning rate ten times smaller.`
+            : `Run ${run.n} blew up: the loss became ${Number.isFinite(r.loss) ? 'enormous' : 'NaN'}. Try a learning rate ten times smaller.`);
+        break;
+      }
       run.ema = run.ema === null ? r.loss : 0.97 * run.ema + 0.03 * r.loss;
       run.step++; this.step = run.step; this.gradNorm = r.gradNorm; k++;
       // a point on the curves every few steps, unless measuring would take more than a quarter of the time
@@ -556,10 +620,25 @@
     run.status = status; run.done = true;
     if (this.training) { this.training = false; NA.app.emit('training'); }
     this.evaluate(true);
+    // Keep the best network: a run that ends below its best score ends with the weights it had then
+    const A = this.agent, was = run.last ? run.last.vm : null;
+    let kept = false;
+    if (status === 'done' && A && A.net && run.bestW && run.bestW.length === A.net.paramCount && keepsBest(this) && was !== null && run.bestVm > was) {
+      A.net.setWeights(run.bestW);
+      if (A.target) A.target.setWeights(run.bestW);
+      this.evaluate(true);
+      run.kept = { at: run.bestAt, was }; kept = true;
+      if (run.events) run.events.push({ step: run.step, what: [`kept its best network, from ${this.unitOf(run)} ${fmtInt(run.bestAt)}`] });
+    }
     if (run.film) run.film.tick(true);
+    if (kept) {
+      NA.ui.toast.show(`Run ${run.n} is complete. It scored ${fmtPct(run.kept.was, 0)} at the end but ${fmtPct(run.bestVm, 0)} at ${this.unitOf(run)} ${fmtInt(run.bestAt)}, so it keeps the network it had then (Keep the best network, in the Training tab).`);
+      this.inspDirty = true;
+      return;
+    }
     if (status === 'done') NA.ui.toast.show(this.model && this.model.classic
       ? `Run ${run.n} is complete: ${fmtInt(this.model.rounds)} ${this.model.unit()}${this.model.rounds === 1 ? '' : 's'}, ${this.metricText(run)}.${this.model.canExtend() ? ' Continue adds more.' : ''}`
-      : `Run ${run.n} stopped at step ${fmtInt(run.step)}: ${this.metricText(run)}. Press Continue to keep training it, or change the model for a new run to compare.`);
+      : `Run ${run.n} stopped at ${this.unitOf(run)} ${fmtInt(run.step)}: ${this.metricText(run)}. Press Continue to keep training it, or change the model for a new run to compare.`);
     this.inspDirty = true;
   };
   // validation (and a sample of training) scores, recorded on the run's curve
@@ -598,7 +677,11 @@
     const last = run.curve[run.curve.length - 1];
     if (!last || last.step !== pt.step) run.curve.push(pt); else run.curve[run.curve.length - 1] = pt;
     if (run.curve.length > 400) run.curve = run.curve.filter((q, i) => i % 2 === 0 || i === run.curve.length - 1);
-    if (run.bestVm === null || run.bestVm === undefined || sc > run.bestVm) { run.bestVm = sc; run.bestAt = run.step; }
+    if (run.bestVm === null || run.bestVm === undefined || sc > run.bestVm) {
+      run.bestVm = sc; run.bestAt = run.step;
+      // (the gradient methods: its weights then, to end with; evolution plays its best member already)
+      if (A.net && !NA.brl.isEvo(A.method) && keepsBest(this)) run.bestW = A.net.getWeights(run.bestW && run.bestW.length === A.net.paramCount ? run.bestW : undefined);
+    }
     run.last = pt; run.seconds = (performance.now() - run.started) / 1000;
     if (A.evo && A.evo.archive) run.styles = A.evo.archive.size; // MAP-Elites: the styles of play found so far
     this.vizVersion++; this.resultsDirty = true; this.inspDirty = true;
@@ -625,15 +708,21 @@
     if (now - D.at < (D.end ? 1000 : P ? P.ms || 0 : W.demoMs || 150)) return;
     if (P && P.turn && D.obs && !D.end && !this.playQueue.length) return;
     D.at = now;
-    if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; }
+    if (!D.obs || D.end) { D.obs = D.world.reset(D.rng); D.ep++; D.t = 0; D.ret = 0; D.end = null; D.last = null; D.parts = null; }
     else {
       const a = P ? (P.turn ? this.playQueue.shift() : heldMove(P, this.playHeld)) : D.a, t = D.world.step(a, D.rng);
-      D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a, r: t.r };
+      D.t++; D.ret += t.r; D.obs = t.obs; D.last = { a, r: t.r, parts: t.parts || null };
+      // where the return came from: each term of the reward table summed over the episode, and how often it paid (builder-depth.js draws it)
+      if (t.parts) for (const k in t.parts) { const q = (D.parts || (D.parts = {}))[k] || (D.parts[k] = { sum: 0, n: 0 }); q.sum += t.parts[k]; q.n++; }
       if (t.done) D.end = d.world === 'catch' ? (D.world.caught ? 'caught' : 'missed') : d.world === 'pole' ? (t.fell ? 'fell' : 'up') : d.world === 'levers' ? 'pulled' : D.world.end || 'over';
     }
     D.snap = D.world.snap();
-    D.out = live && !D.end ? live.outputs(D.obs, this.watchNet(live)) : null;
-    D.a = D.end ? null : P ? (P.turn ? null : heldMove(P, this.playHeld)) : D.out ? NA.brl.argmax(D.out, d.nA) : D.rng.int(d.nA);
+    // (an episode of one move, the levers: its outputs and its pull stay up while the result shows)
+    const keep = D.end && D.world.maxSteps === 1 && !P;
+    D.out = live && !D.end ? live.outputs(D.obs, this.watchNet(live)) : keep ? D.out : null;
+    D.a = D.end ? (keep ? D.a : null) : P ? (P.turn ? null : heldMove(P, this.playHeld)) : D.out ? NA.brl.argmax(D.out, d.nA) : D.rng.int(d.nA);
+    // (the pole's arrow: the push it is about to make, the move its bars pick, not the one it made a step ago)
+    if (d.world === 'pole' && D.snap && D.a !== null && D.a !== undefined) D.snap.a = D.a;
     this.resultsDirty = true;
   };
   /* The network the results play: the one on show, or with MAP-Elites the elite of the cell you picked (a copy of
@@ -659,6 +748,17 @@
     catch: { idle: 1, ms: 380, keys: { ArrowLeft: 0, ArrowRight: 2 }, help: '← → move the paddle', pad: [[0, '◀'], [2, '▶']] },
     maze: { turn: true, keys: { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 }, help: 'the arrow keys move a square a press', pad: [[3, '◀'], [0, '▲'], [2, '▼'], [1, '▶']] },
     levers: { turn: true, keys: { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4 }, help: 'the keys 1 to 5 pull a lever' },
+    thermo: { idle: 0, ms: 120, keys: { ArrowUp: 1, ' ': 1 }, help: 'hold ↑ (or the space bar) to keep the heating on', pad: [[1, 'Heating on']] },
+    hurdles: { idle: 0, ms: 70, keys: { ArrowUp: 1, ' ': 1, ArrowDown: 2 }, help: '↑ (or the space bar) jumps, ↓ ducks', pad: [[1, 'Jump'], [2, 'Duck']] },
+    memory: { turn: true, keys: { ArrowUp: 0, ArrowLeft: 1, ArrowRight: 2 }, help: '↑ walks on, ← → turn at the junction', pad: [[1, '◀ Left'], [0, '▲ On'], [2, 'Right ▶']] },
+    mountain: { idle: 1, ms: 40, keys: { ArrowLeft: 0, ArrowRight: 2 }, help: '← → push the cart', pad: [[0, '◀ Push'], [2, 'Push ▶']] },
+    swingup: { idle: 1, ms: 60, keys: { ArrowLeft: 0, ArrowRight: 2 }, help: '← → turn the motor', pad: [[0, '◀ Turn'], [2, 'Turn ▶']] },
+    arm: { idle: 4, ms: 60, keys: { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ArrowDown: 3 }, help: '← → turn the shoulder, ↑ ↓ the elbow; with nothing held it brakes', pad: [[0, '↺ Shoulder'], [1, 'Shoulder ↻'], [2, '↺ Elbow'], [3, 'Elbow ↻']] },
+    traffic: { idle: 0, ms: 150, keys: { ' ': 1, ArrowUp: 1 }, help: 'the space bar (or ↑) switches the lights', pad: [[1, 'Switch']] },
+    walker: { idle: 3, ms: 70, keys: { ArrowLeft: 0, ArrowRight: 1, ArrowDown: 2 }, help: '← → swing the legs, ↓ crouches; with nothing held both muscles go long', pad: [[0, '◀ Swing'], [2, 'Crouch'], [1, 'Swing ▶']] },
+    trap: { idle: 0, ms: 50, keys: { ArrowLeft: 1, ArrowRight: 2 }, help: '← → turn; with nothing held it drives forward', pad: [[1, '◀ Turn'], [2, 'Turn ▶']] },
+    chase: { idle: 4, ms: 60, keys: { ArrowUp: 0, ArrowDown: 1, ArrowLeft: 2, ArrowRight: 3 }, help: 'the arrow keys run', pad: [[2, '◀'], [0, '▲'], [1, '▼'], [3, '▶']] },
+    herd: { idle: 4, ms: 50, keys: { ArrowUp: 0, ArrowDown: 1, ArrowLeft: 2, ArrowRight: 3 }, help: 'the arrow keys move the dog', pad: [[2, '◀'], [0, '▲'], [1, '▼'], [3, '▶']] },
   };
   const heldMove = (P, held) => (held && held.length ? held[held.length - 1] : P.idle); // the key pressed last wins
   BL.playYourself = function (on) {
@@ -726,7 +826,7 @@
   BL.metricText = function (run) {
     const v = run && run.last && run.last.vm;
     if (v === null || v === undefined) return '—';
-    if (run.family === 'control') return `score ${fmtPct(v, 0)}${run.bestVm > v ? ` (best ${fmtPct(run.bestVm, 0)} at step ${fmtInt(run.bestAt)})` : ''}`;
+    if (run.family === 'control') return `score ${fmtPct(v, 0)}${run.bestVm > v ? ` (best ${fmtPct(run.bestVm, 0)} at ${this.unitOf(run)} ${fmtInt(run.bestAt)})` : ''}`;
     return `validation ${this.metricName(run.family)} ${BT.isValue(run.family) ? fmt(v, 3) : fmtPct(v, 1)}`;
   };
 
@@ -738,12 +838,25 @@
     return strip(a) === strip(b);
   }
   // What changed between two setups, in words: the run list shows it next to each run's result.
+  /* A problem setting's value in the run list's words: on or off, a method's name, an amount with its sign, the table
+     (no formula of your own), a list, or the value it starts with when the older setup did not have it yet. */
+  function psVal(k, v, p, inner) {
+    if (Array.isArray(v)) return v.length ? v.join(', ') : 'none';
+    if (k === 'rFormula') return v || 'the table';
+    if (k === 'keepBest') return v === false ? 'off' : 'on'; // (on unless set off: not among the defaults, so a challenge does not mind it)
+    const r = p.family === 'control' ? (NA.rlEnvs.REWARDS[p.task] || []).find((q) => q.key === k) : null;
+    if (r) return amountText(typeof v === 'number' ? v : r.def);
+    if (v === undefined) { const d0 = inner ? undefined : BT.defaults(p)[k]; return d0 === undefined ? 'none' : psVal(k, d0, p, true); }
+    if (typeof v === 'boolean') return v ? 'on' : 'off';
+    if (k === 'method' && NA.brl.METHODS[v]) return NA.brl.METHODS[v].short;
+    return String(v);
+  }
   function diffSetups(a, b) {
     const out = [], P = (id) => BT.byId[id].label, val = (k, v) => JSON.stringify(k === 'branches' && Array.isArray(v) ? v.map((l) => l.map(cleanSpec)) : v);
     if (a.problem !== b.problem) out.push(`problem ${P(a.problem)} → ${P(b.problem)}`);
     else {
       const pa = a.ps[a.problem] || {}, pb = b.ps[b.problem] || {};
-      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', select: 'choosing parents', cross: 'mixing parents', mutate: 'mutation kind', grow: 'grow and prune', penalty: 'size penalty', newLayer: 'new layers', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'drone speed', wind: 'wind', pad: 'pad', fuel: 'fuel', ...REWARD_WORDS })[k] || k} ${k === 'hide' ? (pa[k] && pa[k].length ? pa[k].join(', ') : 'none') : pa[k] === undefined ? 'as before' : pa[k]} → ${k === 'hide' ? (pb[k].length ? pb[k].join(', ') : 'none') : pb[k] === '' ? 'the table' : pb[k]}`);
+      for (const k of Object.keys(pb)) if (JSON.stringify(pa[k]) !== JSON.stringify(pb[k])) out.push(k === 'text' ? 'edited the text' : k === 'formula' ? `formula → ${pb.formula}` : `${({ noise: 'noise', n: 'examples', len: 'length', embed: 'embedding size', window: 'window', method: 'learns by', view: 'sees', closer: 'closer bonus', random: 'random mazes', gamma: 'γ', explore: 'exploration', pop: 'population', sigma: 'mutation', slip: 'slippery floor', maxSteps: 'longest episode', force: 'push', poleLen: 'pole length', gravity: 'gravity', drift: 'ball drift', pRight: 'matching lever pays', pOther: 'other levers pay', hide: 'hidden inputs', rFormula: 'reward', select: 'choosing parents', cross: 'mixing parents', mutate: 'mutation kind', grow: 'grow and prune', penalty: 'size penalty', newLayer: 'new layers’ weights', layerSize: 'new layers start with', esSigma: 'nudge size', esLr: 'step size', novK: 'nearest behaviours', novMix: 'chosen for', novAdd: 'behaviours kept a generation', cemElite: 'refit to', cemSigma: 'starting spread', cemFloor: 'spread floor', erlSteps: 'DQN steps a generation', erlEvery: 'DQN joins every', erlLr: 'DQN learning rate', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', climate: 'weather', insulation: 'insulation', schedule: 'warm', obstacles: 'course', length: 'corridor', engine: 'engine', motor: 'motor', pattern: 'traffic', ground: 'ground', maze: 'maze', chasers: 'chasers', sheep: 'sheep', normReward: 'normalised rewards', keepBest: 'keep the best network', waves: 'waves', most: 'up to', sizes: 'dot sizes', dirs: 'directions', colour: 'colour', edges: 'edges', rhythm: 'rhythm', digits: 'digits', ...REWARD_WORDS })[k] || k} ${psVal(k, pa[k], BT.byId[a.problem])} → ${psVal(k, pb[k], BT.byId[b.problem])}`);
       if (a.problem === 'draw' && JSON.stringify(a.custom.points) !== JSON.stringify(b.custom.points)) out.push(`points: ${a.custom.points.length} → ${b.custom.points.length}`);
     }
     // blocks: match by type in order (longest common subsequence), then compare settings
@@ -761,8 +874,10 @@
     }
     if (a.loss.id !== b.loss.id) out.push(`loss ${NA.bx.LOSSES[a.loss.id].label} → ${NA.bx.LOSSES[b.loss.id].label}`);
     if ((a.loss.smooth || 0) !== (b.loss.smooth || 0)) out.push(`label smoothing ${a.loss.smooth || 0} → ${b.loss.smooth || 0}`);
-    const TN = { opt: 'optimizer', lr: 'learning rate', batch: 'batch', wd: 'weight decay', sched: 'schedule', clip: 'clipping', init: 'initialisation', seed: 'seed', steps: 'steps' };
-    for (const k of Object.keys(TN)) if (a.train[k] !== b.train[k]) out.push(`${TN[k]} ${fmtVal(k, a.train[k])} → ${fmtVal(k, b.train[k])}`);
+    // (grow and prune's settings, missing from older setups, count as their defaults)
+    const TN = { opt: 'optimizer', lr: 'learning rate', batch: 'batch', wd: 'weight decay', sched: 'schedule', clip: 'clipping', init: 'initialisation', seed: 'seed', steps: 'steps', grow: 'grow and prune', growPenalty: 'size penalty', growWidth: 'new layers start with', growNew: 'new layers’ weights' };
+    const TD = { grow: false, growPenalty: 'light', growWidth: 'one', growNew: 'identity' };
+    for (const k of Object.keys(TN)) { const va = a.train[k] ?? TD[k], vb = b.train[k] ?? TD[k]; if (va !== vb) out.push(`${TN[k]} ${fmtVal(k, va)} → ${fmtVal(k, vb)}`); }
     const count = new Map();
     for (const c of out) count.set(c, (count.get(c) || 0) + 1);
     return out.length ? [...count].map(([c, k]) => (k > 1 ? `${c} ×${k}` : c)) : ['same setup, fresh weights'];
@@ -791,8 +906,18 @@
     if (b.type === 'forest') return `Random forest (${b.trees} trees)`;
     if (b.type === 'boost') return `Gradient boosting (${b.rounds} rounds)`;
     if (b.type === 'parallel') return `Parallel ×${(b.branches || []).length} (${MERGE_WORD[b.merge || 'concat']})`;
+    const c = withDef(b);
+    if (b.type === 'sepconv') return `Separable conv ${c.filters} × ${c.k}×${c.k}`;
+    if (b.type === 'se') return `Squeeze-excite ÷${c.ratio}`;
+    if (b.type === 'augment') return `Random shifts ±${c.shift}${c.flip ? ' + mirror' : ''}`;
+    if (b.type === 'ssm') return `State space ${c.state} → ${c.units}`;
+    if (b.type === 'rbf') return `RBF ${c.units}`;
+    if (b.type === 'maxout') return `Maxout ${c.units} × ${c.pieces}`;
+    if (b.type === 'moe') return `Experts ${c.experts} (${c.top ? 'top ' + c.top : 'all'})`;
     return blockName(b);
   }
+  // a block with the engine's defaults filled in, for the newest parts' labels
+  const withDef = (b) => Object.assign({}, (NA.bx.BLOCKS[b.type] || {}).defaults, b);
   BL.blockLabel = blockLabel;
   BL.PARTS = PARTS;
 
@@ -810,7 +935,9 @@
     this.buildHyper(ui.hyper);
     this.buildLeft(ui.left);
     this.buildCenter(ui.center);
-    this.tabs = UI.tabs(ui.right, [{ id: 'block', label: 'Part' }, { id: 'train', label: 'Training' }, { id: 'runs', label: 'Runs' }, { id: 'python', label: 'Python' }], (id, body) => this.buildTab(id, body), this.tabId);
+    // (the Reward tab only for problems that learn from rewards: syncTabs)
+    this.tabs = UI.tabs(ui.right, [{ id: 'block', label: 'Part' }, { id: 'reward', label: 'Reward' }, { id: 'train', label: 'Training' }, { id: 'runs', label: 'Runs' }, { id: 'python', label: 'Python' }], (id, body) => this.buildTab(id, body), this.tabId);
+    this.syncTabs();
     this.offTheme = theme.onChange(() => { this._region = null; this.vizVersion = (this.vizVersion || 0) + 1; this.resultsDirty = true; this.inspDirty = true; this.archStale = true; this.renderLeft(); });
     this.recheck();
     this.renderWorkbench(); this.renderLeft(); this.syncUndo();
@@ -836,10 +963,15 @@
       this.lastRo = now;
       const r = this.run, p = r && !this.stale && r.last;
       this.ro.set('run', r ? `${r.n}` : '—');
-      this.ro.set('step', r ? fmtInt(r.step) + (r.limit && !this.stale && !(NA.mobile && NA.mobile.mobile) ? ` / ${fmtInt(r.limit)}` : '') : '0');
+      // (the limit beside the step where the bar has room for it, below 1600 px only in its tooltip: a run must not wrap the bar)
+      const lim = r && r.limit && !this.stale ? fmtInt(r.limit) : null, wide = !(NA.mobile && NA.mobile.mobile) && window.innerWidth >= 1600;
+      this.ro.set('step', r ? fmtInt(r.step) + (lim && wide ? ` / ${lim}` : '') : '0');
+      this.ro.title && this.ro.title('step', lim ? `${fmtInt(r.step)} of ${lim} ${this.unitOf(r)}s` : '');
       const ctl = this.family() === 'control';
       // an evolutionary method has no loss: its step reports the population's average fitness (as a loss, negated)
-      const ga = ctl && r && NA.brl.isEvo(r.method);
+      // (the run's method while it is current; once the setup has changed, the setup's)
+      const ga = ctl && NA.brl.isEvo(r && !this.stale ? r.method : this.ps().method);
+      this.ro.label('step', ga ? 'Generation' : 'Step', ga ? 'Gen.' : '');
       this.ro.label('loss', ga ? 'Avg. fitness' : ctl ? 'Loss' : 'Train loss'); this.ro.label('val', ga ? 'Best fitness' : ctl ? 'Return' : 'Val. loss'); this.ro.label('metric', ctl ? 'Score' : 'Val. score');
       this.ro.set('loss', r && !this.stale && r.ema !== null ? (ga ? fmt(-r.ema, 2) : fmt(r.ema, 4)) : '—');
       this.ro.set('val', ctl ? (p && p.ret !== null && p.ret !== undefined ? fmt(p.ret, 2) : '—') : p && p.val !== null ? fmt(p.val, 4) : '—');
@@ -861,7 +993,7 @@
   };
 
   // the quick settings in the control bar (the phone's settings sheet), rebuilt whenever the setup changes them
-  BL.hyperKey = function () { const T = this.setup.train; return this.isClassicSetup() ? 'classic' : JSON.stringify([T.opt, T.lr, T.batch, T.steps, this.family() === 'control' ? this.ps().method : null]); };
+  BL.hyperKey = function () { const T = this.setup.train; return this.isClassicSetup() ? 'classic' : JSON.stringify([T.opt, T.lr, T.batch, T.steps, this.family() === 'control' ? [this.problem().task, this.ps().method] : null]); };
   BL.buildHyper = function (root) {
     if (root) this.hyperRoot = root;
     const T = this.setup.train, rates = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1];
@@ -876,7 +1008,7 @@
     // learning from rewards: the method first; evolution takes no optimizer, learning rate or batch
     const ctl = this.family() === 'control', method = ctl ? this.ps().method : null, ga = !!method && NA.brl.isEvo(method);
     clear(this.hyperRoot).append(...[
-      ctl ? UI.field('Learns by', UI.select(NA.brl.ORDER.map((m) => ({ value: m, label: NA.brl.METHODS[m].short })), method, (v) => this.setMethod(v)), 'How the network learns from the rewards') : null,
+      ctl ? UI.field('Learns by', UI.select(methodChoices(this.problem().task, method).map((m) => ({ value: m, label: NA.brl.METHODS[m].short })), method, (v) => this.setMethod(v)), 'How the network learns from the rewards') : null,
       ga ? null : UI.field('Optimizer', UI.select(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => this.edit((s) => { s.train.opt = v; }))),
       ga ? null : UI.field('Learning rate', UI.select(rates.map((v) => ({ value: v, label: String(v) })), T.lr, (v) => this.edit((s) => { s.train.lr = +v; }))),
       ga ? null : UI.field('Batch', UI.select([8, 16, 32, 64, 128].map((v) => ({ value: v, label: String(v) })), T.batch, (v) => this.edit((s) => { s.train.batch = +v; }))),
@@ -888,7 +1020,7 @@
     const body = UI.panel(root, 'Problem and parts');
     this.chRoot = el('div', { class: 'bd-ch', 'data-tour': 'challenges' });
     body.append(this.chRoot);
-    const groups = Object.keys(BT.FAMILIES).map((f) => el('optgroup', { label: BT.FAMILIES[f].label }, ...BT.PROBLEMS.filter((p) => p.family === f).map((p) => el('option', { value: p.id, text: p.label }))));
+    const groups = BT.problemGroups().map((g) => el('optgroup', { label: g.label }, ...g.problems.map((p) => el('option', { value: p.id, text: p.label }))));
     this.problemSel = el('select', { class: 'bd-select', 'aria-label': 'Problem' }, ...groups);
     this.problemSel.addEventListener('change', () => this.setProblem(this.problemSel.value));
     this.problemHint = el('p', { class: 'sec-note' });
@@ -961,12 +1093,13 @@
     BV.preview(ctx, W, Hh, this.dataFor());
   };
   // the parts that suit each kind of data (the others still work where shapes allow, or say why not)
-  const VECTOR_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'fourier', 'parallel'], CLASSIC_PARTS = ['linear', 'knn', 'tree', 'forest', 'boost'];
-  const SEQ_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'attention', 'transformer', 'rnn', 'conv1d', 'position', 'seqpool', 'flatten', 'gap', 'parallel'];
+  const VECTOR_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'fourier', 'rbf', 'maxout', 'parallel', 'moe'], CLASSIC_PARTS = ['linear', 'knn', 'tree', 'forest', 'boost'];
+  const SEQ_PARTS = ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'layernorm', 'batchnorm', 'maxout', 'attention', 'transformer', 'rnn', 'conv1d', 'position', 'seqpool', 'attnpool', 'ssm', 'se', 'flatten', 'gap', 'gmp', 'parallel', 'moe'];
   const FITS = {
     plane: [...VECTOR_PARTS, ...CLASSIC_PARTS], curve: [...VECTOR_PARTS, ...CLASSIC_PARTS], surface: [...VECTOR_PARTS, ...CLASSIC_PARTS], table: [...VECTOR_PARTS, ...CLASSIC_PARTS],
-    digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'conv', 'pool', 'avgpool', 'patches', 'flatten', 'gap', 'parallel', 'attention', 'transformer', 'position', 'seqpool', ...CLASSIC_PARTS],
-    series: [...SEQ_PARTS, ...CLASSIC_PARTS], seqclass: SEQ_PARTS, sequence: SEQ_PARTS.filter((t) => t !== 'seqpool' && t !== 'gap' && t !== 'flatten'),
+    digits: ['dense', 'neuron', 'gated', 'activation', 'dropout', 'noise', 'batchnorm', 'maxout', 'conv', 'pool', 'avgpool', 'patches', 'sepconv', 'se', 'coords', 'augment', 'flatten', 'gap', 'gmp', 'parallel', 'moe', 'attention', 'transformer', 'position', 'seqpool', 'attnpool', ...CLASSIC_PARTS],
+    // a token at every position: nothing that squeezes the sequence, or (squeeze-and-excitation) lets a position see the ones after it
+    series: [...SEQ_PARTS, ...CLASSIC_PARTS], seqclass: SEQ_PARTS, sequence: SEQ_PARTS.filter((t) => !['seqpool', 'gap', 'flatten', 'attnpool', 'gmp', 'se'].includes(t)),
   };
   // a world: the parts for the way it is seen (numbers, a picture or readings); classic models need answers to learn from
   BL.fits = function () {
@@ -977,11 +1110,15 @@
   };
   BL.fitsHere = function (type) { return PART[type] && PART[type].method ? this.family() === 'control' : this.fits().includes(type); };
   // learning from rewards: another method, with the number of steps that suits it here
+  /* The methods it can learn by in this world: not MAP-Elites or novelty search on the levers, where an episode is one
+     pull and there is no style of play to tell apart (unless it learns by one already, so the choice shows it). */
+  const methodChoices = (world, cur) => NA.brl.ORDER.filter((m) => m === cur || !(world === 'levers' && (m === 'me' || m === 'novelty')));
   BL.setMethod = function (m) {
     const p = this.problem(), s = this.ps();
     if (p.family !== 'control' || s.method === m || !NA.brl.METHODS[m]) return;
     const steps = NA.brl.stepsFor(p.task, m);
     this.edit((S) => { S.ps[S.problem].method = m; S.train.steps = steps; });
+    this.evoView = 'best'; this.genReplay = null; this.watchCell = null; this._headKey = null; this.resultsDirty = true;
     NA.ui.toast.show(`Learns by ${NA.brl.METHODS[m].label} now: ${fmtInt(steps)} ${NA.brl.isEvo(m) ? 'generations' : 'steps'} a press of Train.`);
   };
   // another way to see the world: when the blocks no longer fit (dense layers on a picture), a Flatten goes in front
@@ -1049,7 +1186,7 @@
     if (already) NA.ui.toast.show(`${switched ? `${BT.byId[p.world].label}, learning from rewards: ` : ''}it learns by ${NA.brl.METHODS[p.method].label}${p.grow ? ', growing and pruning,' : ''} already.`);
     else {
       if (this.ps().method !== p.method) this.setMethod(p.method);
-      if (p.grow) { this.edit((S) => { S.ps[S.problem].grow = true; }); NA.ui.toast.show(`Grow and prune: children of the genetic algorithm can now gain or lose neurons and whole layers${this.evolvable() ? '' : '. Your model has blocks other than Dense, or sees a picture, so only its weights evolve: try the Small MLP'}.`); }
+      if (p.grow) { this.edit((S) => { S.ps[S.problem].grow = true; }); NA.ui.toast.show(`Grow and prune: children of the genetic algorithm can now gain or lose neurons, and gain new layers of one neuron${this.evolvable() ? '' : '. Your model has blocks other than Dense, or sees a picture, so only its weights evolve: try the Small MLP'}.`); }
     }
     if (switched) NA.ui.toast.show(`${p.label} learns from rewards, so the problem switches to “${BT.byId[p.world].label}”, learning by ${NA.brl.METHODS[p.method].label}. Undo brings your setup back.`);
     this.selectBlock({ kind: 'output', id: 'output' }, true);
@@ -1214,8 +1351,9 @@
     this.growStage = el('div', { class: 'lab-stage gw-pane' });
     this.growBox = el('div', { class: 'bd-arch bd-grow' }, this.growStage);
     root.append(this.growBox);
+    const L = this;
     this.growth = new NA.growth.View(this.growStage, {
-      unit: 'step',
+      get unit() { return L.unitOf(L.run); },
       version: () => `${this.run ? this.run.n : 0}:${this.run && this.run.film ? this.run.film.version() : 0}:${this.stale ? 1 : 0}`,
       frames: () => (this.run && this.run.film && !this.stale ? this.run.film.frames() : []),
       curve: () => this.filmCurve(),
@@ -1225,6 +1363,8 @@
     }, { title: 'How it learned', what: 'Its results', emptyText: 'Press Train. The moments of the run collect here: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.' });
     this.resCanvas.addEventListener('contextmenu', (e) => { if (this.problem().id === 'draw') e.preventDefault(); });
     this.resCanvas.addEventListener('pointerdown', (e) => this.resultsPointer(e));
+    this.resCanvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') this.resultsHover(e); });
+    this.resCanvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this.resultsHover(null); });
     this.resizeObs = new ResizeObserver(() => { this.layoutCenter(); this.resultsDirty = true; });
     this.resizeObs.observe(this.split); this.resizeObs.observe(this.resBox);
     this.layoutCenter();
@@ -1312,6 +1452,17 @@
     if (b.type === 'forest') return `${b.trees} trees · depth ${b.depth}`;
     if (b.type === 'boost') return `${b.rounds} rounds · depth ${b.depth} · η ${b.eta}`;
     if (b.type === 'parallel') return `${(b.branches || []).length} branches · ${MERGE_TEXT[b.merge || 'concat']}`;
+    const c = withDef(b);
+    if (b.type === 'sepconv') return `${c.filters} filters · ${c.k}×${c.k}${c.dilation > 1 ? ' · dilation ' + c.dilation : ''}${c.stride > 1 ? ' · stride ' + c.stride : ''} · ${ACTS[c.act].label}`;
+    if (b.type === 'se') return `a gate for each channel · squeeze ÷${c.ratio}`;
+    if (b.type === 'coords') return c.radius ? 'column, row and distance' : 'column and row';
+    if (b.type === 'augment') return `up to ${c.shift} px while training${c.flip ? ' · mirrored half the time' : ''}`;
+    if (b.type === 'gmp') return 'the largest of each channel';
+    if (b.type === 'attnpool') return 'a learned weighted average';
+    if (b.type === 'ssm') return `${c.state} memories → ${c.units} · ${ACTS[c.act].label}`;
+    if (b.type === 'rbf') return `${c.units} bumps · width ${c.width}`;
+    if (b.type === 'maxout') return `${c.units} units · ${c.pieces} pieces each`;
+    if (b.type === 'moe') return `${c.experts} experts of ${c.units} · ${c.top ? 'top ' + c.top : 'all, weighted'} · ${ACTS[c.act].label}`;
     return '';
   }
   BL.gap = function (i, label) {
@@ -1688,6 +1839,9 @@
     const ev = live && this.agent ? this.agent.evo : null, gr = live ? this.grower : null;
     const L = { data: live ? this.data : this.dataFor(), model: live ? this.model : null, vizVersion: this.vizVersion, _region: this._region, confusion: live ? this.confusion : null, seqView: this.seqView || (this.seqView = {}), demo: this.demo, run: live ? this.run : null,
       evo: ev, grower: gr, evoView: this.evoView || 'best', watchCell: this.watchCell, you: !!this.youPlay, genProgress: this.genProgress, replay: this.genReplay || (this.genReplay = { at: performance.now(), gen: -1 }), now: performance.now() };
+    // learning from rewards: the network on show (for what it looked at) and what the views keep between pictures, for this run
+    if (L.data.family === 'control') Object.assign(L, { agent: live ? this.agent : null, net: live && this.agent ? this.watchNet(this.agent) : null, training: !!this.training,
+      depth: this.depth && this.depth.run === (live ? this.run : null) ? this.depth : (this.depth = { run: live ? this.run : null, recent: [], divHist: [] }) });
     const t0 = performance.now();
     this.resRect = { x: 8, y: 8, w: W - 16, h: Hh - 16 };
     BV.draw(ctx, this.resRect, L);
@@ -1695,10 +1849,11 @@
     // the run's loss curves (a diverged run's huge values are capped so the scale stays readable)
     const run = live ? this.run : null, cap = (v) => Math.min(v, 1e3), ctl = L.data.family === 'control';
     this.lossBox.hidden = ctl; this.lossKey.hidden = ctl; this.retBox.hidden = !ctl; this.retKey.hidden = !ctl;
-    if (ctl) this.retKeyText.textContent = run && NA.brl.isEvo(run.method) ? `${run.method === 'me' ? 'the best of all the styles' : run.method === 'es' ? 'the best nudged copy of each generation' : 'the fittest of each generation'}: the return of its best moves` : 'return per episode while it learns (average of the latest)';
+    if (ctl) this.retKeyText.textContent = run && NA.brl.isEvo(run.method) ? `${run.method === 'me' ? 'the best of all the styles' : run.method === 'es' ? 'the best nudged copy of each generation' : run.method === 'cem' ? 'the best network drawn in each generation' : run.method === 'novelty' ? 'the best of each generation by return (it is chosen for novelty, not for this)' : 'the fittest of each generation'}: the return of its best moves` : 'return per episode while it learns (average of the latest)';
     if (ctl) {
       // learning from rewards: the average return of its episodes as it learns (the loss of a policy says little)
       this.retChart.frame();
+      this.retChart.opts.xLabel = this.unitOf(run) === 'generation' ? 'Generation' : 'Step';
       this.retChart.set({ series: run ? [{ name: NA.brl.isEvo(run.method) ? 'best fitness' : 'return per episode', color: theme.c('s1'), points: run.curve.filter((p) => p.ret !== null && p.ret !== undefined && Number.isFinite(p.ret)).map((p) => [p.step, p.ret]) }, { name: 'score', color: theme.c('s2'), points: [] }].filter((s) => s.points.length) : [] });
       return;
     }
@@ -1708,18 +1863,25 @@
   BL.renderResHead = function (live) {
     const d = live ? this.data : this.dataFor(), p = this.problem(), run = live ? this.run : null, S = this.seqView || (this.seqView = {});
     const narrow = !!this.resBox && this.resBox.clientWidth - 16 <= 520;
-    const key = JSON.stringify([this.evoView, narrow, !!this.youPlay, this.watchCell, run && run.method, live && this.model && this.model.evoBlocks ? this.model.paramCount + ':' + this.model.evoBlocks.map((b) => b.units).join('-') : '', p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok]);
+    const key = JSON.stringify([this.evoView, narrow, !!this.youPlay, this.watchCell, run && run.method, live && this.model && this.model.evoBlocks ? this.model.paramCount + ':' + this.model.evoBlocks.map((b) => b.units).join('-') : '', p.id, !!live, run && run.n, run && run.last && run.last.vm, run && run.last && run.last.tm, run && run.status, run && Math.floor(run.step / 250), d.family === 'sequence' && S.layer, S.head, this.drawClass, this.drawErase, this.stale, d.names, d.error, this.check && this.check.ok, d.family === 'control' && this.rewardSummary()]);
     if (key === this._headKey) return;
     this._headKey = key;
+    if (this._resTip) { NA.tooltip.hide(); this._resTip = false; } // (a tooltip of the picture before: the view, problem or run has changed)
     const parts = [];
     const score = run && run.last && run.last.vm !== null && run.last.vm !== undefined ? (BT.isValue(d.family) ? `R² ${fmt(run.last.vm, 3)}` : fmtPct(run.last.vm, 1)) : null;
     if (d.error) parts.push(el('div', { class: 'bd-res-error', role: 'alert', text: d.error }));
     parts.push(el('div', { class: 'bd-res-title' }, el('span', { class: 'bd-res-k', text: live ? `Run ${run.n} · ${d.family === 'control' ? `score of its best moves${run.bestVm > (run.last ? run.last.vm : 0) ? ` (best ${fmtPct(run.bestVm, 0)})` : ''}` : `validation ${this.metricName()}`}` : this.run && this.stale ? 'Setup edited: press Train for a new run' : 'Press Train to train your model' }), score ? el('span', { class: 'bd-res-v' }, el('i', { class: 'bd-run-sw', style: { background: `var(--${run.colour})` } }), score) : null));
-    // learning by evolution: the best plays, or its whole generation at once (in the worlds that keep their paths)
-    if (live && d.family === 'control' && (run.method === 'ga' || run.method === 'es') && (NA.rlEnvs.WORLDS[d.world] || {}).trace)
-      parts.push(el('div', { class: 'bd-evoview' }, UI.seg([{ value: 'best', label: 'The best plays' }, { value: 'generation', label: 'The whole generation', title: 'Every member of the last generation at once, from the same start: the colours match their bars' }], this.evoView === 'generation' ? 'generation' : 'best', (v) => { this.evoView = v; this.genReplay = null; this._headKey = null; this.resultsDirty = true; }, 'Show')));
-    // MAP-Elites on a small screen: its grid of styles in a view of its own
-    if (live && d.family === 'control' && run.method === 'me' && narrow) parts.push(el('div', { class: 'bd-evoview' }, UI.seg([{ value: 'best', label: 'It plays' }, { value: 'grid', label: 'The grid of styles', title: 'The best network of each style of play: tap a cell to watch it' }], this.evoView === 'grid' ? 'grid' : 'best', (v) => { this.evoView = v; this._headKey = null; this.resultsDirty = true; }, 'Show')));
+    // what it is paid, in a line, which opens the Reward tab (not while you play: the picture gets the room)
+    const paid = d.family === 'control' && !d.error && !this.youPlay ? this.rewardSummary() : '';
+    if (paid) parts.push(el('button', { class: 'bd-rew-chip', type: 'button', title: `What it is paid: ${paid}. ${Click()} to change it.`, onclick: () => this.openReward() }, el('span', { class: 'bd-rew-k', text: 'Reward' }), el('span', { class: 'bd-rew-v', text: paid })));
+    // learning from rewards: the views of a run (builder-depth.js): it plays, what it looked at, the whole generation, MAP-Elites'
+    // grid of styles on a small screen, the family line of the best, the map of styles; a list when a small screen has many
+    const views = live && d.family === 'control' && !this.youPlay && NA.builderDepth ? NA.builderDepth.views({ method: run.method, world: d.world, narrow, evo: this.agent && this.agent.evo }) : [];
+    if (this.evoView && this.evoView !== 'best' && !views.some((v) => v.value === this.evoView)) { this.evoView = 'best'; this.genReplay = null; this.resultsDirty = true; }
+    if (views.length > 1) {
+      const cur = views.some((v) => v.value === this.evoView) ? this.evoView : 'best', pick = (v) => { this.evoView = v; this.genReplay = null; this._headKey = null; this.resultsDirty = true; NA.tooltip.hide(); };
+      parts.push(el('div', { class: 'bd-evoview' }, narrow && views.length > 3 ? UI.field('Show', UI.select(views, cur, pick)) : UI.seg(views, cur, pick, 'Show')));
+    }
     if (live && run.method === 'me' && this.watchCell !== null && this.watchCell !== undefined) parts.push(el('p', { class: 'sec-note', text: `Watching the elite of one style. ${Click()} its cell again to watch the best of all.` }));
     // grow and prune: the shape it has evolved so far, next to the one built
     const evo = live && run.grow && this.model && this.model.evoBlocks, hidden = (bs) => (bs.length ? `${bs.map((b) => b.units).join(' → ')} neuron${bs.length === 1 && bs[0].units === 1 ? '' : 's'}` : 'no hidden layer');
@@ -1770,7 +1932,8 @@
   // one finding about the run: an icon for its level, its title, what it means and buttons that try a fix
   const INS_ICON = { critical: '!', warn: '!', good: '✓', info: 'i' };
   BL.insightEl = function (it, brief) {
-    const body = brief ? (it.body.match(/^.*?[.:](\s|$)/) || [it.body])[0].trim() : it.body;
+    // (brief: its first sentence, whole: a colon inside it is not its end)
+    const body = brief ? (it.body.match(/^.*?[.!?](\s|$)/) || [it.body])[0].trim() : it.body;
     return el('div', { class: `bd-ins is-${it.level}`, role: it.level === 'critical' ? 'alert' : null },
       el('span', { class: 'bd-ins-ico', 'aria-hidden': 'true', text: INS_ICON[it.level] }),
       el('div', { class: 'bd-ins-text' }, el('strong', { class: 'bd-ins-title', text: it.title }), ' ', el('span', { class: 'bd-ins-body', text: body }),
@@ -1817,10 +1980,12 @@
     this.resultsDirty = true;
   };
   BL.resultsPointer = function (e) {
-    // a cell of MAP-Elites' grid: watch that style's elite (again: back to the best of all)
     if (this._hits && this.family() === 'control') {
       const r = this.resCanvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, h = this._hits.find((q) => x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h);
+      // a cell of MAP-Elites' grid: watch that style's elite (again: back to the best of all)
       if (h && h.cell !== undefined) { this.watchCell = this.watchCell === h.cell ? null : h.cell; if (this.evoView === 'grid') this.evoView = 'best'; this.demo = null; this.resultsDirty = true; this._headKey = null; return; }
+      // a touch on a part that has more to say (a bar of what it looked at, an ancestor, a style): its tooltip, as hover gives a mouse
+      if (e.pointerType !== 'mouse') { this.resultsHover(e); if (this.resultsHit(x, y)) return; }
     }
     if (this.problem().id !== 'draw' || !this.resRect) return;
     const r = this.resCanvas.getBoundingClientRect(), q = BV.planeAt(this.resRect, e.clientX - r.left, e.clientY - r.top);
@@ -1831,6 +1996,30 @@
       pts.forEach((p, i) => { const dd = Math.hypot(p.x - q.x, p.y - q.y); if (dd < bd) { bd = dd; best = i; } });
       if (best >= 0) this.edit((s) => { s.custom.points.splice(best, 1); });
     } else if (pts.length < 600) this.edit((s) => { s.custom.points.push({ x: +q.x.toFixed(3), y: +q.y.toFixed(3), c: this.drawClass || 0 }); });
+  };
+  // the part of the results under the pointer that has a tooltip: of the small marks the nearest, otherwise the last drawn
+  BL.resultsHit = function (x, y) {
+    let best = null, bd = Infinity;
+    for (const q of this._hits || []) {
+      if (!q.tip || x < q.x || x > q.x + q.w || y < q.y || y > q.y + q.h) continue;
+      const dd = q.cx !== undefined ? Math.hypot(q.cx - x, q.cy - y) : 1e6;
+      if (dd <= bd) { bd = dd; best = q; }
+    }
+    return best;
+  };
+  // hover over the results of learning from rewards: the part's tooltip, and its mark picked out in the picture
+  BL.resultsHover = function (e) {
+    const S = this.depth, was = S ? JSON.stringify([S.hoverId, S.hoverPt, S.hoverGen]) : '';
+    if (S) { S.hoverId = null; S.hoverPt = null; S.hoverGen = null; }
+    const r = e && this._hits && this.family() === 'control' ? this.resCanvas.getBoundingClientRect() : null, x = r ? e.clientX - r.left : 0, y = r ? e.clientY - r.top : 0, h = r ? this.resultsHit(x, y) : null;
+    if (S && h && h.id !== undefined) S.hoverId = h.id;
+    const rows = h ? h.tip(x, y) : null;
+    this._resTip = !!(rows && rows.length);
+    if (this._resTip) NA.tooltip.show(rows, e.clientX, e.clientY); else NA.tooltip.hide();
+    // a tap's tooltip goes after a few seconds (there is no pointer to leave)
+    clearTimeout(this._resTipTimer);
+    if (this._resTip && e && e.pointerType !== 'mouse') this._resTipTimer = setTimeout(() => { if (this._resTip) { NA.tooltip.hide(); this._resTip = false; } }, 4000);
+    if (S && JSON.stringify([S.hoverId, S.hoverPt, S.hoverGen]) !== was) this.resultsDirty = true;
   };
 
   // ------------------------------------------------------------------ right: the inspector
@@ -1843,22 +2032,88 @@
       this.parts.chartNote = UI.note('Every press of Train after a change starts a new run from fresh weights, so you can compare. Tick runs to show them on the chart.');
       this.parts.list = el('div', { class: 'bd-runs' });
       this.parts.cmp = el('div', { class: 'bd-cmp' });
-      body.append(UI.section('Validation score of each run', this.parts.chartBox, this.parts.chartNote), UI.section('Compare two runs', this.parts.cmp), UI.section('Runs', this.parts.list));
+      const chartSec = UI.section('Validation score of each run', this.parts.chartBox, this.parts.chartNote);
+      this.parts.chartTitle = chartSec.querySelector('.sec-title');
+      body.append(chartSec, UI.section('Compare two runs', this.parts.cmp), UI.section('Runs', this.parts.list));
     } else if (id === 'python') {
       this.parts.code = el('div');
-      body.append(UI.section('Your model in PyTorch', UI.note('The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch.'), this.parts.code));
+      body.append(UI.section('Your model in PyTorch', UI.note(NA.builderPyEdit ? 'The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch. Edit it, and the page reads your changes back into the model; what it cannot follow, it says, and puts back.' : 'The model, loss, optimizer and training loop you set up here, as a script you can run with PyTorch.'), this.parts.code));
     }
     this.updateTab();
   };
+  // the Reward tab is there while the problem learns from rewards; away from one, the Part tab takes its place
+  BL.syncTabs = function () {
+    const b = this.tabs && this.tabs.bar.querySelector('[data-tab="reward"]');
+    if (!b) return false;
+    const on = this.family() === 'control';
+    b.hidden = !on;
+    if (!on && this.tabId === 'reward') { this.tabs.select('block'); return true; }
+    return false;
+  };
+  // the reward tab, opened from the reward's summary (on a phone, the panel's own screen)
+  BL.openReward = function () {
+    if (!this.tabs || this.family() !== 'control') return;
+    if (NA.mobile && NA.mobile.mobile) NA.mobile.go('insp');
+    this.tabs.select('reward');
+  };
   BL.updateTab = function () {
     const id = this.tabId, P = this.parts;
-    if (!P) return;
+    if (!P || this.syncTabs()) return;
     if (id === 'block') this.renderBlockTab(P.body);
+    else if (id === 'reward') this.renderRewardTab(P.body);
     else if (id === 'train') this.renderTrainTab(P.body);
     else if (id === 'runs') this.renderRunsTab();
+    // the script, editable where builder-py-edit.js is loaded (it keeps an editor that is open as it is)
+    else if (id === 'python' && NA.builderPy && NA.builderPyEdit && (this.pyDirty || !P.code.firstChild)) { this.pyDirty = false; NA.builderPyEdit.render(this, P.code); }
     else if (id === 'python' && (this.pyDirty || !P.code.firstChild)) { this.pyDirty = false; clear(P.code).append(NA.builderPy ? UI.codeBox(NA.builderPy.code(this.setup, this.dataFor()), this.isClassicSetup() ? `Python · ${this.setup.blocks.some((b) => b.type === 'boost') ? 'XGBoost' : 'scikit-learn'}` : 'Python · PyTorch') : UI.note('Loading…')); }
   };
 
+  /* The settings of the newest parts (b with its defaults filled in; set edits the block, in every copy of a part of
+     your own), each with a line on what the setting changes, in numbers where it helps. */
+  const NEW_SETTINGS = new Set(['sepconv', 'se', 'coords', 'augment', 'ssm', 'rbf', 'maxout', 'moe']);
+  BL.newPartSettings = function (sec, b, sh, set, actSel) {
+    const nums = (list, fmtV = String) => list.map((v) => ({ value: v, label: fmtV(v) }));
+    if (b.type === 'sepconv') {
+      const C = sh.in && sh.in.length === 3 ? sh.in[0] : null, F = b.filters, k2 = b.k * b.k, reach = b.dilation * (b.k - 1) + 1;
+      sec.push(UI.section('Settings', UI.slider({ label: 'Filters (output channels)', min: 1, max: 64, step: 1, value: F, format: String, onChange: (v) => set((q) => { q.filters = v; }) }),
+        UI.field('Filter size', UI.seg(nums([3, 5, 7], (k) => `${k}×${k}`), b.k, (v) => set((q) => { q.k = +v; }), 'Filter size')),
+        UI.field('Dilation', UI.seg(nums([1, 2, 3]), b.dilation, (v) => set((q) => { q.dilation = +v; }), 'Dilation')),
+        UI.field('Stride', UI.seg([{ value: 1, label: '1' }, { value: 2, label: '2 (halves it)' }], b.stride, (v) => set((q) => { q.stride = +v; }), 'Stride')),
+        UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; }))),
+        C ? UI.note(`${fmtInt(C * k2 + C * F)} weights (${C} × ${k2} for the filters, ${C} × ${F} for the mix) where a full convolution of the same size needs ${fmtInt(C * k2 * F)}.${b.dilation > 1 ? ` With dilation ${b.dilation} each ${b.k}×${b.k} filter spreads over ${reach} × ${reach} pixels, with gaps.` : ''}`) : null));
+    } else if (b.type === 'se') {
+      const C = sh.in ? (sh.in.length === 3 ? sh.in[0] : sh.in[sh.in.length - 1]) : null;
+      sec.push(UI.section('Settings', UI.field('Squeeze ratio', UI.seg(nums([1, 2, 4, 8, 16], (r) => `÷${r}`), b.ratio, (v) => set((q) => { q.ratio = +v; }), 'Squeeze ratio')),
+        C ? UI.note(`${C} channel averages → ${NA.bx.seHidden(C, b.ratio)} ReLU unit${NA.bx.seHidden(C, b.ratio) === 1 ? '' : 's'} → ${C} gates between 0 and 1. A narrower middle learns fewer weights and has to summarise more.`) : null));
+    } else if (b.type === 'coords') {
+      sec.push(UI.section('Settings', el('div', { class: 'chip-row' }, UI.chip('Distance from the centre too', !!b.radius, (on) => set((q) => { q.radius = on; }), 'A third channel: how far each pixel is from the middle of the picture')),
+        UI.note('They help when where something is matters: finding a position, or telling the top of a picture from the bottom. A plain convolution answers the same wherever a pattern is.')));
+    } else if (b.type === 'augment') {
+      sec.push(UI.section('Settings', UI.field('Move by up to', UI.seg(nums([0, 1, 2, 3], (k) => `${k} px`), b.shift, (v) => set((q) => { q.shift = +v; }), 'Move by up to')),
+        el('div', { class: 'chip-row' }, UI.chip('Mirror left to right', !!b.flip, (on) => set((q) => { q.flip = on; }), 'Half of the pictures are flipped while training')),
+        b.flip && this.problem().id === 'digits' ? UI.note('A mirrored 2 or 7 is not a digit any more: mirroring suits pictures whose class stays the same when flipped, such as shapes.', 'lm-warn') : null,
+        UI.note('Only while training: a new move for every picture at every step. When the model is used, pictures pass through unchanged. Compare the training and validation scores of a run with it and one without.')));
+    } else if (b.type === 'ssm') {
+      sec.push(UI.section('Settings', UI.slider({ label: 'Memories (state size)', min: 1, max: 64, step: 1, value: b.state, format: String, onChange: (v) => set((q) => { q.state = v; }) }),
+        UI.slider({ label: 'Output units', min: 1, max: 128, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+        UI.field('Activation', actSel(b.act, (v) => set((q) => { q.act = v; }))),
+        UI.note('The memories start with time scales from about 2 to 32 steps and learn their own. It gives a vector at every step: follow it with Sequence pool (last step) for one answer per sequence.')));
+    } else if (b.type === 'rbf') {
+      sec.push(UI.section('Settings', UI.slider({ label: 'Units (bumps)', min: 1, max: 128, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+        UI.field('Starting width σ', UI.seg(nums([0.1, 0.25, 0.5, 1, 2]), b.width, (v) => set((q) => { q.width = +v; }), 'Starting width')),
+        UI.note('Narrow bumps fit sharp detail but leave gaps between them; wide ones overlap and blur. Centres and widths both move while training.')));
+    } else if (b.type === 'maxout') {
+      sec.push(UI.section('Settings', UI.slider({ label: 'Units', min: 1, max: 128, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+        UI.field('Pieces per unit', UI.seg(nums([2, 3, 4, 5]), b.pieces, (v) => set((q) => { q.pieces = +v; }), 'Pieces per unit')),
+        UI.note(`Each piece is a weighted sum of its own: ${b.pieces} pieces need ${b.pieces} times the weights of a dense layer as wide, and give a bend made of up to ${b.pieces} straight parts.`)));
+    } else if (b.type === 'moe') {
+      sec.push(UI.section('Settings', UI.field('Experts', UI.seg(nums([2, 3, 4, 8]), b.experts, (v) => set((q) => { q.experts = +v; if (q.top > q.experts) q.top = q.experts; }), 'Experts')),
+        UI.slider({ label: 'Units in each expert', min: 1, max: 64, step: 1, value: b.units, format: String, onChange: (v) => set((q) => { q.units = v; }) }),
+        UI.field('Each example goes to', UI.seg([{ value: 0, label: 'All, weighted' }, { value: 2, label: 'Top 2' }, { value: 1, label: 'Top 1' }].filter((o) => o.value <= b.experts), b.top, (v) => set((q) => { q.top = +v; }), 'Each example goes to')),
+        UI.field('Expert activation', actSel(b.act, (v) => set((q) => { q.act = v; }))),
+        UI.note(b.top === 1 ? 'Top 1: a single expert answers for each example. Watch for one expert taking every example (collapse); large models add a loss that spreads the work.' : b.top ? `Top ${b.top}: the ${b.top} experts the gate rates highest answer, mixed by the gate's weights; the others get no say and no gradient.` : 'All: every expert answers and the gate mixes them, a soft mixture.')));
+    }
+  };
   // settings of the selected part, written as controls that edit the setup
   BL.renderBlockTab = function (body) {
     const sel = this.sel, S = this.setup;
@@ -1940,6 +2195,7 @@
     else if (b.type === 'patches') sec.push(UI.section('Settings', UI.field('Patch size', UI.seg([1, 2, 3, 7].map((k) => ({ value: k, label: `${k}×${k}` })), b.size, (v) => set((q) => { q.size = +v; }), 'Patch size')),
       UI.slider({ label: 'Numbers per patch (token width)', min: 4, max: 64, step: 4, value: b.dim, format: String, onChange: (v) => set((q) => { q.dim = v; }) }),
       sh.out ? UI.note(`${sh.out[0]} patches, each a token of ${sh.out[1]} numbers. Attention heads must divide ${sh.out[1]}.`) : null));
+    else if (NEW_SETTINGS.has(b.type)) this.newPartSettings(sec, withDef(b), sh, set, actSel);
     else if (b.type === 'linear') sec.push(UI.section('Settings', UI.field('Ridge penalty λ (shrinks the weights)', UI.select([0, 0.01, 0.1, 1, 10].map((v) => ({ value: v, label: v ? String(v) : 'none' })), b.lambda, (v) => set((q) => { q.lambda = +v; })))));
     else if (b.type === 'knn') sec.push(UI.section('Settings', UI.slider({ label: 'Neighbours k', min: 1, max: 25, step: 1, value: b.k, format: String, onChange: (v) => set((q) => { q.k = v; }) }),
       UI.field('Votes', UI.seg([{ value: 'uniform', label: 'Equal' }, { value: 'distance', label: 'Closer counts more' }], b.weights, (v) => set((q) => { q.weights = v; }), 'Votes'))));
@@ -2065,7 +2321,7 @@
   };
   BL.renderProblemSettings = function (body) {
     const p = this.problem(), s = this.ps(), fam = p.family, set = (fn) => this.edit((S) => fn(S.ps[S.problem]));
-    const groups = Object.keys(BT.FAMILIES).map((f) => el('optgroup', { label: BT.FAMILIES[f].label }, ...BT.PROBLEMS.filter((q) => q.family === f).map((q) => el('option', { value: q.id, text: q.label, selected: q.id === p.id }))));
+    const groups = BT.problemGroups().map((g) => el('optgroup', { label: g.label }, ...g.problems.map((q) => el('option', { value: q.id, text: q.label, selected: q.id === p.id }))));
     const sel = el('select', { class: 'bd-select', 'aria-label': 'Problem' }, ...groups);
     sel.addEventListener('change', () => this.setProblem(sel.value));
     const sec = [UI.section('Problem', sel, UI.note(p.hint))];
@@ -2082,16 +2338,36 @@
         check();
         ctl.push(el('label', { class: 'field bd-formula' }, el('span', { text: 'y =' }), inp), msg, el('div', { class: 'chip-row' }, ...['sin(5x) + x^2', 'abs(x) - 0.5', 'exp(-10x^2)', 'sign(sin(8x))', 'x^3 - x'].map((f) => el('button', { class: 'chip bd-tpl chip-mono', type: 'button', onclick: () => { inp.value = f; set((q) => { q.formula = f; }); } }, f))));
       }
+      if (p.task === 'wiggles') ctl.push(UI.slider({ label: 'Waves', min: 1, max: 16, step: 1, value: s.waves, format: String, onChange: (v) => set((q) => { q.waves = v; }) }),
+        UI.note(`It goes up and down ${s.waves} time${s.waves === 1 ? '' : 's'} between −1 and 1. The more waves, the longer a plain MLP takes: it learns the slow shapes of a curve first and the fast ones last, if at all. Fourier features (a part, or the template) start it from waves of many speeds.`));
       ctl.push(UI.slider({ label: 'Noise', min: 0, max: 0.4, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }), UI.slider({ label: 'Examples', min: 20, max: 1000, step: 10, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
     }
     if (fam === 'digits') ctl.push(UI.slider({ label: 'Examples', min: 300, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
+    // the pictures' own settings
+    if (p.task === 'dots') ctl.push(UI.field('Up to', UI.seg([3, 5, 7].map((v) => ({ value: v, label: `${v} dots` })), s.most, (v) => set((q) => { q.most = +v; }), 'Up to how many dots')),
+      UI.field('Their sizes', UI.seg([{ value: 'same', label: 'All the same' }, { value: 'mixed', label: 'Mixed' }], s.sizes, (v) => set((q) => { q.sizes = v; }), 'Dot sizes')),
+      UI.note(s.sizes === 'same' ? 'Every dot the same size: the ink in the whole picture already says how many there are, so even a dense layer can count.' : 'Dots of every size: the amount of ink no longer says how many, so the model has to find each dot. A filter used everywhere, then added up, does that.'));
+    if (p.task === 'stripes') ctl.push(UI.field('Directions', UI.seg([{ value: 2, label: '— and |' }, { value: 4, label: 'All four' }], s.dirs, (v) => set((q) => { q.dirs = +v; }), 'Directions')),
+      UI.slider({ label: 'Noise', min: 0, max: 0.6, step: 0.05, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }),
+      UI.note('Stripes of any spacing, shifted anywhere, faint or strong, in noise. Which way they run is the same in every corner of the picture: a small filter slid over it sees that, wherever it looks.'));
+    if (p.task === 'colours') ctl.push(UI.field('The pictures', UI.seg([{ value: 'colour', label: 'In colour' }, { value: 'grey', label: 'In grey' }], s.colour, (v) => set((q) => { q.colour = v; }), 'Colour or grey')),
+      UI.note(s.colour === 'grey' ? 'In grey there is one channel, each pixel its brightness. The three colours are equally bright, so red, green and blue look the same: only the shape can be told.' : 'Three channels, red, green and blue, as a screen has. A convolution reads all three at once at every place: its filters can be red-sensitive, green-sensitive or anything between.'));
     if (fam === 'table') ctl.push(...tableControls(this, s));
     if (fam === 'control') ctl.push(...worldControls(this, p, s));
     if (fam === 'surface') ctl.push(UI.slider({ label: 'Noise', min: 0, max: 0.3, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }), UI.slider({ label: 'Examples', min: 200, max: 3000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
+    if (p.task === 'picture') ctl.push(UI.field('Edges', UI.seg([{ value: 'sharp', label: 'Sharp' }, { value: 'soft', label: 'Soft' }], s.edges, (v) => set((q) => { q.edges = v; }), 'Edges')),
+      UI.note(s.edges === 'soft' ? 'Soft edges: the face fades into its eyes and mouth. Slow, smooth changes are what a plain MLP learns first, so it does well.' : 'Sharp edges: the height jumps at the rim of the face, the eyes and the mouth. A plain MLP blurs fine detail like that; Fourier features draw it.'));
     if (fam === 'series') ctl.push(UI.slider({ label: 'Window (values the model sees)', min: 1, max: 48, step: 1, value: s.window, format: String, onChange: (v) => set((q) => { q.window = v; }) }),
       UI.slider({ label: 'Length of the series', min: 400, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
       UI.slider({ label: 'Noise', min: 0, max: 0.3, step: 0.01, value: s.noise, format: (v) => fmt(v, 2), onChange: (v) => set((q) => { q.noise = v; }) }),
       UI.note('The first 80% of the series trains and the last 20% validates: the model is judged on a future it has not seen.'));
+    if (p.task === 'heartbeat') ctl.push(UI.field('Rhythm', UI.seg([{ value: 'steady', label: 'Steady' }, { value: 'irregular', label: 'Irregular' }], s.rhythm, (v) => set((q) => { q.rhythm = v; }), 'Rhythm')),
+      UI.note(s.rhythm === 'irregular' ? 'A beat every 22 to 38 steps: when the next comes cannot be known for sure, only guessed from how long ago the last one was.' : `A beat every 30 steps. A window of ${s.window} ${s.window >= 30 ? 'reaches back to the last beat, so the next can be timed' : 'can miss the last beat altogether: between beats the line is flat, and flat says nothing about when the next comes'}.`));
+    if (p.task === 'walk') ctl.push(UI.note('However it is built, a model cannot beat repeating the last value here: each step is a fresh coin toss. The R² looks high only because the walk moves little in one step.'));
+    if (p.task === 'brackets') ctl.push(UI.slider({ label: 'Length', min: 6, max: 24, step: 2, value: s.len, format: String, onChange: (v) => set((q) => { q.len = v; }) }),
+      UI.note('Most sequences have as many open brackets as closing ones, so counting them cannot tell: the count of open ones must never drop below zero on the way.'));
+    if (p.task === 'palindrome') ctl.push(UI.slider({ label: 'Length', min: 4, max: 16, step: 1, value: s.len, format: String, onChange: (v) => set((q) => { q.len = v; }) }),
+      UI.note('Half are palindromes, half differ from one in a single digit: each digit must be checked against its mirror image across the middle.'));
     if (fam === 'seqclass') ctl.push(UI.slider({ label: 'Examples', min: 500, max: 5000, step: 250, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
       UI.field('Embedding size', UI.seg([8, 16, 32, 64].map((v) => ({ value: v, label: String(v) })), s.embed, (v) => set((q) => { q.embed = +v; }), 'Embedding size')),
       UI.note('Each token becomes a learned vector of this many numbers, plus one for its position.'));
@@ -2102,7 +2378,10 @@
         ta.addEventListener('change', () => set((q) => { q.text = ta.value; }));
         ctl.push(UI.note('Write anything: a few sentences with repeated patterns work best. Each word (and each . , ! ?) is a token.'), ta,
           UI.slider({ label: 'Context window (tokens)', min: 3, max: 16, step: 1, value: s.window, format: String, onChange: (v) => set((q) => { q.window = v; }) }));
-      } else if (p.task !== 'language') ctl.push(UI.slider({ label: 'Sequence length', min: 2, max: 6, step: 1, value: s.len, format: String, onChange: (v) => set((q) => { q.len = v; }) }), UI.slider({ label: 'Examples', min: 500, max: 6000, step: 250, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
+      } else if (p.task === 'add') ctl.push(UI.field('Digits', UI.seg([2, 3, 4].map((v) => ({ value: v, label: String(v) })), s.digits, (v) => set((q) => { q.digits = +v; }), 'Digits in each number')),
+        UI.slider({ label: 'Examples', min: 500, max: 6000, step: 250, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }),
+        UI.note(`Two numbers of ${s.digits} digits and their sum in ${s.digits + 1}, written the largest digit first. Each digit of the answer depends on the carry from the right, which the model works out from digits it has to look back at.`));
+      else if (p.task !== 'language') ctl.push(UI.slider({ label: 'Sequence length', min: 2, max: 6, step: 1, value: s.len, format: String, onChange: (v) => set((q) => { q.len = v; }) }), UI.slider({ label: 'Examples', min: 500, max: 6000, step: 250, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
       else ctl.push(UI.slider({ label: 'Stories', min: 300, max: 4000, step: 100, value: s.n, format: String, onChange: (v) => set((q) => { q.n = v; }) }));
       ctl.push(UI.field('Embedding size', UI.seg([8, 16, 32, 64].map((v) => ({ value: v, label: String(v) })), s.embed, (v) => set((q) => { q.embed = +v; }), 'Embedding size')),
         UI.note('Each token becomes a learned vector of this many numbers, plus a learned vector for its position. Attention heads split it.'));
@@ -2113,8 +2392,11 @@
     if (!d.error) sec.push(UI.section('What the model sees', el('div', { class: 'kv-grid' }, ...(fam === 'control' ? [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Actions', d.actions.join(', ')], ['Learns by', NA.brl.METHODS[d.method].label]] : [['Input', inputText(d)], ['Output', outputText(d, this.setup.loss)], ['Training examples', fmtInt(d.nTr)], ['Validation examples', fmtInt(d.nVa)]]).map(([k, v]) => el('div', { class: 'kv' }, el('span', { class: 'kv-k', text: k }), el('span', { class: 'kv-v', text: v }))))));
     body.append(...sec);
   };
-  // the run list's words for a reward's amount
-  const REWARD_WORDS = Object.fromEntries(Object.values(NA.rlEnvs.REWARDS).flat().map((r) => [r.key, r.label.toLowerCase().replace(/ \(.*\)$/, '')]));
+  // the run list's words for a reward's amount, and for the worlds' other settings
+  const REWARD_WORDS = Object.assign(Object.fromEntries(Object.values(NA.rlEnvs.REWARDS).flat().map((r) => [r.key, r.label.toLowerCase().replace(/ \(.*\)$/, '')])),
+    { extra: 'extra inputs', laps: 'laps', vmax: 'top speed', grip: 'grip', range: 'sensor range', lives: 'lives', goal: 'drones to destroy', recharge: 'gun recharge', padWidth: 'pad width', days: 'days', warm: 'warm to',
+      band: 'comfortable within', radiator: 'radiator', course: 'course length', run: 'running speed', jump: 'jump', lit: 'lamp lit for', wait: 'time to turn', start: 'start', friction: 'friction', reach: 'reach within',
+      motors: 'motors', amber: 'amber', busy: 'how busy', muscles: 'muscles', aim: 'chasers aim', flee: 'sheep run from', dog: 'dog speed', width: 'board width', height: 'board height', paddle: 'paddle', fall: 'falls past' });
   // A choice among values for a world setting, with the one in use added when a link set another
   function worldPick(L, s, label, key, values, def, show, title) {
     const cur = typeof s[key] === 'number' ? s[key] : def, vals = values.includes(cur) ? values : [...values, cur].sort((a, b) => a - b);
@@ -2124,55 +2406,143 @@
   const pctOf = (v) => fmtPct(v, 0);
   const GRAVITY = { 1.6: 'Moon', 3.7: 'Mars', 9.8: 'Earth', 24.8: 'Jupiter' };
   // A world's settings: for the maze which one, random mazes, a bonus for getting closer, a slippery floor and the
-  // longest episode; the pole's push, length, gravity and longest episode; the catch's drift; for the levers how
-  // many and how often they pay.
+  // longest episode; the pole's push, length, gravity, track, the lean it falls at, its start and longest episode;
+  // the catch's drift, board and paddle; for the levers how many and how often they pay; and each bigger world's own,
+  // each with a note on what it means as it is set now.
   function worldControls(L, p, s) {
     const set = (fn) => L.edit((S) => fn(S.ps[S.problem])), out = [];
+    const seg = (label, key, pairs, def, title) => UI.field(label, UI.seg(pairs.map(([value, text, tip]) => ({ value, label: text, title: tip })), s[key] ?? def, (v) => set((q) => { q[key] = v; }), label), title);
+    const longest = (values, def, show) => worldPick(L, s, 'Longest episode', 'maxSteps', values, def, show || ((v) => `${fmtInt(v)} steps`), 'The most steps an episode can last');
+    const plural = (n, one, many) => `${fmt(n, n % 1 ? 1 : 0)} ${n === 1 ? one : many}`;
     if (p.task === 'levers') {
       out.push(UI.field('Levers', UI.seg([3, 5].map((v) => ({ value: v, label: String(v) })), s.levers, (v) => set((q) => { q.levers = +v; }), 'Levers')),
         worldPick(L, s, 'The matching lever pays', 'pRight', [0.5, 0.6, 0.8, 0.9, 1], 0.8, pctOf), worldPick(L, s, 'Any other lever pays', 'pOther', [0, 0.1, 0.2, 0.4], 0.2, pctOf),
         UI.note(`The lever that matches the light pays ${pctOf(s.pRight ?? 0.8)} of the time, any other ${pctOf(s.pOther ?? 0.2)}. One pull per episode.`));
     }
     if (p.task === 'pole') {
+      const fall = s.fall ?? 12, ends = (s.track ?? 4.8) / 2;
       out.push(worldPick(L, s, 'Push', 'force', [5, 10, 20], 10, (v) => `${v} N`, 'How hard each push is'), worldPick(L, s, 'Pole length', 'poleLen', [0.5, 1, 2], 1, (v) => `${v} m`),
-        worldPick(L, s, 'Gravity', 'gravity', [1.6, 3.7, 9.8, 24.8], 9.8, (v) => `${GRAVITY[v] || 'Gravity'}: ${v} m/s²`), worldPick(L, s, 'Longest episode', 'maxSteps', [100, 200, 500, 1000], 200, (v) => `${fmtInt(v)} steps`),
-        UI.note('A longer pole tips over more slowly, and so does any pole where gravity is weaker: both are easier to balance. A stronger push corrects faster but overshoots more. The score is the share of the longest episode it keeps the pole up.'));
+        worldPick(L, s, 'Gravity', 'gravity', [1.6, 3.7, 9.8, 24.8], 9.8, (v) => `${GRAVITY[v] || 'Gravity'}: ${v} m/s²`), longest([100, 200, 500, 1000], 200),
+        worldPick(L, s, 'Track', 'track', [2.4, 4.8, 9.6], 4.8, (v) => `${v} m long`, 'How far the cart can roll before it runs off the end'), worldPick(L, s, 'Falls past', 'fall', [6, 12, 24], 12, (v) => `${v}°`, 'How far the pole may lean before it counts as fallen'),
+        worldPick(L, s, 'Starts', 'start', [0.05, 0.1, 0.2], 0.05, (v) => ({ 0.05: 'Nearly still', 0.1: 'Wobbling', 0.2: 'Swaying' })[v] || String(v), 'How far from upright and still each episode may begin'),
+        UI.note(`A longer pole tips over more slowly, and so does any pole where gravity is weaker: both are easier to balance. A stronger push corrects faster but overshoots more. It falls when it leans past ${fall}° or the cart rolls ${fmt(ends, ends % 1 ? 1 : 0)} m from the middle; what it sees is scaled to those limits. The score is the share of the longest episode it keeps the pole up.`));
     }
-    if (p.task === 'catch') out.push(UI.field('Ball drift', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], s.drift !== false, (v) => set((q) => { q.drift = v; }), 'Ball drift')),
-      UI.note(s.drift !== false ? 'Each ball drifts left, right or straight down, bouncing off the walls: where it lands depends on which way it drifts.' : 'Every ball falls straight down: where it starts is where it lands.'));
+    if (p.task === 'catch') {
+      const H = s.height || 8;
+      out.push(UI.field('Ball drift', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], s.drift !== false, (v) => set((q) => { q.drift = v; }), 'Ball drift')),
+        UI.note(s.drift !== false ? 'Each ball drifts left, right or straight down, bouncing off the walls: where it lands depends on which way it drifts.' : 'Every ball falls straight down: where it starts is where it lands.'),
+        worldPick(L, s, 'Board width', 'width', [5, 7, 9], 5, (v) => `${v} squares`), worldPick(L, s, 'Board height', 'height', [6, 8, 12], 8, (v) => `${v} rows`), worldPick(L, s, 'Paddle', 'paddle', [1, 2, 3], 1, (v) => `${plural(v, 'square', 'squares')} wide`),
+        UI.note(`The ball takes ${H - 1} steps to fall, so an episode is ${H - 1} steps long. A wider board leaves the paddle further to go; a wider paddle makes catching easier. The pixels it sees grow with the board.`));
+    }
     if (p.task === 'track') {
+      const laps = s.laps || 4;
       out.push(UI.field('Track', UI.seg([['oval', 'Oval'], ['esses', 'Esses'], ['hairpins', 'Hairpins'], ['random', 'Random', 'A new random track every episode, and scored on 4 it never saw']].map(([value, label, title]) => ({ value, label, title })), s.track || 'esses', (v) => set((q) => { q.track = v; }), 'Track')),
         UI.note({ oval: 'Two long straights and two wide bends: it can keep its foot down almost all the way.', esses: 'A long sweeping bend, then four tight S-bends one after another: it has to brake for them, and steer left and right in turn.', hairpins: 'Four hairpins, each turning it right round: twice as long, and it has to slow right down for every one.', random: 'A new track every episode: what it learns has to work on any track. It is scored on 4 tracks it never trained on.' }[s.track || 'esses']),
-        worldPick(L, s, 'Longest episode', 'maxSteps', [0, 1500, 3000], 0, (v) => (v ? `${fmtInt(v)} steps` : '4 laps at 10 m/s')),
-        UI.note('It sees 7 distances to the walls and its speed (or a camera picture from above). Throttle builds its speed toward 24 m/s; grip limits how sharply it can turn, so it has to brake for tight bends. The score is the share of 4 laps it drives.'));
+        worldPick(L, s, 'Laps', 'laps', [1, 2, 4, 8], 4, (v) => plural(v, 'lap', 'laps')), longest([0, 1500, 3000], 0, (v) => (v ? `${fmtInt(v)} steps` : `${plural(laps, 'lap', 'laps')} at 10 m/s`)),
+        worldPick(L, s, 'Top speed', 'vmax', [16, 24, 32], 24, (v) => `${v} m/s`), worldPick(L, s, 'Grip', 'grip', [8, 14, 20], 14, (v) => `${({ 8: 'Wet', 14: 'Dry', 20: 'Racing tyres' })[v] || 'Grip'}: ${v} m/s²`, 'How hard it can turn before it slides'),
+        worldPick(L, s, 'Sensors see', 'range', [20, 40, 60], 40, (v) => `${v} m`, 'How far its 7 distance sensors reach'),
+        UI.note(`It sees 7 distances to the walls (out to ${s.range || 40} m) and its speed, or a camera picture from above. Throttle builds its speed toward ${s.vmax || 24} m/s; grip (${s.grip || 14} m/s² sideways) limits how sharply it can turn, so it has to brake for tight bends, and the less grip, the more. The score is the share of ${plural(laps, 'lap', 'laps')} it drives.`));
     }
     if (p.task === 'arena') {
+      const lives = s.lives || 3, rc = s.recharge ?? 3;
       out.push(UI.field('Map', UI.seg([['room', 'Room'], ['pillars', 'Pillars'], ['halls', 'Halls']].map(([value, label]) => ({ value, label })), s.map || 'room', (v) => set((q) => { q.map = v; }), 'Map')),
         UI.field('Drones at once', UI.seg([1, 2, 3].map((v) => ({ value: v, label: String(v) })), s.drones || 2, (v) => set((q) => { q.drones = v; }), 'Drones at once')),
         UI.field('Drones fly', UI.seg([['slow', 'Slowly'], ['fast', 'Fast']].map(([value, label]) => ({ value, label })), s.speed || 'slow', (v) => set((q) => { q.speed = v; }), 'Drone speed')),
-        UI.note(`${{ room: 'An open room with four pillars.', pillars: 'More pillars to hide behind: drones vanish from view and come back.', halls: 'Walls split it into halls and doorways: a drone can be close but out of sight.' }[s.map || 'room']} Drones drift toward it and cost a life on reaching it (3 lives); a shot that crosses one destroys it. The gun takes 4 steps to recharge. The score is the share of 10 drones it destroys.`));
+        worldPick(L, s, 'Lives', 'lives', [1, 3, 5], 3, String), worldPick(L, s, 'Drones to destroy', 'goal', [5, 10, 20], 10, String, 'How many drones end the game'),
+        worldPick(L, s, 'Gun recharges in', 'recharge', [0, 3, 8], 3, (v) => (v ? plural(v, 'step', 'steps') : 'No time'), 'How long after a shot it can fire again'), longest([300, 500, 1000], 500),
+        UI.note(`${{ room: 'An open room with four pillars.', pillars: 'More pillars to hide behind: drones vanish from view and come back.', halls: 'Walls split it into halls and doorways: a drone can be close but out of sight.' }[s.map || 'room']} Drones drift toward it and cost a life on reaching it (${plural(lives, 'life', 'lives')}); a shot that crosses one destroys it. ${rc ? `After a shot the gun takes ${plural(rc, 'step', 'steps')} to recharge.` : 'The gun can fire every step.'} The score is the share of ${s.goal || 10} drones it destroys.`));
     }
     if (p.task === 'lander') {
       out.push(worldPick(L, s, 'Gravity', 'gravity', [1.62, 3.71, 9.81], 1.62, (v) => `${{ 1.62: 'Moon', 3.71: 'Mars', 9.81: 'Earth' }[v] || 'Gravity'}: ${v} m/s²`),
         UI.field('Wind', UI.seg([{ value: false, label: 'Calm' }, { value: true, label: 'Gusts' }], !!s.wind, (v) => set((q) => { q.wind = v; }), 'Wind')),
         UI.field('The pad', UI.seg([['middle', 'In the middle'], ['random', 'Anywhere']].map(([value, label]) => ({ value, label })), s.pad || 'middle', (v) => set((q) => { q.pad = v; }), 'Pad')),
         worldPick(L, s, 'Fuel', 'fuel', [100, 150, 300], 150, (v) => `${v} steps of engine`),
-        UI.note('It sees where it is from the pad, how fast it moves, its tilt and spin, and its fuel. The main engine pushes along its axis (more strongly where gravity is stronger); the side thrusters turn it. Landing is gentle on the pad (12 m wide), slower than 3 m/s down and 2 m/s across and within 25° of upright; anything else is a crash, and so is running out of time. The score is the share of 10 starts it lands.'));
+        seg('Engine', 'engine', [['weak', 'Weak', 'Lifts 1.8 times gravity, plus 1 m/s²'], ['normal', 'Normal', 'Lifts 2.4 times gravity, plus 1 m/s²'], ['strong', 'Strong', 'Lifts 3.5 times gravity, plus 1 m/s²']], 'normal'),
+        worldPick(L, s, 'Pad width', 'padWidth', [8, 12, 20], 12, (v) => `${v} m`), longest([300, 600, 1000], 300),
+        UI.note(`It sees where it is from the pad, how fast it moves, its tilt and spin, and its fuel. The main engine pushes along its axis (more strongly where gravity is stronger, and ${s.engine === 'weak' ? 'only just enough to stop a fall in time' : s.engine === 'strong' ? 'strongly enough to stop a fall quickly' : 'enough to slow a fall'}); the side thrusters turn it. Landing is gentle on the pad (${s.padWidth || 12} m wide), slower than 3 m/s down and 2 m/s across and within 25° of upright; anything else is a crash, and so is running out of time. The score is the share of 10 starts it lands.`));
     }
     if (p.task === 'maze') {
       out.push(UI.field('Maze', UI.select(NA.rl.MAZE_SET.map((m) => ({ value: m.id, label: m.name })), s.maze, (v) => set((q) => { q.maze = v; }))),
         UI.field('Train on', UI.seg([{ value: false, label: 'This maze' }, { value: true, label: 'Random mazes', title: 'A new random maze every episode' }], !!s.random, (v) => set((q) => { q.random = v; }), 'Train on')),
         UI.note(s.random ? 'A new random maze every episode. The score is the share of 20 new mazes it finds the goal of, none of them seen in training: does what it learned carry over?' : 'Every episode is the maze chosen; the score is 1 when its best moves reach the goal.'),
         UI.field('Closer bonus', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], !!s.closer, (v) => set((q) => { q.closer = v; }), 'Bonus for getting closer')),
-        UI.note(s.closer ? '0.1 for every step that brings it closer to the goal by the shortest safe way, and as much off for every step away. Reward shaping: it cannot change which route is best, since every route’s bonuses add up to the same, but it says which way is warmer long before the goal is ever found.' : 'Rewards only at the end: +1 at the goal, −1 in a pit, and −0.02 a step. Random moves almost never find the goal of most mazes, so there is next to nothing to learn from.'),
-        UI.field('Floor', UI.seg([{ value: 0, label: 'Dry' }, { value: 0.1, label: 'Slippery' }], s.slip || 0, (v) => set((q) => { q.slip = v; }), 'Floor')),
-        UI.note('On a slippery floor one move in ten goes sideways: a safe route keeps away from the pits.'),
+        // (a formula of your own pays instead of the whole table, this bonus included)
+        UI.note(s.rFormula && !BT.compile(s.rFormula, NA.rlEnvs.REWARD_VARS.maze.map((v) => v[0])).error ? `Your formula, r = ${s.rFormula}, pays it instead of the reward table, this bonus included: put closer into the formula (as in goal - pit + 0.1closer) to pay for getting closer.` : s.closer ? `${amountText(typeof s.rCloser === 'number' ? s.rCloser : 0.1).replace('+', '')} for every step that brings it closer to the goal by the shortest safe way, and as much off for every step away. Reward shaping: the bonuses along any route to the goal add up to the same, so they hardly change which route is best (exactly so only when nothing is discounted, with γ = 1), but they say which way is warmer long before the goal is ever found.` : 'Rewards only at the end: +1 at the goal, −1 in a pit, and −0.02 a step. Random moves almost never find the goal of most mazes, so there is next to nothing to learn from.'),
+        UI.field('Floor', UI.seg([{ value: 0, label: 'Dry' }, { value: 0.1, label: 'Slippery' }, { value: 0.25, label: 'Icy' }], s.slip || 0, (v) => set((q) => { q.slip = v; }), 'Floor')),
+        UI.note(`${s.slip ? `On this floor ${s.slip >= 0.25 ? 'one move in four' : 'one move in ten'} goes sideways` : 'On a slippery floor one move in ten goes sideways (on ice, one in four)'}: a safe route keeps away from the pits.`),
         worldPick(L, s, 'Longest episode', 'maxSteps', [40, 80, 160], 80, (v) => `${v} steps`));
     }
+    // the worlds of rl-worlds2.js and rl-worlds3.js: their choices, and what they mean as they are set now
+    if (p.task === 'thermo') {
+      const days = s.days || 1, warm = s.warm || 21, band = s.band || 1;
+      out.push(seg('Weather', 'climate', [['mild', 'Mild'], ['cold', 'Cold']], 'mild'), seg('Insulation', 'insulation', [['good', 'Good'], ['poor', 'Poor']], 'good'),
+        seg('Warm', 'schedule', [['day', 'All day'], ['home', 'When people are in', `${warm} °C from 6 to 8 in the morning and from 5 to 11 in the evening, ${warm - 5} °C the rest of the time`]], 'day'),
+        worldPick(L, s, 'Warm to', 'warm', [19, 21, 23], 21, (v) => `${v} °C`, 'The temperature wanted while people are in'), worldPick(L, s, 'Comfortable within', 'band', [0.5, 1, 2], 1, (v) => `${fmt(v, v % 1 ? 1 : 0)} °C`, 'How near the target counts as comfortable'),
+        worldPick(L, s, 'Radiator', 'radiator', [45, 60, 80], 60, (v) => `${({ 45: 'Small', 60: 'Medium', 80: 'Large' })[v] || 'Radiator'}: up to ${v} °C`), worldPick(L, s, 'Days', 'days', [1, 2, 3], 1, (v) => plural(v, 'day', 'days'), 'How long an episode lasts'),
+        UI.note(`${days === 1 ? 'A day' : `${days} days`} of ${fmtInt(144 * days)} steps, 10 minutes each, from midnight. ${s.climate === 'cold' ? 'Cold: −2 °C outside on average' : 'Mild: 8 °C outside on average'}, coldest before dawn and warmest at three in the afternoon; ${s.insulation === 'poor' ? 'poor insulation lets the heat out two and a half times as fast' : 'good insulation keeps the heat in'}. ${s.schedule === 'home' ? `People are in from 6 to 8 in the morning and from 5 to 11 in the evening: ${warm} °C then and ${warm - 5} °C the rest of the time, so it has to start warming the room before they come in.` : `${warm} °C all day.`} The radiator is slow to warm up and slow to cool down: switched off, it goes on warming the room for a while. The score is the share of the time the room is within ${fmt(band, band % 1 ? 1 : 0)} °C of the target, over 3 runs.`));
+    }
+    if (p.task === 'hurdles') {
+      out.push(seg('Course', 'obstacles', [['hurdles', 'Hurdles'], ['mixed', 'Hurdles and bars']], 'hurdles'), worldPick(L, s, 'Length', 'course', [100, 150, 300], 150, (v) => `${v} m`),
+        worldPick(L, s, 'Running speed', 'run', [6, 8, 10], 8, (v) => `${v} m/s`), worldPick(L, s, 'Jump', 'jump', [4.5, 5.5, 6.5], 5.5, (v) => `${({ 4.5: 'Low', 5.5: 'Normal', 6.5: 'High' })[v] || 'Jump'}: ${v} m/s up`, 'How fast it leaves the ground'),
+        UI.note(`${s.course || 150} m at ${s.run || 8} m/s, an obstacle every 7 to 14 m. A jump keeps its feet above a hurdle (0.7 m) only for a few metres, so it has to take off at the right moment: running faster or jumping lower makes that moment shorter${s.obstacles === 'mixed' ? '; under a bar (its underside 1.2 m up) it has to duck, and a jump there hits it' : ''}. Touching anything ends the run. The score is the share of 5 courses it runs.`));
+    }
+    if (p.task === 'memory') {
+      const lit = s.lit || 1, wait = s.wait || 5;
+      out.push(worldPick(L, s, 'Corridor', 'length', [2, 4, 6, 10, 14], 6, (v) => `${v} squares`), worldPick(L, s, 'Lamp lit for', 'lit', [1, 2, 4], 1, (v) => plural(v, 'step', 'steps')), worldPick(L, s, 'Time to turn', 'wait', [2, 5, 10], 5, (v) => plural(v, 'step', 'steps'), 'How long it may stand at the junction'),
+        UI.note(`The lamp is lit for the first ${lit === 1 ? 'step only' : plural(lit, 'step', 'steps')}. The robot walks on by itself, a square a step, and at the junction has ${plural(wait, 'step', 'steps')} to turn: +1 the way the lamp said, −1 the other way or for waiting too long. ${s.view === 'history' ? 'It sees the last 16 readings, so at the junction the lamp is still among them.' : `It sees only the present: ${lit >= (s.length || 6) ? 'here the lamp is still lit when it reaches the junction, so it needs no memory.' : 'by the junction the lamp is long dark, so whatever it learns, it is right half the time. The Last 16 readings view (below) gives it something to remember.'}`} The score is the share of 20 corridors it turns the right way in.`));
+    }
+    if (p.task === 'mountain') out.push(seg('Engine', 'engine', [['normal', 'Weak'], ['strong', 'Stronger']], 'normal'), longest([200, 500, 1000], 200),
+      seg('Start', 'start', [['valley', 'In the valley', 'At rest near the bottom, every episode'], ['anywhere', 'Anywhere', 'A random place and speed every episode']], 'valley'),
+      UI.note(`Too weak to drive up either slope: it has to rock, up the slope behind it and then forward, a little higher every time. Every step costs 1 until it reaches the flag, so a cart that never gets there learns nothing from its rewards: every try is as bad as the next. Evolution needs no reward on the way: the carts that happen to rock furthest are kept and bred. For the other methods, the bonus for gaining energy (in Its reward) gives learning something to go on (DQN learns it then), and so ${s.start === 'anywhere' ? 'does starting anywhere (as now: some starts are already near the flag, and what it learns there spreads back)' : 'can starting anywhere'}; a longer episode or a stronger engine alone does not. The score is the share of 10 starts it reaches the flag from.`));
+    if (p.task === 'swingup') {
+      const steps = s.maxSteps || 300;
+      out.push(seg('Motor', 'motor', [['strong', 'Strong'], ['weak', 'Weak']], 'strong'), worldPick(L, s, 'Gravity', 'gravity', [3.7, 9.8, 24.8], 9.8, (v) => `${GRAVITY[v] || 'Gravity'}: ${v} m/s²`),
+        seg('Start', 'start', [['down', 'Hanging'], ['anywhere', 'Anywhere'], ['up', 'Upright', 'Only the balancing is left to learn']], 'down'), worldPick(L, s, 'Friction', 'friction', [0, 0.1, 0.5], 0.1, (v) => (v ? String(v) : 'None'), 'How much the hinge slows it'), longest([200, 300, 600], 300),
+        UI.note(`The motor turns it with ${s.motor === 'weak' ? '2.5' : '4'} against the ${fmt(s.gravity || 9.8, 1)} the weight pulls with when the pole is level${(s.gravity || 9.8) <= (s.motor === 'weak' ? 2.5 : 4) ? ': here it can lift it straight up' : ': it cannot lift it straight up, so it swings it higher and higher, pushing with each swing, then has to catch it upside down and keep it there'}. Within 15° of upright counts as balanced. The score is the share of the last ${fmtInt(steps / 2)} of ${fmtInt(steps)} steps it keeps it upright, from 3 starts.`));
+    }
+    if (p.task === 'arm') out.push(worldPick(L, s, 'Reach within', 'reach', [0.06, 0.12, 0.25], 0.12, (v) => `${Math.round(v * 100)} cm`, 'How near the target the hand has to stop'), worldPick(L, s, 'Motors', 'motors', [3, 6, 12], 6, (v) => ({ 3: 'Weak', 6: 'Normal', 12: 'Strong' })[v] || String(v), 'How hard each push turns a joint'), longest([60, 120, 240], 120),
+      UI.note(`A 1 m upper arm and a 0.8 m forearm on a bench. Each step pushes the shoulder or the elbow one way or the other, or brakes both; the joints keep turning, slowed by friction, so it has to brake before it gets there${s.motors > 6 ? ', and the stronger the motors, the sooner' : ''}. Reaching is the hand within ${Math.round((s.reach || 0.12) * 100)} cm of the target and moving slowly. A new target every episode: the score is the share of 10 targets it reaches within ${fmtInt(s.maxSteps || 120)} steps.`));
+    if (p.task === 'traffic') out.push(seg('Traffic', 'pattern', [['shifting', 'Rush hours'], ['steady', 'Steady']], 'shifting'), worldPick(L, s, 'How busy', 'busy', [0.7, 1, 1.3], 1, (v) => ({ 0.7: 'Quiet', 1: 'Normal', 1.3: 'Busy' })[v] || `× ${v}`, 'How often cars arrive'),
+      worldPick(L, s, 'Amber', 'amber', [2, 4, 8], 4, (v) => plural(v, 'step', 'steps'), 'How long a switch shows amber, when nobody moves'), longest([200, 400, 800], 400),
+      UI.note(`${s.pattern === 'steady' ? 'Cars come from every side at a steady rate, a little more often from the north and south.' : 'North–south is busy for the first half and east–west for the second, as at rush hours: the lights have to notice the change.'} On green a car crosses from each side every step; a switch shows amber for ${plural(s.amber || 4, 'step', 'steps')}, when nobody moves, so every switch costs time. The score is the share of cars through within 20 steps of arriving.`));
+    if (p.task === 'walker') out.push(seg('Ground', 'ground', [['grippy', 'Grippy'], ['ice', 'Icy']], 'grippy'), worldPick(L, s, 'Gravity', 'gravity', [3.7, 9.8, 24.8], 9.8, (v) => `${GRAVITY[v] || 'Gravity'}: ${v} m/s²`),
+      seg('Muscles', 'muscles', [['weak', 'Weak', 'They pull in and let out 12%'], ['normal', 'Normal', '18%'], ['strong', 'Strong', '25%']], 'normal'), longest([150, 300, 600], 300),
+      UI.note(`Two stiff legs, a stiff body and two muscles, each crossing from a hip to the other foot. Each step it sets both muscles short or long, and they pull towards that length, swinging the legs. ${s.ground === 'ice' ? 'On ice a foot holds only while it presses down hard: push sideways and it slips.' : 'Its feet grip the ground.'} A clock that goes round every 20 steps is among its inputs, so a gait can be a rhythm. The score is the share of 10 m it walks, from 2 starts.`));
+    if (p.task === 'trap') out.push(seg('Maze', 'maze', [['trap', 'Trap'], ['zigzag', 'Zigzag']], 'trap'), worldPick(L, s, 'Speed', 'speed', [2, 3, 5], 3, (v) => `${v} units a step`, 'How far a step forward takes it'),
+      longest([0, 200, 400, 700, 1400], 0, (v) => (v ? `${fmtInt(v)} steps` : `The maze’s own: ${s.maze === 'zigzag' ? 700 : 400}`)),
+      UI.note(`${s.maze === 'zigzag' ? 'Two walls: the way runs left, up the far side and left again, and the second wall is the trap.' : 'One wall, just under the goal: the way round is at the far end, which first leads away from the goal.'} By default it is paid for getting closer in a straight line, so it learns to head straight for the goal, and ends against the wall: the reward deceives it. Novelty search pays for ending up somewhere new instead (so can its reward: a part of the maze not yet visited); MAP-Elites keeps the best of every place it ends. The score is the share of 3 starts it reaches the goal from.`));
+    if (p.task === 'chase') out.push(seg('Arena', 'map', [['open', 'Open'], ['pillars', 'Four pillars']], 'open'), seg('Chasers', 'chasers', [[1, '1'], [2, '2']], 1), seg('Chaser speed', 'speed', [['slow', 'Slower'], ['fast', 'Nearly as fast']], 'slow'),
+      seg('Chasers aim', 'aim', [['straight', 'At you', 'Each chaser heads straight for where you are'], ['ahead', 'Where you are going', 'Each chaser heads for where you will be a moment later']], 'straight'), longest([200, 400, 800], 400),
+      UI.note(`A walled arena 20 m across. It is faster than a chaser, but ${s.aim === 'ahead' ? 'a chaser that aims where it is going cuts the corners off every turn and is much harder to shake off' : 'running straight away from one that heads straight for it still ends in a corner'}: it has to circle round. Coins turn up one at a time. Caught, the game ends. The score is the share of ${fmtInt(s.maxSteps || 400)} steps it stays free, over 3 games.`));
+    if (p.task === 'herd') out.push(seg('Sheep', 'sheep', [[3, '3'], [5, '5'], [7, '7']], 3), worldPick(L, s, 'Sheep run from', 'flee', [3, 5, 8], 5, (v) => `${v} m`, 'How near the dog comes before the sheep run'),
+      worldPick(L, s, 'Dog speed', 'dog', [0.35, 0.45, 0.6], 0.45, (v) => ({ 0.35: 'Slow', 0.45: 'Normal', 0.6: 'Fast' })[v] || String(v)), longest([300, 600, 1200], 600),
+      UI.note(`A field 24 m across, the pen in the top right corner, open at the bottom. Sheep graze, keep together and run from the dog when it comes within ${s.flee || 5} m; one that walks into the pen stays there. So the dog has to get behind them, on the side away from the gate, and push. The score is the share of the sheep penned in ${fmtInt(s.maxSteps || 600)} steps, over 3 games.`));
     return out;
   }
-  /* What the model is given and what it is paid: how it sees the world, which inputs and with how much noise;
-     then the reward, as a table of amounts or a formula of your own. */
+  /* A reward's amount: any number you type (Enter, or leaving the box, uses it), or a quick pick from the list
+     beside it (the amount it starts with marked). */
+  const amountText = (v) => (v > 0 ? '+' : v < 0 ? '−' : '') + String(+Math.abs(v).toPrecision(8));
+  function rewardAmount(L, s, r, picks) {
+    const cur = typeof s[r.key] === 'number' ? s[r.key] : r.def, put = (v) => L.edit((S) => { S.ps[S.problem][r.key] = v; });
+    const inp = el('input', { type: 'text', inputmode: 'decimal', class: 'bd-amt-in', value: amountText(cur), spellcheck: 'false', autocomplete: 'off', 'aria-label': `${r.label}: the amount` });
+    const use = () => {
+      const t = inp.value.trim().replace(/[−–]/g, '-').replace(/,/g, '.').replace(/^\+/, ''), v = Number(t);
+      if (!t || !Number.isFinite(v) || Math.abs(v) > 1000) { NA.ui.toast.show(`${r.label}: type a number from −1000 to 1000, such as −1 or 0.05.`); inp.value = amountText(cur); return; }
+      if (v !== cur) put(v); else inp.value = amountText(cur);
+    };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); use(); } });
+    inp.addEventListener('change', use);
+    const list = [...new Set([...(picks || []), r.def, cur])].sort((a, b) => b - a);
+    const pick = el('select', { class: 'bd-amt-pick', 'aria-label': `Quick picks: ${r.label}` }, el('option', { value: '', disabled: true, selected: true }, '▾'),
+      ...list.map((v) => el('option', { value: String(v) }, `${amountText(v)}${v === r.def ? ' (to start with)' : ''}`)));
+    pick.addEventListener('change', () => { const v = Number(pick.value); pick.value = ''; if (Number.isFinite(v) && v !== cur) put(v); });
+    const f = UI.field(r.label, el('span', { class: 'bd-amt-row' }, inp, pick), `To start with: ${amountText(r.def)}`);
+    f.classList.add('bd-amt');
+    if (cur !== r.def) f.classList.add('is-set');
+    return f;
+  }
+  /* What the model is given: how it sees the world, which inputs (and extra ones) and with how much noise; then what
+     it is paid, in a line, with the way to the Reward tab (worldReward) where that is set. */
   function worldSenses(L, p, s) {
     const E = NA.rlEnvs, set = (fn) => L.edit((S) => fn(S.ps[S.problem])), views = BT.VIEWS[p.task], ins = [];
     if (views) ins.push(UI.field('It sees', UI.seg(views, s.view, (v) => L.setWorldView(v), 'What it sees')), UI.note(`${(views.find((q) => q.value === s.view) || views[0]).title}.`));
@@ -2184,36 +2554,165 @@
       }, `${hide.includes(name) ? 'Not given' : 'Given'}: ${name}`))),
       UI.note(hide.length ? `It is not given ${hide.join(', ')}: the model has fewer inputs and has to do without them${p.task === 'pole' ? '. The Last 4 readings view gives it a history instead, from which a memory (a GRU or LSTM block) can work the speeds out' : ''}.` : 'Each chip is an input it is given. Switch one off and the model learns without it: can it still do the job?'));
     }
+    // extra inputs, on top of what it sees (when that is a list of numbers)
+    const extras = E.EXTRAS[p.task] || [], extra = Array.isArray(s.extra) ? s.extra : [], d = L.dataFor(), on = extras.filter((e) => extra.includes(e.name));
+    if (extras.length && !d.error && d.input.kind === 'vector') {
+      ins.push(el('div', { class: 'chip-row', role: 'group', 'aria-label': 'Extra inputs it can be given' }, ...extras.map((e) => UI.chip(`+ ${e.name}`, extra.includes(e.name), (yes) => set((q) => { const x = new Set(q.extra || []); if (yes) x.add(e.name); else x.delete(e.name); q.extra = extras.map((f) => f.name).filter((n) => x.has(n)); }), `${extra.includes(e.name) ? 'Given' : 'Not given'}: ${e.name}, ${e.what}`))));
+      if (on.length) ins.push(el('ul', { class: 'bd-extras' }, ...on.map((e) => el('li', null, el('strong', { text: e.name }), `: ${e.what}`))));
+      ins.push(UI.note(on.length ? `${on.length === 1 ? 'This extra input comes' : 'These extra inputs come'} after the others, ${fmtInt(d.input.dim)} in all.` : 'The chips with a + are extra inputs it can be given on top of what it sees: a hint, a clock, its last move, sometimes the answer itself, and one that is only noise. Switch one on and watch how much easier, or harder, learning gets.'));
+    } else if (extras.length && !d.error) ins.push(UI.note('Extra inputs (its last move, the time left and more) can be added when it sees a list of numbers, not a picture or a history.'));
     ins.push(worldPick(L, s, 'Sensor noise', 'noise', [0, 0.05, 0.1, 0.3], 0, (v) => (v ? `± ${v}` : 'None'), 'Random noise on every input'),
       UI.note(s.noise ? `Every input, every step, is off by a random amount (a spread of ${s.noise}): real sensors are never exact.` : 'No noise: every input is exact.'));
-    // the rewards
+    return [UI.section('Its inputs', ...ins), UI.section('Its reward', el('p', { class: 'bd-rew-line', text: L.rewardSummary() }),
+      UI.note('What it is paid for, step by step: the goal it is given. Change the amounts, or write a formula of your own, in the Reward tab.'),
+      el('div', { class: 'btn-row' }, el('button', { class: 'btn', type: 'button', onclick: () => L.openReward() }, 'Change the reward')))];
+  }
+  /* What it is paid, in the Reward tab: a table of amounts you type or pick, or a formula of your own (the table can
+     be written as one, to start from), with the names it can use and what a random player earns with it. */
+  function worldReward(L, p, s) {
+    const E = NA.rlEnvs, set = (fn) => L.edit((S) => fn(S.ps[S.problem])), d = L.dataFor();
+    // the rewards: quick picks for each amount (by world where one key means different things in different worlds)
     const vars = E.REWARD_VARS[p.task], names = vars.map((v) => v[0]), table = E.REWARDS[p.task].filter((r) => r.key !== 'rCloser' || s.closer);
-    const CHOICES = { rPay: [0.5, 1, 2, 5], rGoal: [0.5, 1, 2, 5, 10], rPit: [0, -0.5, -1, -2, -5, -10], rStep: [0, -0.01, -0.02, -0.05, -0.1], rWall: [0, -0.05, -0.1, -0.5, -1], rNew: [0, 0.01, 0.05, 0.1],
+    const CHOICES = { rPay: [0.5, 1, 2, 5], rGoal: [0.5, 1, 2, 5, 10], rPit: [0, -0.5, -1, -2, -5, -10], rStep: [0, -0.01, -0.02, -0.05, -0.1], rWall: [0, -0.05, -0.1, -0.5, -1], rNew: [0, 0.01, 0.05, 0.1, 0.5],
       rCloser: [0.05, 0.1, 0.2, 0.5], rUp: [0, 0.1, 1], rFell: [0, -1, -10, -100], rCatch: [0.5, 1, 2, 5], rMiss: [0, -0.5, -1, -2, -5], rMove: [0, -0.01, -0.05, -0.1, -0.5],
-      rProgress: [0, 1, 10, 50], rCrash: [0, -0.5, -1, -5, -10], rLap: [0, 1, 5, 20], rHit: [0.5, 1, 2, 5], rHurt: [0, -0.5, -1, -2, -5], rShot: [0, -0.01, -0.05, -0.2], rLand: [0, 1, 2, 5, 10], rShape: [0, 0.5, 1, 2], rFuel: [0, -0.003, -0.01, -0.03] };
-    const own = !!s.rFormula && !BT.compile(s.rFormula, names).error, rw = [];
+      rProgress: [0, 1, 10, 50], rCrash: [0, -0.5, -1, -5, -10], rLap: [0, 1, 5, 20], rHit: [0.5, 1, 2, 5], rHurt: [0, -0.5, -1, -2, -5], rShot: [0, -0.01, -0.05, -0.2], rLand: [0, 1, 2, 5, 10], rShape: [0, 0.5, 1, 2], rFuel: [0, -0.003, -0.01, -0.03],
+      rOff: [0, -0.05, -0.1, -0.2, -0.5], rHeat: [0, -0.01, -0.02, -0.05], rBand: [0, 0.05, 0.1, 0.5], rRun: [0, 0.01, 0.05], rBump: [0, -0.5, -1, -2, -5], rFinish: [0, 1, 5, 10],
+      rRight: [0.5, 1, 2], rWrong: [0, -0.5, -1, -2], rTick: [0, -0.1, -1], rFlag: [0, 1, 10, 100], rEnergy: [0, 10, 100, 1000], rHeight: [0, 0.01, 0.05, 0.1, 1], rUpright: [0, 0.01, 0.05, 0.1], rPush: [0, -0.001, -0.005, -0.01, -0.1],
+      rReach: [0, 1, 5, 10], rApproach: [0, 0.5, 1, 5], rStraight: [0, 0.5, 1, 2], rFree: [0, 0.01, 0.02, 0.05], rCoin: [0, 0.5, 1, 2], rCaught: [0, -1, -5, -10], rWait: [0, -0.005, -0.01, -0.05], rSwitch: [0, -0.01, -0.05, -0.1],
+      rForward: [0.5, 1, 5], rFall: [0, -1, -5], rPenned: [0.5, 1, 5], rNearer: [0, 0.05, 0.1, 0.5],
+      rNoPay: [0, -0.5, -1], rMatch: [0, 0.5, 1], rRevisit: [0, -0.01, -0.05, -0.1], rNearPit: [0, -0.01, -0.05, -0.1], rTurn: [0, -0.001, -0.01, -0.05], rLost: [0, -0.5, -1],
+      rLean: [0, -0.01, -0.05, -0.1], rLasted: [0, 1, 10, 100], rNear: [0, 0.25, 0.5], rUnder: [0, 0.01, 0.05, 0.1],
+      rSpeed: [0, 0.001, 0.01, 0.05], rCenter: [0, -0.001, -0.01, -0.05], rNearWall: [0, -0.01, -0.05, -0.1], rSteer: [0, -0.001, -0.01], rBrake: [0, -0.001, -0.01],
+      rClear: [0, 1, 5], rAim: [0, 0.001, 0.01, 0.05], rSee: [0, 0.001, 0.01], rWalk: [0, -0.001, -0.01], rOffPad: [0, 0.5, -0.5], rSpare: [0, 0.5, 1], rTilt: [0, -0.001, -0.01],
+      rCold: [0, -0.05, -0.1, -0.2], rHot: [0, -0.05, -0.1, -0.2], rJump: [0, -0.01, -0.05], rDuck: [0, -0.001, -0.01], rAir: [0, -0.001, 0.001], rEarly: [0, -0.05, -0.1], rSpin: [0, -0.0001, -0.001],
+      rPass: [0, 0.01, 0.05, 0.1], rLate: [0, -0.05, -0.1], rLong: [0, -0.001, -0.01], rRecord: [0, 0.5, 1, 2], rDist: [0, 0.001, 0.01], rAll: [0, 1, 5], rFlock: [0, -0.001, -0.01],
+      'pole.rOff': [0, -0.1, -0.5, -1], 'arena.rMiss': [0, -0.01, -0.05, -0.2], 'hurdles.rClear': [0, 0.1, 0.5, 1], 'memory.rWait': [0, -0.05, -0.1], 'chase.rNear': [0, -0.01, -0.05, -0.1],
+      'herd.rRun': [0, -0.01, -0.05], 'arm.rBump': [0, -0.01, -0.1, -0.5], 'trap.rBump': [0, -0.01, -0.05, -0.1, -1], 'chase.rWall': [0, -0.01, -0.05, -0.1] };
+    const own = !!s.rFormula && !BT.compile(s.rFormula, names).error, rw = [], moved = table.filter((r) => typeof s[r.key] === 'number' && s[r.key] !== r.def);
     rw.push(UI.note(`What it is paid for, step by step. It learns to collect as much reward as it can, so the reward is the goal it is given. The score still measures the real goal (${E.WORLDS[p.task].goal}): a reward that pays for something else shows there.`));
-    const grid = el('div', { class: 'bd-rewards' + (own ? ' is-off' : '') }, ...table.map((r) => worldPick(L, s, r.label, r.key, CHOICES[r.key], r.def, signed)));
+    const grid = el('div', { class: 'bd-rewards' + (own ? ' is-off' : '') }, ...table.map((r) => rewardAmount(L, s, r, CHOICES[`${p.task}.${r.key}`] || CHOICES[r.key])));
     rw.push(grid);
-    if (own) rw.push(UI.note('Your formula below is in use instead of this table.'));
-    const inp = el('input', { class: 'lm-input', type: 'text', value: s.rFormula || '', spellcheck: 'false', placeholder: 'empty: the table above', 'aria-label': 'Your own reward, a formula' }), msg = el('p', { class: 'sec-note' });
+    rw.push(UI.note(own ? 'Your formula below is in use instead of this table.' : 'Type any amount and press Enter, or pick one from the list beside it: more than 0 pays it for that, less than 0 costs it. They add up each step.'));
+    // the table as a formula, to start one from: it pays exactly what the table does
+    const asFormula = own ? null : tableAsFormula(p.task, s);
+    if (!own) rw.push(el('div', { class: 'btn-row' }, moved.length ? el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => set((q) => { for (const r of table) delete q[r.key]; }) }, `Back to the amounts it started with (${moved.length} changed)`) : null,
+      asFormula ? el('button', { class: 'btn btn-quiet', type: 'button', title: `r = ${asFormula}`, onclick: () => {
+        if (asFormula.length > 200) { NA.ui.toast.show('Written as a formula, this table is longer than 200 characters: set fewer amounts, or write a shorter formula of your own.'); return; }
+        inp.value = asFormula; set((q) => { q.rFormula = asFormula; });
+        NA.ui.toast.show('The table, written as a formula: it pays exactly what the table did. Now change it as you like.');
+      } }, 'Write the table as a formula') : null));
+    const inp = el('input', { class: 'lm-input', type: 'text', value: s.rFormula || '', spellcheck: 'false', maxlength: '200', placeholder: 'empty: the table above', 'aria-label': 'Your own reward, a formula' }), msg = el('p', { class: 'sec-note' });
+    // a formula that does not work is never put to use: the last one that did (or the table) goes on paying
+    const stored = s.rFormula ? BT.compile(s.rFormula, names) : null;
     const check = () => {
-      const v = inp.value.trim(), c = v ? BT.compile(v, names) : null;
-      msg.textContent = !v ? (s.rFormula ? 'Press Enter to go back to the table.' : 'Or write the reward as a formula of the names below, and press Enter.') : c.error || (v === s.rFormula ? 'In use: this is its reward now.' : 'Looks good: press Enter to use it.');
+      const v = inp.value.trim(), c = v ? BT.compile(v, names) : null, fallback = stored && !stored.error && v !== s.rFormula ? ` Until it does, it goes on using r = ${s.rFormula}.` : ' Until it does, the table above pays it.';
+      msg.textContent = !v ? (s.rFormula ? 'Press Enter to go back to the table.' : 'Or write the reward as a formula of the names below, and press Enter.') : c.error ? `${c.error}${fallback}` : v === s.rFormula ? 'In use: this is its reward now.' : 'Looks good: press Enter to use it.';
       msg.classList.toggle('lm-warn', !!(c && c.error));
       return c;
     };
-    const use = () => { const v = inp.value.trim(), c = check(); if (!v) set((q) => { q.rFormula = ''; }); else if (!c.error) set((q) => { q.rFormula = v; }); };
+    const use = () => { const v = inp.value.trim(), c = check(); if (!v) set((q) => { q.rFormula = ''; }); else if (!c.error && v !== s.rFormula) set((q) => { q.rFormula = v; }); };
     inp.addEventListener('input', check);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') use(); });
     inp.addEventListener('change', use);
     check();
-    const EXAMPLES = { levers: ['paid', 'right', '2paid - 1'], maze: ['goal - pit', 'goal - pit + 0.05new', 'goal - pit - 0.1wall', '-dist/10'], pole: ['1 - abs(angle)/12', '1 - abs(x)/2.4', '-10fell', 'fell'], catch: ['caught - missed - 0.1moved', '1 - abs(dx)/4', '-abs(dx)', 'missed - caught'],
-      track: ['10progress - crashed', '10progress - crashed - 0.02center', 'speed/24 - crashed', '20lap - crashed'], arena: ['hit - hurt', 'hit - hurt - 0.05shot', 'hit - hurt + 0.02aimed', 'hit + 0.01seen - hurt'], lander: ['landed - crashed + closer', '3landed - crashed + closer - 0.005engine', 'landed - crashed', '-dist/30 - speed/10'] };
-    rw.push(el('label', { class: 'field bd-formula' }, el('span', { text: 'r =' }), inp), msg,
+    const EXAMPLES = { levers: ['paid', 'right', '2paid - 1', 'right ? 1 : -1'], maze: ['goal - pit', 'goal - pit + 0.05new', 'goal - pit - (wall ? 1 : 0.02)', 'goal - pit - 0.1nearpit', '-dist/10'],
+      pole: ['1 - abs(angle)/12', '1 - abs(x)/2.4', '-10fell', 'abs(angle) < 3 ? 1 : 0', 'fell ? -100 : 1'], catch: ['caught - missed - 0.1moved', '1 - abs(dx)/4', 'missed - caught', 'near ? -0.5 : caught - missed', 'under ? 0.1 : 0'],
+      track: ['10progress - crashed', '10progress - crashed - 0.02center', 'speed/24 - crashed', 'wall < 2 ? -0.1 : 10progress', '20lap - crashed'], arena: ['hit - hurt', 'hit - hurt - 0.05shot', 'hit - hurt + 0.02aimed', 'missed ? -0.1 : hit - hurt', 'hit + 0.01seen - hurt'],
+      lander: ['landed - crashed + closer', '3landed - crashed + closer - 0.005engine', 'landed - crashed', 'h < 5 and speed > 3 ? -0.1 : closer', '-dist/30 - speed/10'],
+      thermo: ['-off/10 - 0.01heating', 'inside', 'inside - 0.05heating', 'cold > 2 ? -1 : -off/10', '-abs(temp - target)/10'], hurdles: ['0.01 - hit + finished', 'finished - hit', 'cleared - 5hit', 'gap < 2 and air ? 0.05 : 0.01 - hit', 'dist/150 - hit'],
+      memory: ['right - wrong - lost', 'right', 'right - wrong - lost - 0.1junction', 'early ? -0.1 : right - wrong', '2right - 1'], mountain: ['goal - 1', '100gained - 1', 'abs(speed)', 'speed > 0 ? height/10 : -0.01', 'goal'],
+      swingup: ['height', 'upright', 'height + upright', 'upright ? 1 : height/10', '-abs(angle)/180'], arm: ['reached + closer', 'reached', 'reached - dist/100', 'dist < 0.3 ? closer - 0.01speed : closer', '-dist/10'],
+      traffic: ['-0.01waiting', 'passed/10', '-0.01waiting - 0.05switched', 'longest > 20 ? -1 : -0.01waiting', '-longest/100'], walker: ['gained - fell', 'gained', 'gained - 5fell', 'abs(tilt) > 30 ? -0.1 : gained', 'gained - fell - abs(tilt)/3000'],
+      trap: ['goal + closer', 'goal', 'goal + 0.1new', 'goal + record', 'bump ? -0.1 : goal + closer'], chase: ['0.01 + coin - 5caught', '0.01 - 5caught', 'dist/100 - 5caught', 'near ? -0.05 : 0.01 + coin', '0.01 + 2coin - 5caught'],
+      herd: ['penned + 0.1nearer', 'penned', 'penned + 0.1nearer - dist/1000', 'dist > 8 ? -0.01 : penned + 0.1nearer', '-left/100'] };
+    rw.push(el('label', { class: 'field bd-formula' }, el('span', { text: 'r =' }), inp), msg);
+    if (stored && stored.error) rw.push(UI.note(`The formula it was given, r = ${s.rFormula}, does not work: ${stored.error} Until it does, the table above pays it.`, 'lm-warn'));
+    // steps where the formula gave no number (∞, or 0 / 0): they paid 0
+    const trouble = own ? E.formulaTrouble(p.task, s.rFormula) : null;
+    if (trouble && trouble.bad) rw.push(UI.note(`Your formula gave no number ${trouble.bad === 1 ? 'once' : `${fmtInt(trouble.bad)} times`} so far, first when ${Object.entries(trouble.first).filter(([, v]) => v).map(([k, v]) => `${k} = ${fmt(v, Math.abs(v) < 10 && v % 1 ? 2 : 0)}`).slice(0, 4).join(', ') || 'every name was 0'} (for example a division by 0): those steps paid 0.`, 'lm-warn'));
+    rw.push(UI.note('Write it with the names below, + − × / ^, brackets and functions such as abs(), sqrt(), min(a, b) and max(a, b). A comparison such as dist < 3 or wall == 1 is 1 when it is true and 0 when not; and, or and not combine them; c ? a : b is a when c is true and b when not, so wall ? -1 : 0 costs 1 for every bump. Each step pays what the formula comes to then.'),
       el('div', { class: 'chip-row' }, ...EXAMPLES[p.task].map((f) => el('button', { class: 'chip bd-tpl chip-mono', type: 'button', onclick: () => { inp.value = f; set((q) => { q.rFormula = f; }); } }, f))),
       el('dl', { class: 'bd-vars' }, ...vars.flatMap(([n, what]) => [el('dt', { class: 'mono', text: n }), el('dd', { text: what })])));
-    return [UI.section('Its inputs', ...ins), UI.section('Its reward', ...rw)];
+    // the size of an episode's return, against what it was with the reward it started with
+    if (!d.error) {
+      const s0 = Object.assign({}, s, { rFormula: '' });
+      for (const r of E.REWARDS[p.task]) delete s0[r.key];
+      const now = randomReturn(p.task, d.ws), was = randomReturn(p.task, BT.worldSettings(p, s0)), a = Math.abs(now), b = Math.abs(was);
+      const say = (v) => fmt(v, Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 1 ? 1 : 2), why = 'the gradient methods (DQN, REINFORCE, actor-critic, PPO) learn best with returns of about 1 to 100';
+      const grown = a > 10 * Math.max(b, 0.01), shrunk = b > 10 * Math.max(a, 0.01);
+      rw.push(UI.note(`A player moving at random earns about ${say(now)} an episode with this reward${now !== was ? ` (${say(was)} with the one it started with)` : ''}.${grown ? ` That is over 10 times as much: ${why}, which the network’s outputs have to reach.` : shrunk ? ` That is under a tenth as much: ${why}, and a reward this small hardly moves their outputs.` : ''}${grown || shrunk ? ' Evolution only compares scores, so it does not mind.' : ''}`, grown || shrunk ? 'lm-warn' : ''));
+    }
+    return [UI.section('Its reward', ...rw)];
+  }
+  /* What each amount of a reward table pays for, in the names a formula can use: the table written as a formula pays
+     exactly what the table does (checked by playing every world both ways, step by step). */
+  const REWARD_AS = {
+    levers: { rPay: 'paid', rNoPay: 'unpaid', rMatch: 'right' },
+    maze: { rGoal: 'goal', rPit: 'pit', rStep: '(1 - goal - pit)', rWall: 'wall', rNew: 'new', rCloser: 'closer', rRevisit: 'revisit', rNearPit: 'nearpit', rTurn: 'turned', rLost: 'lost' },
+    pole: { rUp: '1', rFell: 'fell', rLean: 'abs(angle)', rOff: 'abs(x)', rSwitch: 'switched', rLasted: 'lasted' },
+    catch: { rCatch: 'caught', rMiss: 'missed', rMove: 'moved', rNear: 'near', rUnder: 'under', rStep: '1' },
+    track: { rProgress: 'progress', rCrash: 'crashed', rLap: 'lap', rStep: '1', rFinish: 'finished', rSpeed: 'speed', rCenter: 'center', rNearWall: '(wall < 2)', rSteer: 'abs(turn)', rBrake: 'brake' },
+    arena: { rHit: 'hit', rHurt: 'hurt', rShot: 'shot', rStep: '1', rMiss: 'missed', rClear: 'cleared', rAim: 'aimed', rSee: 'seen', rWalk: 'moved', rTurn: 'turned', rBump: 'bump' },
+    lander: { rLand: 'landed', rCrash: 'crashed', rShape: 'closer', rFuel: 'engine', rOffPad: 'offpad', rSpare: 'landed*fuel', rTurn: 'turn', rTilt: 'abs(tilt)', rStep: '1' },
+    thermo: { rOff: 'off', rHeat: 'heating', rBand: 'inside', rCold: 'cold', rHot: 'hot', rSwitch: 'switched' },
+    hurdles: { rRun: '1', rBump: 'hit', rFinish: 'finished', rClear: 'cleared', rJump: 'jumped', rDuck: 'ducking', rAir: 'air' },
+    memory: { rRight: 'right', rWrong: '(wrong + lost)', rStep: '1', rWait: 'stood', rEarly: 'early' },
+    mountain: { rTick: '1', rFlag: 'goal', rEnergy: 'gained', rHeight: 'height', rPush: 'pushed' },
+    swingup: { rHeight: 'height', rUpright: 'upright', rPush: 'abs(push)', rSpin: 'abs(spin)', rSwitch: 'switched' },
+    arm: { rReach: 'reached', rApproach: 'closer', rStep: '1', rPush: '(1 - braked)', rBrake: 'braked', rBump: 'bump' },
+    traffic: { rWait: 'waiting', rSwitch: 'switched', rPass: 'passed', rLate: 'late', rLong: 'longest' },
+    walker: { rForward: 'gained', rFall: 'fell', rStep: '1', rTilt: 'abs(tilt)', rHeight: 'height', rSwitch: 'switched' },
+    trap: { rGoal: 'goal', rStraight: 'closer', rStep: '1', rBump: 'bump', rNew: 'new', rRecord: 'record', rTurn: 'turned' },
+    chase: { rFree: '1', rCoin: 'coin', rCaught: 'caught', rNear: 'near', rDist: 'dist', rWall: 'wall', rPush: 'pushed' },
+    herd: { rPenned: 'penned', rNearer: 'nearer', rStep: '1', rAll: 'last', rFlock: 'dist', rRun: 'ran' },
+  };
+  // the table of task with settings s as a formula: each amount that is not 0 times what it pays for (null: a term
+  // with no name to write it in)
+  function tableAsFormula(task, s) {
+    const as = REWARD_AS[task] || {}, out = [];
+    for (const r of NA.rlEnvs.REWARDS[task]) {
+      if (r.key === 'rCloser' && !s.closer) continue;
+      const a = typeof s[r.key] === 'number' ? s[r.key] : r.def, e = as[r.key];
+      if (!a) continue;
+      if (!e) return null;
+      const n = String(+Math.abs(a).toPrecision(8));
+      out.push(`${a < 0 ? '-' : '+'} ${e === '1' ? n : Math.abs(a) === 1 ? e : `${n}*${e}`}`);
+    }
+    return out.length ? out.join(' ').replace(/^\+ /, '').replace(/^- /, '-') : '0';
+  }
+  BL.tableAsFormula = tableAsFormula; // (for tests)
+  /* What it is paid, in a line: your formula, or the table's amounts that are not 0 (the chip under the results'
+     title, and the Input block's panel). */
+  BL.rewardSummary = function () {
+    const p = this.problem();
+    if (!p || p.family !== 'control') return '';
+    const E = NA.rlEnvs, s = this.ps(), names = E.REWARD_VARS[p.task].map((v) => v[0]);
+    if (s.rFormula && !BT.compile(s.rFormula, names).error) return `r = ${s.rFormula}`;
+    const paid = E.REWARDS[p.task].filter((r) => r.key !== 'rCloser' || s.closer).map((r) => [r, typeof s[r.key] === 'number' ? s[r.key] : r.def]).filter(([, v]) => v);
+    return paid.length ? paid.map(([r, v]) => `${amountText(v)} ${r.label.charAt(0).toLowerCase()}${r.label.slice(1)}`).join(' · ') : 'nothing: every amount is 0';
+  };
+  BL.renderRewardTab = function (body) {
+    const key = JSON.stringify([this.snapshot(), this.family()]);
+    if (this._rewardKey === key && body.firstChild) return;
+    this._rewardKey = key;
+    clear(body);
+    const p = this.problem();
+    if (p.family !== 'control') { body.append(UI.note('A reward is what a model that learns from rewards is paid: pick a problem from the Learn from rewards group.')); return; }
+    body.append(...worldReward(this, p, this.ps()));
+  };
+  // what a player moving at random earns in an episode with these settings: up to 4 episodes and 1,500 steps (kept)
+  const RETURNS = new Map();
+  function randomReturn(task, ws) {
+    const key = task + JSON.stringify(ws);
+    if (RETURNS.has(key)) return RETURNS.get(key);
+    const W = NA.rlEnvs.make(task, ws), rng = new NA.RNG(99);
+    let total = 0, eps = 0, ret = 0;
+    W.reset(rng);
+    for (let i = 0; i < 1500 && eps < 4; i++) { const t = W.step(rng.int(W.nA), rng); ret += t.r; if (t.done) { total += ret; eps++; ret = 0; W.reset(rng); } }
+    const v = eps ? total / eps : ret;
+    if (RETURNS.size > 80) RETURNS.clear();
+    RETURNS.set(key, v);
+    return v;
   }
   // ------------------------------------------------------------------ your own table (CSV)
   // The file is read here in the browser; it is not sent anywhere.
@@ -2269,6 +2768,12 @@
     for (let i = 0; i < 80; i++) { const a = rng.uniform(0, Math.PI * 2), r = rng.uniform(0.6, 0.9); pts.push({ x: +(r * Math.cos(a)).toFixed(3), y: +(r * Math.sin(a)).toFixed(3), c: 1 }); }
     return pts;
   }
+  // grow and prune: what a new layer is, by how wide it starts (builder-evo.js EV.LAYER_SIZE)
+  const GROW_LAYER_SAY = {
+    one: 'A new layer starts with one neuron, passing on the signal the next layer leans on most; the rest is cut off. That is a bottleneck: unlike a new neuron it changes what the network does, and selection keeps it only if the child still does well. Later “+1 neuron” changes widen it without changing anything, and a layer goes when its last neuron is pruned.',
+    some: 'A new layer starts with a few neurons, from 1 to one less than the numbers it reads, each passing on one of the signals the next layer leans on most: still a bottleneck, a looser one, kept only if the child still does well. A layer goes when its last neuron is pruned.',
+    whole: 'A new layer starts as wide as what it reads, passing values straight through, so a child that grows a layer does exactly what its parent did (after a ReLU layer); a whole layer can also go at once, folded into the next. This is the older way, here to compare.',
+  };
   // learning from rewards: the output block says what the outputs mean and how they learn
   BL.renderControlOutput = function (body, d) {
     const s = this.ps(), M = NA.brl.METHODS, set = (fn) => this.edit((S) => fn(S.ps[S.problem])), m = s.method, evo = NA.brl.isEvo(m), def = NA.brl.defaults(d.world), EV = NA.bevo;
@@ -2276,14 +2781,26 @@
     const pick = (label, key, opts, title) => UI.field(label, UI.seg(opts.map(([value, l, t]) => ({ value, label: l, title: t })), key === 'grow' ? !!s.grow : s[key] ?? def[key], (v) => set((q) => { q[key] = v; }), title || label));
     const evoSecs = [];
     if (evo) {
-      evoSecs.push(UI.section(m === 'me' ? 'MAP-Elites' : m === 'es' ? 'Evolution strategies' : 'Evolution',
-        pick(m === 'me' ? 'New networks a step' : 'Population', 'pop', [[12, '12'], [24, '24'], [48, '48'], [96, '96']]),
-        m === 'es' ? pick('Nudge size σ', 'esSigma', [[0.02, '0.02'], [0.05, '0.05'], [0.1, '0.1']]) : pick('Mutation', 'sigma', [[0.05, '0.05'], [0.2, '0.2'], [0.5, '0.5']], 'Mutation size'),
+      const axes = (NA.rlEnvs.WORLDS[d.world] || {}).axes;
+      evoSecs.push(UI.section(m === 'me' ? 'MAP-Elites' : m === 'es' ? 'Evolution strategies' : m === 'cem' ? 'Cross-entropy method' : m === 'novelty' ? 'Novelty search' : m === 'erl' ? 'ERL: the population' : 'Evolution',
+        pick(m === 'me' ? 'New networks a step' : m === 'cem' ? 'Networks a generation' : 'Population', 'pop', [[12, '12'], [24, '24'], [48, '48'], [96, '96']]),
+        m === 'es' ? pick('Nudge size σ', 'esSigma', [[0.02, '0.02'], [0.05, '0.05'], [0.1, '0.1']]) : m === 'cem' ? pick('Starting spread σ', 'cemSigma', [[0.1, '0.1'], [0.3, '0.3'], [0.5, '0.5']]) : pick('Mutation', 'sigma', [[0.05, '0.05'], [0.2, '0.2'], [0.5, '0.5']], 'Mutation size'),
         m === 'es' ? pick('Step size', 'esLr', [[0.01, '0.01'], [0.03, '0.03'], [0.1, '0.1']]) : null,
+        m === 'cem' ? pick('Refit to', 'cemElite', [[0.1, 'Best 10%'], [0.2, 'Best 20%'], [0.3, 'Best 30%']], 'The elite: the share of each generation the bell curve is refitted to') : null,
+        m === 'cem' ? pick('Spread floor', 'cemFloor', [[0.01, '0.01'], [0.05, '0.05'], [0.1, '0.1']], 'The least spread any weight keeps') : null,
+        m === 'novelty' ? pick('Chosen for', 'novMix', [['novelty', 'Novelty only'], ['half', 'Half novelty, half reward']], 'What a member is chosen by') : null,
+        m === 'novelty' ? pick('Nearest behaviours', 'novK', [[5, '5'], [10, '10'], [20, '20']], 'Novelty: the average distance to this many of the nearest behaviours') : null,
         UI.note(m === 'es' ? 'Each generation tries the network nudged in half as many random directions as the population, each both ways (plus and minus). Ranks, not raw scores, weigh each direction, and Adam steps the network toward the better ones. It needs no backpropagation, only scores; but it moves one network, so on a hard world it can stall at the first obstacle where a population would have spread out to look for a way past.'
-          : m === 'me' ? `A grid of 12 × 12 styles: ${(NA.rlEnvs.WORLDS[d.world] || {}).axes ? NA.rlEnvs.WORLDS[d.world].axes.join(' across, ') + ' down' : 'two numbers the world measures'}. Each step plays this many new networks (random at first, then mutated copies of elites picked at random); each goes to the cell of its style and stays if it beats the one there. ${Click()} a cell in the results to watch that style’s best.`
-            : 'Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')));
-      if (m === 'ga') {
+          : m === 'me' ? `A grid of 12 × 12 styles: ${axes ? axes.join(' across, ') + ' down' : 'two numbers the world measures'}. Each step plays this many new networks (random at first, then mutated copies of elites picked at random); each goes to the cell of its style and stays if it beats the one there. ${Click()} a cell in the results to watch that style’s best.`
+            : m === 'cem' ? `Each generation draws this many networks from the bell curve: every weight its middle plus its spread times a random number. The best ${Math.round(100 * (s.cemElite ?? def.cemElite))}% set the new middle (their average) and the new spread (how much they disagree), never below the floor. A small floor settles quickly; a bigger one keeps looking. The middle is the network on show. It suits small networks: the more weights, the more networks it needs to draw.`
+              : m === 'novelty' ? `Its behaviour: ${axes ? axes.join(' and ') : 'two numbers the world measures'}. A member’s novelty is the average distance from its behaviour to the ${s.novK ?? def.novK} nearest, among its generation and an archive that keeps the 2 most novel of every generation, so a behaviour once seen stops being new. ${(s.novMix ?? def.novMix) === 'half' ? 'Half novelty, half reward: each member is ranked both ways and the two ranks averaged, so it explores but still leans toward the goal.' : 'Novelty only: the reward plays no part in choosing parents, which is what lets it walk past dead ends that look like progress.'} The network on show is the best by score found so far. Mutation: as in the genetic algorithm, one weight in ten of each child moves by about this much.`
+                : m === 'erl' ? 'Each generation plays every member, and every move goes into the DQN’s replay memory. One weight in ten of each child moves by a random amount of about this size, as in the genetic algorithm.'
+                  : 'Each generation plays every member; one weight in ten of each child moves by a random amount of about this size. Small mutations refine, big ones explore. A bigger population searches more widely, and each generation takes longer.')));
+      if (m === 'erl') evoSecs.push(UI.section('ERL: the DQN', pick('Steps a generation', 'erlSteps', [[50, '50'], [200, '200'], [500, '500']], 'The DQN’s gradient steps after each generation'),
+        pick('Joins every', 'erlEvery', [[1, 'generation'], [5, '5 generations'], [10, '10']], 'How often the DQN’s network takes the worst member’s place'),
+        pick('Learning rate', 'erlLr', [[0.0003, '0.0003'], [0.001, '0.001'], [0.003, '0.003']], 'The DQN’s learning rate (Adam)'),
+        UI.note(`Between generations the DQN takes ${s.erlSteps ?? def.erlSteps} gradient steps on batches of 32 moves drawn from the memory, toward reward + γ × the next state’s value (a target network, refreshed every 500 steps, says what that is worth). Every ${(s.erlEvery ?? def.erlEvery) === 1 ? 'generation' : `${s.erlEvery ?? def.erlEvery} generations`} its network takes the place of the population’s worst member: if it plays well, it breeds.`)));
+      if (m === 'ga' || m === 'novelty' || m === 'erl') {
         const sel = s.select || def.select, cr = s.cross || def.cross, mu = s.mutate || def.mutate, can = this.evolvable();
         evoSecs.push(UI.section('Choosing parents', pick('Parents', 'select', [['tournament', 'Tournament'], ['truncation', 'Top fifth'], ['rank', 'By rank']]),
           UI.note(`${EV.SELECT[sel]}. ${{ tournament: 'A little luck lets weaker members breed now and then, which keeps the population varied.', truncation: 'Only the best breed: quick at first, but the population soon looks all alike and can get stuck.', rank: 'Every member can breed, the better the likelier: gentle pressure, and more variety.' }[sel]} The best two always carry on unchanged.`)),
@@ -2291,22 +2808,30 @@
             UI.note(`${EV.CROSS[cr]}. ${{ uniform: 'Fast mixing, but a neuron can end up with half its weights from one parent and half from the other, which may make sense to neither.', neuron: 'Each neuron is a working unit, so this mixes whole features: a child gets some of each parent’s neurons as they were.', none: 'Mutation alone: every child is a copy of one parent, nudged. Two networks can do the same job with their neurons in a different order, so mixing them can break both: on the race track and the rocket, copies alone found their way sooner.' }[cr]} Only parents of the same shape can be mixed.`)),
           UI.section('Mutation', pick('Kind', 'mutate', [['plain', 'Plain'], ['safe', 'Safe']]),
             UI.note(mu === 'safe' ? 'Safe mutations: before nudging, it measures how much the moves depend on each weight (the gradient of every output, over moments it lived through) and divides each nudge by that. Weights the moves hang on barely move, the others move more, with the same total nudge as plain: children stay close to what worked. Lehman and others, 2018.' : 'Plain: one weight in ten moves by a random amount, whatever it does. A nudge to a weight the moves depend on can wreck a good network.')),
-          UI.section('Grow and prune', pick('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']]),
+          m !== 'ga' ? null : UI.section('Grow and prune', pick('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']]),
             s.grow ? pick('Size penalty', 'penalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']]) : null,
-            s.grow ? pick('New layers start', 'newLayer', [['identity', 'Passing values through'], ['random', 'At random']]) : null,
+            s.grow ? pick('New layers start with', 'layerSize', [['one', 'One neuron'], ['some', 'A few, at random'], ['whole', 'A whole layer']]) : null,
+            s.grow ? pick('Their weights', 'newLayer', [['identity', 'Passing values on'], ['random', 'At random']], 'A new layer’s weights') : null,
             UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape; yours keeps its shape and only its weights evolve. The Small MLP can grow, and so can the Linear template, from no hidden layer at all.'
-              : !s.grow ? 'Turn it on, and a child may also gain or lose a neuron or a whole layer as it is born. A new neuron starts with its outgoing weights at 0 and a new layer passing values straight through, so a change does no harm until later mutations put it to work.'
-                : `A quarter of the children are born with one change to their shape: a neuron more or less, a layer more or less. ${(s.newLayer || def.newLayer) === 'random' ? 'New layers start at random: right after one is added the network forgets much of what it did, so children that grow a layer rarely win.' : 'New layers start as the identity, so a child that grows a layer plays exactly as its parent did (after a ReLU layer).'} ${(s.penalty || def.penalty) === 'off' ? 'With no size penalty nothing holds them back: they tend to swell with weights that do nothing.' : `The penalty takes a little off the fitness for every 100 weights, so the smaller of two equal networks wins.`} The Architecture view shows the best network as it is now.`)));
+              : !s.grow ? 'Turn it on, and a child may also gain or lose a neuron, or gain a new layer, as it is born. A new neuron starts with its outgoing weights at 0, so it does no harm until later mutations put it to work. A new layer starts with one neuron: a bottleneck that changes what the network does, so it is kept only if the child still plays well.'
+                : `A quarter of the children are born with one change to their shape: a neuron more or less, or a new layer${(s.layerSize || def.layerSize) === 'whole' ? ', or a layer less' : ''}. ${GROW_LAYER_SAY[s.layerSize || def.layerSize] || GROW_LAYER_SAY.one}${(s.newLayer || def.newLayer) === 'random' ? ' Its weights start at random, so right after it is added the network forgets much of what it did: children that grow a layer rarely win.' : ''} ${(s.penalty || def.penalty) === 'off' ? 'With no size penalty nothing holds them back: they tend to swell with weights that do nothing.' : `The penalty takes a little off the fitness for every 100 weights, so the smaller of two equal networks wins.`} The Architecture view shows the best network as it is now.`)));
       }
     }
     const what = m === 'dqn' ? `${d.nA} Q-values, one per action: what it expects to collect from here on if it takes that action now. It plays the largest.`
+      : m === 'erl' ? `${d.nA} scores, one per action, and it plays the largest. In the population nothing says what they should be: the weights that play best are kept. The DQN learns its outputs as Q-values, what each action is expected to collect from here on.`
       : evo ? `${d.nA} scores, one per action, and it plays the largest. Nothing says what they should be: the weights that play best are kept.`
         : `${d.nA} scores that softmax turns into the probability of each action${d.output.k > d.nA ? ', and one more output: the critic’s value of the state, what it expects to collect from here on' : ''}. While it learns it samples its moves from the probabilities; its best moves take the likeliest.`;
     body.append(...[el('div', { class: 'bd-insp-head', style: { '--bk': 'var(--s2)' } }, el('span', { class: 'bd-card-ico' }, icon('output')), el('div', null, el('h3', { class: 'bd-insp-title', text: 'Output and how it learns' }), el('div', { class: 'sec-note', text: d.error ? '' : outputText(d, this.setup.loss) }))),
-      UI.section('Learns by', UI.select(NA.brl.ORDER.map((k) => ({ value: k, label: M[k].label })), m, (v) => this.setMethod(v)), UI.note(M[m].hint), m === 'me' && d.world === 'levers' ? UI.note('The levers have no styles of play to tell apart: MAP-Elites needs a world with episodes of many moves.') : null),
+      UI.section('Learns by', UI.select(methodChoices(d.world, m).map((k) => ({ value: k, label: M[k].label })), m, (v) => this.setMethod(v)), UI.note(M[m].hint), (m === 'me' || m === 'novelty') && d.world === 'levers' ? UI.note(m === 'me' ? 'The levers have no styles of play to tell apart: MAP-Elites needs a world with episodes of many moves.' : 'The levers have no behaviour to tell apart: novelty search needs a world with episodes of many moves, so here it chooses by reward, as the genetic algorithm does.') : null),
       ...evoSecs,
-      !evo && d.world !== 'levers' ? UI.section('Discount', UI.field('Each step later counts ×', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
+      (!evo || m === 'erl') && d.world !== 'levers' ? UI.section('Discount', UI.field('Each step later counts ×', UI.seg([0, 0.9, 0.95, 0.97, 0.99].map((v) => ({ value: v, label: String(v) })), s.gamma, (v) => set((q) => { q.gamma = v; }), 'Discount')),
         UI.note('How much a reward one step later is worth: with 0.9, a reward ten steps away counts about a third. At 0 only the very next reward counts, so a move that pays off later is never learned.')) : null,
+      !evo ? UI.section('At the end', UI.field('Keep', UI.seg([{ value: true, label: 'Its best network' }, { value: false, label: 'Its last' }], s.keepBest !== false, (v) => set((q) => { q.keepBest = v; }), 'Keep the best network')),
+        UI.note(s.keepBest !== false ? 'Learning from rewards is unstable: a network that played well can play worse a little later. When a run ends below its best score, it ends with the weights it had at its best (the score of its best moves is measured every so often). The Python does the same.'
+          : 'It ends with the weights it has at the last step, however it played before.')) : null,
+      m === 'a2c' || m === 'ppo' ? UI.section('Rewards as it learns', UI.field('Normalise rewards', UI.seg([{ value: true, label: 'On' }, { value: false, label: 'Off' }], s.normReward !== false, (v) => set((q) => { q.normReward = v; }), 'Normalise rewards')),
+        UI.note(s.normReward !== false ? 'Each reward it learns from is divided by how much its returns have varied so far (the running spread of the discounted return), and kept within ±10: a world that pays in hundreds learns like one that pays in ones. The return and the score shown stay the world’s own.'
+          : 'Off: it learns from the rewards as the world pays them. Returns in the hundreds are hard to learn: the critic’s output has to reach them, and its big errors crowd out the policy’s share of every step.')) : null,
       m === 'dqn' ? UI.section('Exploration', UI.field('Random moves for', UI.select([[0, 'none'], [300, '300 moves'], [1500, '1,500 moves'], [3000, '3,000 moves'], [4000, '4,000 moves'], [10000, '10,000 moves']].map(([value, label]) => ({ value, label })), s.explore, (v) => set((q) => { q.explore = +v; }))),
         UI.note('Its chance of a random move falls from 1 to 0.05 over this many moves. Without exploring it only ever tries what already looks best, and may never find out that something else pays more.')) : null,
       UI.section('The output layer', UI.note(`${what} The added dense layer is built for you, sized to the world.`))].filter(Boolean));
@@ -2363,7 +2888,7 @@
     if (story) body.append(story);
     P.sweep = null;
     body.append(...[P.live,
-      ga ? UI.section('No gradients', UI.note('Evolution needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones (evolution strategies step by their own size). The settings are on the Output block.'),
+      ga ? UI.section(this.ps().method === 'erl' ? 'Evolution and a DQN' : 'No gradients', UI.note(this.ps().method === 'erl' ? 'The population needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones. Its DQN does take gradient steps, with Adam at the learning rate set on the Output block, with the rest of its settings.' : 'Evolution needs no optimizer, learning rate or batches: each generation plays every member and the next is made from the better ones (evolution strategies step by their own size). The settings are on the Output block.'),
         UI.field('Generations per press of Train', UI.select(stepChoices(true, T.steps), T.steps, (v) => set((t) => { t.steps = +v; })))) : null,
       !ctl && !this.isClassicSetup() ? this.growSection() : null,
       ga ? null : UI.section('Optimizer', UI.seg(Object.entries(OPT_LABEL).map(([value, label]) => ({ value, label })), T.opt, (v) => set((t) => { t.opt = v; }), 'Optimizer'),
@@ -2394,17 +2919,18 @@
     if (d.error || (d.output && d.output.kind === 'tokens')) return null;
     return UI.section('Grow and prune', seg('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']], false),
       T.grow ? seg('Size penalty', 'growPenalty', [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']], 'light') : null,
-      T.grow ? seg('New layers start', 'growNew', [['identity', 'Passing values through'], ['random', 'At random']], 'identity') : null,
+      T.grow ? seg('New layers start with', 'growWidth', [['one', 'One neuron'], ['some', 'A few, at random'], ['whole', 'A whole layer']], 'one') : null,
+      T.grow ? seg('Their weights', 'growNew', [['identity', 'Passing values on'], ['random', 'At random']], 'identity') : null,
       UI.note(!can ? 'Only a model of Dense blocks on a list of numbers can change shape. Start from the Linear template, or one Dense block of 1 neuron, and let it grow.'
-        : !T.grow ? 'Turn it on and 6 networks learn side by side from your model; every 150 steps the worse half are replaced by copies of the better half, each with one change to its shape: a neuron or a layer more or less. Start from one neuron on Two spirals and watch it grow.'
-          : `6 networks learn side by side from the same batches. Every 150 steps each is judged by its validation loss${(T.growPenalty || 'light') === 'off' ? '' : ' plus a little for every 100 weights'}, and the worse half become copies of the better half, weights and all, each with one change to its shape. New neurons and ${(T.growNew || 'identity') === 'random' ? 'layers start at random (a random layer makes it forget much of what it did)' : 'layers start out changing nothing (a new layer passes values straight through)'}. The best so far is the one on show, in the results and the Architecture view.`));
+        : !T.grow ? 'Turn it on and 6 networks learn side by side from your model; every 150 steps the worse half are replaced by copies of the better half, each with one change to its shape: a neuron more or less, or a new layer of one neuron. Start from one neuron on Two spirals and watch it grow.'
+          : `6 networks learn side by side from the same batches. Every 150 steps each is judged by its validation loss${(T.growPenalty || 'light') === 'off' ? '' : ' plus a little for every 100 weights'}, and the worse half become copies of the better half, weights and all, each with one change to its shape: a neuron more or less, or a new layer. A new neuron starts with its outgoing weights at 0, so it changes nothing. ${GROW_LAYER_SAY[T.growWidth || 'one'] || GROW_LAYER_SAY.one}${(T.growNew || 'identity') === 'random' ? ' Its weights start at random, so it forgets much of what it did.' : ''} Its gradient steps then teach it to use what it has. The best so far is the one on show, in the results and the Architecture view.`));
   };
   const fmtLr = (v) => (v >= 0.01 ? fmt(v, 3) : v.toExponential(1).replace('e-', ' × 10⁻').replace(/(\d)$/, (d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[d]));
   BL.updateTrainLive = function () {
     const P = this.parts, run = this.run;
     if (!P || !P.live) return;
     const p = run && run.last;
-    clear(P.live).append(UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'), UI.tile('Step', run ? fmtInt(run.step) : '0', run && run.limit && !this.stale ? `of ${fmtInt(run.limit)}` : this.setup.train.steps ? `${fmtInt(this.setup.train.steps)} a press` : 'until you pause'),
+    clear(P.live).append(UI.tile('Run', run ? String(run.n) : '—', run ? (this.stale ? 'setup edited since' : run.status) : 'not trained'), UI.tile(this.unitOf(run) === 'generation' ? 'Generation' : 'Step', run ? fmtInt(run.step) : '0', run && run.limit && !this.stale ? `of ${fmtInt(run.limit)}` : this.setup.train.steps ? `${fmtInt(this.setup.train.steps)} a press` : 'until you pause'),
       UI.tile('Learning rate now', fmtLr(this.lrAt(run ? run.step : 0))),
       run && run.family === 'control' ? UI.tile('Score', p && p.vm !== null && p.vm !== undefined ? fmtPct(p.vm, 0) : '—', run.bestVm !== null && run.bestVm !== undefined ? `best ${fmtPct(run.bestVm, 0)} at step ${fmtInt(run.bestAt)}` : null)
         : UI.tile(`Val. ${this.metricName()}`, p && p.vm !== null && p.vm !== undefined ? (BT.isValue(run.family) ? fmt(p.vm, 3) : fmtPct(p.vm, 1)) : '—', p && p.tm !== null && p.tm !== undefined ? `training ${BT.isValue(run.family) ? fmt(p.tm, 3) : fmtPct(p.tm, 1)}` : null));
@@ -2429,6 +2955,8 @@
     // runs on this problem are compared; runs on others are listed, dimmed
     const P = this.parts, fam = this.family(), pid = this.setup.problem, runs = this.runs.filter((r) => r.cfg.problem === pid);
     const series = runs.filter((r) => r.show).map((r) => ({ name: `run ${r.n}`, color: theme.c(r.colour), points: r.curve.filter((p) => p.vm !== null && p.vm !== undefined).map((p) => [p.step, p.vm]) })).filter((s) => s.points.length);
+    // (a run that learns from rewards is scored on its best moves, not on validation examples)
+    if (P.chartTitle) P.chartTitle.textContent = fam === 'control' ? 'Score of each run (its best moves)' : 'Validation score of each run';
     P.chartBox.hidden = !series.length;
     if (series.length) { P.chart.frame(); P.chart.set({ series, yFixed: this.valued() ? null : [0, 1] }); }
     P.chartNote.textContent = series.length ? 'Every press of Train after a change starts a new run from fresh weights, so you can compare. Tick runs to show them on the chart.' : `No runs on ${this.problem().label.toLowerCase()} yet: press Train, then change something and train again to compare.`;
@@ -2596,8 +3124,10 @@
     if (this.training) this.pause();
     const done = doneSet();
     clear(this.chList);
+    // by level, each level once (the list adds challenges level by level, topic by topic)
+    const levels = [...new Set(BC.LIST.map((q) => q.level))], ordered = levels.flatMap((lv) => BC.LIST.filter((q) => q.level === lv));
     let level = null;
-    for (const ch of BC.LIST) {
+    for (const ch of ordered) {
       if (ch.level !== level) {
         level = ch.level;
         const all = BC.LIST.filter((q) => q.level === level), got = all.filter((q) => done.has(q.id)).length;
@@ -2605,7 +3135,8 @@
       }
       const fam = BC.family(ch), won = done.has(ch.id);
       const goals = ch.goals.map((g) => (g.metric !== undefined ? `${this.metricName(fam)} ≥ ${scoreText(fam, g.metric)}` : g.params !== undefined ? `≤ ${fmtInt(g.params)} parameters` : g.steps !== undefined ? `within ${fmtInt(g.steps)} steps`
-        : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `keep ${g.dense} dense layers` : g.method !== undefined ? `by ${NA.brl.METHODS[g.method].short}` : `keep ${OPT_LABEL[g.opt]}`)).join(' · ');
+        : g.classic !== undefined ? (g.classic ? 'a classic model' : 'a network') : g.dense !== undefined ? `keep ${g.dense} dense layers` : g.method !== undefined ? `by ${NA.brl.METHODS[g.method].short}` : g.styles !== undefined ? `at least ${fmtInt(g.styles)} of the 144 styles of play` : g.grow !== undefined ? 'grow and prune on'
+        : g.opt !== undefined ? `keep ${OPT_LABEL[g.opt]}` : '')).filter(Boolean).join(' · ');
       this.chList.append(el('div', { class: 'bd-ch-item' + (won ? ' is-won' : '') + (ch.id === this.challenge ? ' is-active' : '') },
         el('div', { class: 'bd-ch-item-text' },
           el('div', { class: 'bd-ch-item-title' }, won ? el('span', { class: 'bd-ch-tick', text: '✓' }) : null, ch.title, el('span', { class: 'bd-ch-item-prob', text: `${ch.topic ? ch.topic + ' · ' : ''}${ch.table ? `${ch.table} table` : BT.byId[ch.problem].label}` })),

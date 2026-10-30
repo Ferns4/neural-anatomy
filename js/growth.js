@@ -406,6 +406,17 @@
 
   // ------------------------------------------------------------------ the math
   const N = (v, d = 4) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : fmt(v, d));
+  // grow and prune's changes of shape, by how wide a new layer starts (builder-evo.js)
+  const GROW_LINE = {
+    one: 'a quarter of the children: a neuron more or less, or a new layer of one neuron',
+    some: 'a quarter of the children: a neuron more or less, or a new layer of a few neurons',
+    whole: 'a quarter of the children: a neuron or a layer more or less (new ones change nothing at first)',
+  };
+  const GROW_NOTE = {
+    one: 'A new neuron starts with outgoing weights of 0, so it changes nothing until it proves useful. A new layer starts with one neuron that passes on the signal the next layer leans on most: a bottleneck, kept only if the child still plays well, and widened later by new neurons. A layer goes when its last neuron does.',
+    some: 'A new neuron starts with outgoing weights of 0, so it changes nothing until it proves useful. A new layer starts with a few neurons, passing on the signals the next layer leans on most: a looser bottleneck, kept only if the child still plays well. A layer goes when its last neuron does.',
+    whole: 'New neurons start with outgoing weights of 0 and new layers passing values straight through, so a change costs nothing until it proves useful.',
+  };
   const LOSS = {
     xent: ['L = −(1/N) Σᵢ log pᵢ[yᵢ]', 'Cross-entropy: the average of −log of the probability it gives the right answer. 0 when it is sure and right; it grows without limit when it is sure and wrong.'],
     bce: ['L = −(1/N) Σᵢ [ yᵢ·log pᵢ + (1 − yᵢ)·log(1 − pᵢ) ]', 'Binary cross-entropy: −log of the probability it gives the right one of two classes, averaged.'],
@@ -464,17 +475,31 @@
     ppo(o) { return { title: 'The rule it learns by: PPO', lines: [{ t: 'ρ = π(a | s) / π_old(a | s)', strong: true }, { t: 'L = −min( ρ·A, clip(ρ, 0.8, 1.2)·A ) + ¼·(V − R)²', strong: true }, `γ = ${N(o.gamma, 2)}   λ = 0.95 (advantages, GAE)${o.ret !== undefined ? `   average return now: ${N(o.ret, 3)}` : ''}`],
       note: 'Like actor-critic, but each batch of experience is used for 4 passes, and the clip stops any one update from moving the policy more than 20% away from the one that played.' }; },
     /* o: pop, sigma, best, mean; select (tournament, truncation, rank), cross (uniform, neuron, none), mutate (plain,
-       safe); grow, penalty (taken off the fitness for every 100 weights), units and weights of the best */
+       safe); grow, penalty (taken off the fitness for every 100 weights), units and weights of the best, layerSize
+       (how wide a new layer starts: one, some, whole) */
     ga(o) {
       const mix = { uniform: 'child = mix(parent₁, parent₂), weight by weight', neuron: 'child = mix(parent₁, parent₂), neuron by neuron', none: 'child = a copy of one parent' }[o.cross || 'uniform'];
       const mut = o.mutate === 'safe' ? '10% of its weights += σ·N(0, 1) / s(w),   s(w) = √Σₐ (∂outputₐ/∂w)²   (safe)' : '10% of its weights += σ·N(0, 1)';
       const pick = { tournament: 'parents: the best of 3 picked at random', truncation: 'parents: from the top fifth', rank: 'parents: by rank, the better the likelier' }[o.select || 'tournament'];
       const lines = [{ t: o.grow && o.penalty ? `fitness = total reward − ${N(o.penalty, 3)} × weights/100` : 'fitness(w) = total reward of its episodes', strong: true }, { t: mix, strong: true }, { t: mut, strong: true }, pick];
-      if (o.grow) lines.push({ t: 'a quarter of the children: a neuron or a layer more or less (new ones change nothing at first)', strong: true }, o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights` : null);
+      if (o.grow) lines.push({ t: GROW_LINE[o.layerSize] || GROW_LINE.one, strong: true }, o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights` : null);
       lines.push(`population ${o.pop}   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`);
       return { title: o.grow ? 'The rule it evolves by: grow and prune' : 'The rule it evolves by: a genetic algorithm', lines,
-        note: o.grow ? 'The architecture evolves with the weights: a child may gain or lose a neuron or a layer. New neurons start with outgoing weights of 0 and new layers passing values straight through, so a change costs nothing until it proves useful; the size penalty decides between two that play equally well.' : 'No gradients at all: the fittest networks are kept and bred, and random mutations try out changes. The good ones survive into the next generation.' };
+        note: o.grow ? `The architecture evolves with the weights. ${GROW_NOTE[o.layerSize] || GROW_NOTE.one} The size penalty decides between two that play equally well.` : 'No gradients at all: the fittest networks are kept and bred, and random mutations try out changes. The good ones survive into the next generation.' };
     },
+    // novelty search: o: pop, k, mix ('novelty' or 'half'), archive (its size), best (the best return of the generation)
+    novelty(o) { return { title: 'The rule it searches by: novelty search', lines: [{ t: 'novelty(x) = (1/k) Σᵢ ‖b(x) − b(μᵢ)‖      (μᵢ: the k nearest behaviours, in its generation and the archive)', strong: true },
+      { t: o.mix === 'half' ? 'fitness = ½·rank(novelty) + ½·rank(reward)' : 'fitness = novelty      (the reward plays no part)', strong: true }, { t: 'parents by fitness, mixed and mutated; the 2 most novel join the archive', strong: true },
+      `population ${o.pop}   k = ${o.k}   archive ${N(o.archive || 0, 0)}${o.best !== undefined ? `   best return ${N(o.best, 2)}` : ''}`],
+      note: 'It never aims at the goal: doing something new is what pays. Once the easy places are covered only the hard ones are new, so the search is pushed past dead ends that a climb toward the reward stops at. The network on show is the best by score found so far.' }; },
+    // the cross-entropy method: o: pop, elite, spread (the mean σ), floor, best
+    cem(o) { return { title: 'The rule it searches by: the cross-entropy method', lines: [{ t: 'wₖ = μ + σ ⊙ εₖ,   εₖ ~ N(0, I)      (a generation drawn from the bell curve)', strong: true }, { t: 'μ ← mean of the best,   σ² ← their variance + floor²', strong: true },
+      `${o.pop} drawn a generation   the best ${o.elite} refit it${o.spread !== undefined && o.spread !== null ? `   spread ${N(o.spread, 3)}` : ''}   floor ${N(o.floor, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}` : ''}`],
+      note: 'The bell curve moves to where the best networks were and narrows where they agree; the floor keeps it from shrinking to nothing, so it never stops looking. Its middle is the network on show.' }; },
+    // ERL: o: pop, sigma, steps (the DQN's a generation), every (generations between its copies), loss (the DQN's), best
+    erl(o) { return { title: 'The rule it learns by: ERL (evolution and a DQN)', lines: [{ t: 'the population: chosen, mixed and mutated as in a genetic algorithm', strong: true }, { t: 'every move → the replay memory;   the DQN: y = r + γ·Q̄(s′, argmaxₐ′ Q(s′, a′)),   L = huber(Q(s, a) − y)', strong: true },
+      { t: `every ${o.every} generation${o.every === 1 ? '' : 's'}: the worst member ← a copy of the DQN`, strong: true }, `population ${o.pop}   σ = ${N(o.sigma, 2)}   ${o.steps} DQN steps a generation${o.loss !== null && o.loss !== undefined ? `   DQN loss ${N(o.loss)}` : ''}${o.best !== undefined ? `   best ${N(o.best, 2)}` : ''}`],
+      note: 'Evolution explores, and the DQN learns from everything the population does, good moves and bad. When the DQN’s network plays well it joins the population and breeds, so what the gradient learned spreads.' }; },
     // evolution strategies: o: pop (two nudges a pair), sigma, lr, best, mean
     es(o) { return { title: 'The rule it learns by: evolution strategies', lines: [{ t: 'nudged copies: θ + σ·εₖ and θ − σ·εₖ,   εₖ ~ N(0, I)', strong: true }, { t: 'g = (1 / 2nσ) Σₖ (uₖ⁺ − uₖ⁻)·εₖ      (u: each copy’s rank, from −½ to ½)', strong: true }, { t: 'θ ← θ + Adam(g)      (a step uphill)', strong: true },
       `${Math.max(2, Math.round((o.pop || 24) / 2))} pairs   σ = ${N(o.sigma, 3)}   step ${N(o.lr, 3)}${o.best !== undefined ? `   best ${N(o.best, 2)}, average ${N(o.mean, 2)}` : ''}`],
@@ -483,10 +508,11 @@
     me(o) { return { title: 'The rule it searches by: MAP-Elites', lines: [{ t: `style(w) = (${(o.axes || ['measure 1', 'measure 2']).join(', ')}) → one of 12 × 12 cells`, strong: true }, { t: 'child = an elite picked at random, 10% of its weights + σ·N(0, 1)', strong: true }, { t: 'it stays if its cell is empty, or it beats the elite there', strong: true },
       `${N(o.filled || 0, 0)} of 144 styles found   ${o.batch} new a step   σ = ${N(o.sigma, 2)}${o.best !== undefined ? `   best ${N(o.best, 2)}` : ''}`],
       note: 'Quality and diversity: it keeps the best network of every style instead of one best. A style that does badly today can be the stepping stone to one that does well tomorrow.' }; },
-    // grow and prune while learning: o: size, every, penalty, units, weights, score, value (R² rather than accuracy)
-    grow(o) { return { title: 'Its shape evolves: grow and prune', lines: [{ t: `${o.size} networks learn side by side; every ${o.every} steps:`, strong: true }, { t: `fitness = −(validation loss)${o.penalty ? ` − ${N(o.penalty, 3)} × weights/100` : ''}`, strong: true }, { t: 'the worse half ← copies of the better half, each changed by a neuron or a layer more or less', strong: true },
+    // grow and prune while learning: o: size, every, penalty, units, weights, score, value (R² rather than accuracy), layerSize
+    grow(o) { return { title: 'Its shape evolves: grow and prune', lines: [{ t: `${o.size} networks learn side by side; every ${o.every} steps:`, strong: true }, { t: `fitness = −(validation loss)${o.penalty ? ` − ${N(o.penalty, 3)} × weights/100` : ''}`, strong: true },
+      { t: `the worse half ← copies of the better half, each changed by a neuron more or less, or a new layer${o.layerSize === 'whole' ? ' or one less' : ` (of ${o.layerSize === 'some' ? 'a few neurons' : 'one neuron'})`}`, strong: true },
       o.units ? `the best now: ${o.units.length ? o.units.join(' → ') : 'no hidden layer'}, ${o.weights} weights${o.score !== undefined && o.score !== null ? `, ${o.value ? `R² ${N(o.score, 3)}` : `${N(100 * o.score, 1)}% right`}` : ''}` : null],
-      note: 'Gradient steps train the weights; selection shapes the architecture. A new neuron starts with outgoing weights of 0 and a new layer as the identity, so a copy starts out as good as its parent and has time to put its new part to use.' }; },
+      note: `Gradient steps train the weights; selection shapes the architecture. ${o.layerSize === 'whole' ? 'A new neuron starts with outgoing weights of 0 and a new layer as the identity, so a copy starts out as good as its parent and has time to put its new part to use.' : 'A new neuron starts with outgoing weights of 0, so it changes nothing. A new layer starts narrow, passing on only what the next layer leans on most: a bottleneck that costs the copy something at first, which its gradient steps then teach it to use, and later new neurons widen.'}` }; },
     td(o) { return { title: 'The rule it learns by: temporal difference', lines: [{ t: o.formula || 'V(s) ← V(s) + α·[ V(s′) − V(s) ]      (at the end: the result, 1, 0 or ½)', strong: true }, o.nums || null],
       note: o.note || 'Each position’s value is pulled toward the value of the position after it: the final result flows back, game after game, to the moves that led there.' }; },
   };
