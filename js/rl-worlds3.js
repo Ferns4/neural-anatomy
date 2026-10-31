@@ -135,6 +135,8 @@
       this.coin = this.spot(r, this.me); this.trace = [this.me.x, this.me.y, 0];
       return this.obs();
     }
+    // what the chaser that learns sees: where the runner is from it, how fast each moves, where it is
+    chaserObs() { const m = this.me, c = this.chasers[0]; return Float32Array.of((m.x - c.x) / 10, (c.y - m.y) / 10, m.vx / 0.4, -m.vy / 0.4, c.vx / 0.35, -c.vy / 0.35, c.x / 10 - 1, 1 - c.y / 10); }
     near() { let b = this.chasers[0], bd = Infinity; for (const c of this.chasers) { const d = Math.hypot(c.x - this.me.x, c.y - this.me.y); if (d < bd) { bd = d; b = c; } } return [b, bd]; }
     rawObs() {
       const m = this.me, [c] = this.near(), c2 = this.chasers.find((q) => q !== c), o = new Float32Array(18);
@@ -154,7 +156,17 @@
       this.confine(m, 0.4);
       const wall = m.x !== wx || m.y !== wy ? 1 : 0;
       // each chaser heads for where it is (aim 'ahead': where it will be, a moment ahead)
+      // (the chaser that learns: its move, from the trainer, or from its brain when it only plays)
+      let mv = this.chaserMove ?? null;
+      if (mv === null && this.brain) mv = this.brain.act(this.chaserObs(), false);
+      this.chaserMove = null;
       for (const c of this.chasers) {
+        if (mv !== null && c === this.chasers[0]) {
+          c.vx = (c.vx + 0.06 * (mv === 2 ? -1 : mv === 3 ? 1 : 0)) * 0.85; c.vy = (c.vy + 0.06 * (mv === 0 ? -1 : mv === 1 ? 1 : 0)) * 0.85;
+          const sp = Math.hypot(c.vx, c.vy); if (sp > this.cs) { c.vx *= this.cs / sp; c.vy *= this.cs / sp; }
+          c.x += c.vx; c.y += c.vy; this.confine(c, 0.45);
+          continue;
+        }
         const d = Math.hypot(m.x - c.x, m.y - c.y), lead = Math.min(8, d / this.cs) * this.lead, gx = m.x + m.vx * lead - c.x, gy = m.y + m.vy * lead - c.y, gl = Math.hypot(gx, gy) || 1;
         c.vx = c.vx * 0.6 + (gx / gl) * this.cs * 0.4; c.vy = c.vy * 0.6 + (gy / gl) * this.cs * 0.4;
         c.x += c.vx; c.y += c.vy; this.confine(c, 0.45);
@@ -258,6 +270,7 @@
       const [lo, hi] = W_PULL[o.muscles] || W_PULL.normal;
       this.moves = [[lo, hi], [hi, lo], [lo, lo], [hi, hi]]; // each move's muscle lengths, as a share of their rest lengths
       this.actions = ['back short, front long', 'back long, front short', 'both short', 'both long'];
+      this.lohi = [lo, hi]; this.dA = 2; this.cActions = ['back muscle', 'front muscle']; // (continuous: each muscle from −1, short, to 1, long)
       this.input = { kind: 'vector', dim: 11 }; this.obsSize = 11;
       this.obsNames = ['body tilt (sine)', 'body tilt (cosine)', 'body height', 'speed across', 'speed up', 'back foot down', 'front foot down', 'back muscle', 'front muscle', 'clock (sine)', 'clock (cosine)'];
       this.rw = E.rewardTable('walker', o); this.rf = E.rewardFormula('walker', o.rFormula); E.sensors(this, 'walker', o);
@@ -295,9 +308,11 @@
     }
     hold(i, j, L, k) { const a = this.p[i], b = this.p[j], dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1e-9, c = ((d - L) / d) * 0.5 * k; a[0] += dx * c; a[1] += dy * c; b[0] -= dx * c; b[1] -= dy * c; }
     step(a) {
+      const ca = typeof a === 'number' ? null : a, [lo, hi] = this.lohi, at = (v) => lo + ((clamp(v, -1, 1) + 1) / 2) * (hi - lo);
+      if (ca) a = ca[0] < 0 ? (ca[1] > 0 ? 0 : 2) : ca[1] < 0 ? 1 : 3; // (the nearest move)
       const switched = a !== this.a ? 1 : 0; // another move than the last
       this.a = a;
-      const [s0, s1] = this.moves[a] || [1, 1];
+      const [s0, s1] = ca ? [at(ca[0]), at(ca[1])] : this.moves[a] || [1, 1];
       this.goal = [this.rest[0] * s0, this.rest[1] * s1];
       for (let k = 0; k < 4; k++) this.physics();
       this.t++;
@@ -329,19 +344,33 @@
      of the sheep penned by the end, over 3 games. Settings: steps (600), flee (how near the dog comes before they
      run, 5 m) and dog (its top speed, 0.45 m a step). */
   const FIELD = 24, PEN = { x0: 16, x1: 22, y1: 6 }, GATE = [19, 6.5];
+  /* Where the sheep and the dog start, your own (the model builder's editor): 1 to 7 sheep and the dog, each [across,
+     down] in m, inside the field and outside the pen. */
+  E.flockCheck = function (sheep, dog) {
+    const ok = (p) => Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[0] >= 1 && p[0] <= FIELD - 1 && p[1] >= 1 && p[1] <= FIELD - 1;
+    const pen = (p) => p[0] > PEN.x0 - 0.5 && p[0] < PEN.x1 + 0.5 && p[1] < PEN.y1 + 0.5;
+    if (!Array.isArray(sheep) || !sheep.length || sheep.length > 7 || !sheep.every(ok)) return { ok: false, why: 'Place 1 to 7 sheep inside the field.' };
+    if (sheep.some(pen)) return { ok: false, why: 'A sheep starts in the pen: move it out into the field.' };
+    if (!ok(dog)) return { ok: false, why: 'Place the dog inside the field.' };
+    if (pen(dog)) return { ok: false, why: 'The dog starts in the pen: move it out into the field.' };
+    return { ok: true };
+  };
   class Herd {
     constructor(o = {}) {
-      this.n = [3, 5, 7].includes(o.sheep) ? o.sheep : 3; this.maxSteps = o.steps > 0 ? clamp(Math.round(o.steps), 50, 5000) : 600; this.view = 'state'; this.nA = 5; this.actions = ['up', 'down', 'left', 'right', 'stay'];
+      // (where they start: your own places, when they are fine)
+      this.own = o.sheepAt === 'own' && E.flockCheck(o.flock, o.dogAt).ok ? { sheep: o.flock.map((p) => [+p[0], +p[1]]), dog: [+o.dogAt[0], +o.dogAt[1]] } : null;
+      this.n = this.own ? this.own.sheep.length : [3, 5, 7].includes(o.sheep) ? o.sheep : 3; this.maxSteps = o.steps > 0 ? clamp(Math.round(o.steps), 50, 5000) : 600; this.view = 'state'; this.nA = 5; this.actions = ['up', 'down', 'left', 'right', 'stay'];
       this.flee = o.flee > 0 ? clamp(o.flee, 1, 12) : 5; this.dogV = o.dog > 0 ? clamp(o.dog, 0.1, 1.5) : 0.45;
       this.input = { kind: 'vector', dim: 12 }; this.obsSize = 12;
       this.obsNames = ['dog across', 'dog up', 'flock across', 'flock up', 'straggler across', 'straggler up', 'gate from the flock, across', 'gate from the flock, up', 'its speed across', 'its speed up', 'share penned', 'how spread the flock is'];
       this.rw = E.rewardTable('herd', o); this.rf = E.rewardFormula('herd', o.rFormula); E.sensors(this, 'herd', o);
     }
     inPen(s) { return s.x > PEN.x0 && s.x < PEN.x1 && s.y < PEN.y1; }
+    where() { return [this.dog.x / FIELD, this.dog.y / FIELD]; } // (where the dog is in the field, 0 to 1 each way)
     reset(rng) {
       const r = rng || seeded(43);
-      this.rng = r; this.dog = { x: 2, y: 22, vx: 0, vy: 0 }; this.t = 0; this.end = null; this.path = 0; this.sumD = 0;
-      this.sheep = NA.range(this.n).map(() => ({ x: r.uniform(4, 12), y: r.uniform(11, 20), vx: 0, vy: 0, penned: false, wx: r.uniform(-1, 1), wy: r.uniform(-1, 1) }));
+      this.rng = r; this.dog = { x: this.own ? this.own.dog[0] : 2, y: this.own ? this.own.dog[1] : 22, vx: 0, vy: 0 }; this.t = 0; this.end = null; this.path = 0; this.sumD = 0;
+      this.sheep = NA.range(this.n).map((k) => { const at = this.own ? this.own.sheep[k] : [r.uniform(4, 12), r.uniform(11, 20)]; return { x: at[0], y: at[1], vx: 0, vy: 0, penned: false, wx: r.uniform(-1, 1), wy: r.uniform(-1, 1) }; });
       this.far = this.spread(); this.trace = [this.dog.x, this.dog.y, 0];
       return this.obs();
     }
@@ -461,7 +490,7 @@
     trap: { name: 'Deceptive maze', make: (o) => new Trap(o), what: '5 rangefinders and which quarter around it the goal is in', goal: 'reach the goal', axes: ['where it ends, across', 'where it ends, up'], demoMs: 30, trace: true },
     chase: { name: 'Escape the chaser', make: (o) => new Chase(o), what: 'where the chasers are and how they move, its own speed, the coin, and the space around it', goal: 'stay free for 400 steps', axes: ['how far it keeps from the chaser', 'how many coins it picks up'], demoMs: 45, trace: true },
     traffic: { name: 'Traffic lights', make: (o) => new Traffic(o), what: 'the four queues, the lights, how long since they switched and the longest wait at a red', goal: 'get every car through within 20 steps', axes: ['how often it switches', 'how much green north–south gets'], demoMs: 110, trace: false },
-    walker: { name: 'Walker', make: (o) => new Walker(o), what: 'its tilt, height and speed, which feet are down, its muscles and a clock', goal: 'walk 10 m without falling', axes: ['how fast it walks', 'how high it carries its body'], demoMs: 40, trace: true },
+    walker: { name: 'Walker', cont: true, make: (o) => new Walker(o), what: 'its tilt, height and speed, which feet are down, its muscles and a clock', goal: 'walk 10 m without falling', axes: ['how fast it walks', 'how high it carries its body'], demoMs: 40, trace: true },
     herd: { name: 'Herd the sheep', make: (o) => new Herd(o), what: 'where it is, the flock, the straggler and the gate, its speed, and how many are penned', goal: 'pen every sheep', axes: ['how close it keeps to the flock', 'how far it runs'], demoMs: 40, trace: true },
   });
 

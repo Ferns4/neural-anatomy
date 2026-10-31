@@ -15,15 +15,16 @@
   // ------------------------------------------------------------------ the race track
   PW.worlds.track = function (d, h) {
     const ws = d.ws, rw = h.rw, f = h.f, num = h.num, say = h.say, E = NA.rlEnvs;
-    const id = ws.track === 'random' ? 'random' : E.TRACKS[ws.track] ? ws.track : 'esses', random = id === 'random', cam = ws.view === 'camera';
-    const steps = ws.steps > 0 ? Math.min(ws.steps, 6000) : 0, pts = (k) => `[${E.TRACKS[k].pts.map(([x, y]) => `(${x}, ${y})`).join(', ')}]`;
+    // (a track of your own, from the editor: its points, when they make a track that works)
+    const own = ws.track === 'own' && E.trackCheck(ws.pts).ok, id = own ? 'own' : ws.track === 'random' ? 'random' : E.TRACKS[ws.track] ? ws.track : 'esses', random = id === 'random', cam = ws.view === 'camera';
+    const steps = ws.steps > 0 ? Math.min(ws.steps, 6000) : 0, pts = (k) => `[${(k === 'own' ? ws.pts : E.TRACKS[k].pts).map(([x, y]) => `(${x}, ${y})`).join(', ')}]`;
     const W = E.make('track', ws), laps = W.laps, extra = d.extra || [], heading = !!f || extra.includes('its heading'), bends = !!f || extra.includes('the bends ahead');
-    const reward = f ? ['        progress, speed, crashed, lap, t = ds / T.L, self.v, float(crashed), float(lap), self.t', '        center, turn, brake = min(1.0, abs(side) / HW), float(steer), float(not gas)',
+    const reward = f ? ['        progress, speed, crashed, lap, t = ds / T.L, self.v, float(crashed), float(lap), self.t', '        center, turn, brake = min(1.0, abs(side) / HW), float(steer), max(0.0, -gas)',
       '        wall, ahead, finished, laps = max(0.0, HW - abs(side)), self.rays[3], float(self.end == "finished"), self.lap',
       '        side, bend, heading = min(max(side / HW, -1.0), 1.0), self.bend(0) / DEG, self.heading() / DEG', ...h.ownLine]
       : ['        progress = ds / T.L                        # laps of progress this step', `        r = ${terms([rw.rProgress ? `${num(rw.rProgress)} * progress` : null, rw.rLap ? `(${num(rw.rLap)} if lap else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rStep ? num(rw.rStep) : null,
-        rw.rSpeed ? `${num(rw.rSpeed)} * self.v` : null, rw.rCenter ? `${num(rw.rCenter)} * min(1.0, abs(side) / HW)` : null, rw.rSteer ? `(${num(rw.rSteer)} if steer else 0.0)` : null,
-        rw.rBrake ? `(${num(rw.rBrake)} if not gas else 0.0)` : null, rw.rNearWall ? `(${num(rw.rNearWall)} if HW - abs(side) < 2 else 0.0)` : null, rw.rFinish ? `(${num(rw.rFinish)} if self.end == "finished" else 0.0)` : null])}`];
+        rw.rSpeed ? `${num(rw.rSpeed)} * self.v` : null, rw.rCenter ? `${num(rw.rCenter)} * min(1.0, abs(side) / HW)` : null, rw.rSteer ? `${num(rw.rSteer)} * abs(steer)` : null,
+        rw.rBrake ? `${num(rw.rBrake)} * max(0.0, -gas)` : null, rw.rNearWall ? `(${num(rw.rNearWall)} if HW - abs(side) < 2 else 0.0)` : null, rw.rFinish ? `(${num(rw.rFinish)} if self.end == "finished" else 0.0)` : null])}`];
     const pays = h.pays(`${say(rw.rProgress)} for a lap of progress (backwards counts against it)${rw.rCrash ? `, ${say(rw.rCrash)} for crashing` : ''}${rw.rLap ? `, ${say(rw.rLap)} for each lap done` : ''}${rw.rStep ? `, ${say(rw.rStep)} a step` : ''}${rw.rFinish ? `, ${say(rw.rFinish)} for finishing the last lap` : ''}${rw.rSpeed ? `, ${say(rw.rSpeed)} × its speed (m/s) every step` : ''}${rw.rCenter ? `, ${say(rw.rCenter)} × how far it is from the middle (1 at a wall) every step` : ''}${rw.rNearWall ? `, ${say(rw.rNearWall)} every step within 2 m of a wall` : ''}${rw.rSteer ? `, ${say(rw.rSteer)} every step it steers` : ''}${rw.rBrake ? `, ${say(rw.rBrake)} every step it brakes` : ''}.`);
     const obs = cam ? rows(String.raw`    def obs(self):                                 # (2, 16, 16): the track from above, ahead up, 32 m from 4 m behind and 12 m to each side; its speed
         c, s, T = math.cos(self.th), math.sin(self.th), self.track
@@ -37,7 +38,7 @@
       : rows(String.raw`    def obs(self):                                 # 7 distances to the walls (of ${String(+W.range)} m) and its speed (of ${String(+W.vmax)} m/s)
         return torch.tensor([r / RANGE for r in self.rays] + [self.v / VMAX])`);
     return [
-      ...rows(String.raw`TRACK = ${pts(random ? 'oval' : id)}   # ${random ? 'the Oval, if no random track works out' : E.TRACKS[id].name}: points its middle line passes through, m
+      ...rows(String.raw`TRACK = ${pts(random ? 'oval' : id)}   # ${random ? 'the Oval, if no random track works out' : own ? 'Your own' : E.TRACKS[id].name}: points its middle line passes through, m
 HW = 4.5                                           # half the track's width, m
 VMAX, VMIN, ACC, BRAKE, GRIP, STEER = ${num(W.vmax)}, 3.0, 9.0, 16.0, ${num(W.grip)}, 1.6   # speeds (m/s), throttle and brake (m/s²), grip (m/s² sideways), steering (rad/s)
 CAR_R, DT, RANGE = 1.0, 0.1, ${num(W.range)}${' '.repeat(Math.max(1, 21 - num(W.range).length))}# the car's radius (m), a step (s), how far its sensors see (m)
@@ -162,7 +163,7 @@ def random_track(seed):
     return SEEN[seed]`)] : []),
       '', '',
       ...h.head(rows(String.raw`class World:
-    """A car drives ${laps} lap${laps === 1 ? '' : 's'} of ${random ? 'a random track (a new one every episode)' : `the ${E.TRACKS[id].name.toLowerCase()} track`}: it steers, and brakes for the tight bends. ${pays}
+    """A car drives ${laps} lap${laps === 1 ? '' : 's'} of ${random ? 'a random track (a new one every episode)' : own ? 'a track of your own' : `the ${E.TRACKS[id].name.toLowerCase()} track`}: it steers, and brakes for the tight bends. ${pays}
     It crashes when it touches a wall; ${laps} lap${laps === 1 ? '' : 's'}, or ${steps || `as many steps as ${laps === 1 ? 'a lap' : laps + ' laps'} at 10 m/s take`}${steps ? ' steps' : ''}, also end an episode."""
     actions = ["steer left", "straight on", "steer right", "brake"]`)), '',
       ...rows(String.raw`    def __init__(self):
@@ -191,11 +192,15 @@ ${heading ? `
 ` : ''}`),
       ...h.sense(obs), '',
       ...rows(String.raw`    def step(self, a):
-        T, gas, steer = self.track, a != 3, (-1 if a == 0 else 1 if a == 2 else 0)
-        if gas:                                    # the throttle: toward top speed
-            self.v += ACC * DT * (1 - self.v / VMAX)
+        T = self.track
+        if isinstance(a, int):                     # a move: steer left, straight on, steer right, or brake
+            gas, steer = (-1.0 if a == 3 else 1.0), (-1 if a == 0 else 1 if a == 2 else 0)
+        else:                                      # two numbers from -1 to 1: steering, and the throttle (below 0 the brake)
+            steer, gas = (min(max(float(v), -1.0), 1.0) for v in a)
+        if gas > 0:                                # the throttle: toward top speed
+            self.v += gas * ACC * DT * (1 - self.v / VMAX)
         else:
-            self.v = max(VMIN, self.v - BRAKE * DT)
+            self.v = max(VMIN, self.v + gas * BRAKE * DT)
         self.th += steer * min(STEER, GRIP / max(self.v, 0.5)) * DT   # never sharper than its grip allows
         self.x += self.v * math.cos(self.th) * DT
         self.y += self.v * math.sin(self.th) * DT
@@ -452,8 +457,8 @@ class Drone:
       '        landed, crashed, engine, turn, h, vx, vy, fuel, t = float(landed), float(crashed), float(main), float(abs(turn)), self.y, self.vx, self.vy, self.fuel / FUEL, self.t',
       '        x, spin, offpad, away, timeup = self.x - self.pad, self.w / DEG, float(self.end == "offpad"), float(self.end == "away"), float(self.end == "time")',
       '        ground, wind = self.y - self.ground(self.x), self.wind()', ...h.ownLine]
-      : [`        r = ${terms([rw.rLand ? `(${num(rw.rLand)} if landed else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rFuel ? `(${num(rw.rFuel)} if main else 0.0)` : null, rw.rShape ? `${num(rw.rShape)} * closer` : null,
-        rw.rTurn ? `(${num(rw.rTurn)} if turn else 0.0)` : null, rw.rTilt ? `${num(rw.rTilt)} * abs(self.th / DEG)` : null, rw.rStep ? num(rw.rStep) : null,
+      : [`        r = ${terms([rw.rLand ? `(${num(rw.rLand)} if landed else 0.0)` : null, rw.rCrash ? `(${num(rw.rCrash)} if crashed else 0.0)` : null, rw.rFuel ? `${num(rw.rFuel)} * main` : null, rw.rShape ? `${num(rw.rShape)} * closer` : null,
+        rw.rTurn ? `${num(rw.rTurn)} * abs(turn)` : null, rw.rTilt ? `${num(rw.rTilt)} * abs(self.th / DEG)` : null, rw.rStep ? num(rw.rStep) : null,
         rw.rOffPad ? `(${num(rw.rOffPad)} if self.end == "offpad" else 0.0)` : null, rw.rSpare ? `(${num(rw.rSpare)} * self.fuel / FUEL if landed else 0.0)` : null])}`];
     const pays = h.pays(`${say(rw.rLand)} for landing softly on the pad, ${say(rw.rCrash)} for anything else${rw.rShape ? `; and ${rw.rShape === 1 ? '' : `${say(rw.rShape)} × `}how much closer, slower and straighter it got each step (shaping)` : ''}${rw.rFuel ? `; ${say(rw.rFuel)} each step the main engine fires` : ''}${rw.rTurn ? `; ${say(rw.rTurn)} each step a side thruster fires` : ''}${rw.rTilt ? `; ${say(rw.rTilt)} × its tilt (degrees) every step` : ''}${rw.rStep ? `; ${say(rw.rStep)} every step` : ''}${rw.rOffPad ? `; ${say(rw.rOffPad)} for touching down softly off the pad` : ''}${rw.rSpare ? `; ${say(rw.rSpare)} × the share of its fuel left on landing` : ''}.`);
     return [
@@ -479,7 +484,7 @@ DEG = math.pi / 180`), '', '',
         self.pad = ${randomPad ? 'random.uniform(-20, 20)            # the pad somewhere new every time' : '0.0'}
         self.x, self.y = self.pad + random.uniform(-12, 12), 30.0
         self.vx, self.vy = random.uniform(-2, 2), random.uniform(-2, 0)
-        self.th, self.w = random.uniform(-0.3, 0.3), random.uniform(-0.2, 0.2)
+        self.th, self.w = random.uniform(-0.3, 0.3), random.uniform(-0.2, 0.2)${d.s.curriculum === 'on' ? '\n        level = getattr(self, "level", 1.0)\n        if level < 1:                              # (easy first: lower, slower and straighter at first)\n            k = 0.25 + 0.75 * level\n            self.x, self.y = self.pad + (self.x - self.pad) * k, 8 + 22 * level\n            self.vx, self.vy, self.th, self.w = self.vx * k, self.vy * k, self.th * k, self.w * k' : ''}
         self.gusts = random.uniform(0, 2 * math.pi)
         self.t, self.fuel, self.burn, self.land_x, self.end = 0, FUEL, 0, None, None
         self.phi = self.potential()
@@ -498,11 +503,15 @@ DEG = math.pi / 180`), '', '',
         return [(self.x + lx * c - LEG * s, self.y - lx * s - LEG * c) for lx in (-FOOT, FOOT)]
 
     def step(self, a):
-        dt, main, turn = 0.08, a == 1 and self.fuel > 0, (-1 if a == 2 else 1 if a == 3 else 0)
+        if isinstance(a, int):                     # a move: nothing, the main engine, turn left or turn right
+            main, turn = float(a == 1), (-1 if a == 2 else 1 if a == 3 else 0)
+        else:                                      # two numbers from -1 to 1: the engine's throttle (off at 0 or below), and turning
+            main, turn = min(max(float(a[0]), 0.0), 1.0), min(max(float(a[1]), -1.0), 1.0)
+        dt, main = 0.08, (main if self.fuel > 0 else 0.0)
         ax, ay = -0.04 * self.vx + self.wind(), -G - 0.04 * self.vy
         if main:
-            ax, ay = ax + THRUST * math.sin(self.th), ay + THRUST * math.cos(self.th)
-            self.fuel, self.burn = self.fuel - 1, self.burn + 1
+            ax, ay = ax + main * THRUST * math.sin(self.th), ay + main * THRUST * math.cos(self.th)
+            self.fuel, self.burn = max(0.0, self.fuel - main), self.burn + main
         self.w = (self.w + turn * 2.6 * dt) * 0.985
         self.vx, self.vy = self.vx + ax * dt, self.vy + ay * dt
         self.x, self.y, self.th = self.x + self.vx * dt, self.y + self.vy * dt, self.th + self.w * dt
@@ -651,6 +660,7 @@ def mutate(w, sens):
     if (m === 'cem') return cemPy(d, steps, x);
     if (m === 'novelty') return novPy(d, steps, x);
     if (m === 'erl') return erlPy(d, steps, x);
+    if (m === 'neat') return neatPy(d, steps, x);
     const note = flat ? [d.method === 'me' ? '# MAP-Elites keeps the best network of every style of play, and a pull of a lever has no style to tell apart:' : '# Novelty search looks for behaviour unlike any before, and a pull of a lever has no style to tell apart:', '# this runs the genetic algorithm instead.'] : [];
     if (s.grow && x.evolvable) return [...note, ...growPy(d, steps, x)];
     return [...note, s.grow ? '# Grow and prune is on, but only a model of Dense blocks on a list of numbers can change shape: here only the weights evolve.' : null, ...gaPy(d, steps, x)].filter((l) => l !== null);
@@ -948,6 +958,53 @@ def mutate(net, sens):
       '    mu, sd = best.mean(0), (best.var(0, unbiased=False) + sd_floor ** 2).sqrt()   # refitted to the elite',
       '    vector_to_parameters(mu, model.parameters())                       # on show: the middle of the bell curve',
       `    if gen % ${x.every} == 0:`, '        print(f"generation {gen:4d}  best {max(fit):.2f}  average {sum(fit) / pop_size:.2f}  spread {sd.mean():.3f}  score {judge.score(best_move):.3f}")'];
+  }
+
+  /* NEAT in Python (js/builder-neat.js): genomes of neurons and connection genes with innovation numbers, species by
+     how far their genes differ, shared fitness, crossover lined up by innovation, connections and neurons added by
+     mutation. The network you built is not used: every genome starts with no hidden neuron. */
+  function neatPy(d, steps, x) {
+    const s = d.s, N = Math.max(12, Math.round(s.pop) || 96);
+    return [
+      '# NEAT grows networks of its own (Stanley and Miikkulainen, 2002): the network built above is not used. Every genome',
+      '# starts with no hidden neuron, every input wired to every output, and grows by mutation.',
+      `pop_size, episodes, sigma = ${N}, ${episodesOf(d)}, ${x.flt(s.sigma > 0 ? s.sigma : 0.5)}`, 'n_in = Xva[0].numel()',
+      'innovations, splits = {}, {}                       # each connection (from, to) its number; each connection split, its new neuron', 'next_node = [n_in + 1 + n_actions]', '', '',
+      'def innov(a, b):', '    return innovations.setdefault((a, b), len(innovations))', '', '',
+      'class Genome:', '    """Its neurons ({id: "in", "bias", "out" or "hid"}) and connections ([from, to, weight, on, innovation])."""', '    def __init__(self, nodes, conns):', '        self.nodes, self.conns, self.fit, self.net = nodes, conns, 0.0, None', '',
+      '    def copy(self):', '        return Genome(dict(self.nodes), [c[:] for c in self.conns])', '',
+      '    def compile(self):                             # the hidden and output neurons, each after everything feeding it', '        into = {}', '        for a, b, w, on, inn in self.conns:', '            if on:', '                into.setdefault(b, []).append((a, w))',
+      '        known = {i for i, k in self.nodes.items() if k in ("in", "bias")}', '        left, order = [i for i, k in self.nodes.items() if k in ("hid", "out")], []', '        while left:', '            ready = [i for i in left if all(a in known for a, _ in into.get(i, []))] or left',
+      '            order += ready', '            known.update(ready)', '            left = [i for i in left if i not in ready]', '        self.net = (order, into)', '',
+      '    def act(self, obs):                            # its move: the largest output (tanh on the hidden neurons)', '        if self.net is None:', '            self.compile()', '        order, into = self.net', '        x = obs.flatten().tolist()', '        v = {i: x[i] for i in range(n_in)}', '        v[n_in] = 1.0',
+      '        for i in order:', '            s = sum(w * v.get(a, 0.0) for a, w in into.get(i, []))', '            v[i] = math.tanh(s) if self.nodes[i] == "hid" else s', '        return max(range(n_actions), key=lambda k: v.get(n_in + 1 + k, 0.0))', '', '',
+      'def first_genome():', '    nodes = {i: "in" for i in range(n_in)}', '    nodes[n_in] = "bias"', '    nodes.update({n_in + 1 + k: "out" for k in range(n_actions)})',
+      '    return Genome(nodes, [[a, n_in + 1 + k, random.uniform(-1, 1), True, innov(a, n_in + 1 + k)] for a in range(n_in + 1) for k in range(n_actions)])', '', '',
+      'def distance(x, y):                                # excess and disjoint genes, and how the matching weights differ', '    A, B = {c[4]: c for c in x.conns}, {c[4]: c for c in y.conns}', '    ma, mb = max(A, default=-1), max(B, default=-1)', '    E = D = M = 0', '    W = 0.0',
+      '    for i, c in A.items():', '        if i in B:', '            W, M = W + abs(c[2] - B[i][2]), M + 1', '        elif i > mb:', '            E += 1', '        else:', '            D += 1',
+      '    for i in B:', '        if i not in A:', '            E, D = (E + 1, D) if i > ma else (E, D + 1)', '    n = 1 if max(len(A), len(B)) < 20 else max(len(A), len(B))', '    return (E + D) / n + 0.4 * (W / M if M else 0.0)', '', '',
+      'def reaches(g, a, b):                              # a path from a to b?', '    seen, stack = {a}, [a]', '    while stack:', '        q = stack.pop()', '        if q == b:', '            return True', '        for c in g.conns:', '            if c[0] == q and c[1] not in seen:', '                seen.add(c[1])', '                stack.append(c[1])', '    return False', '', '',
+      'def mutate(g):', '    g.net = None', '    if random.random() < 0.8:                      # weights nudged (one in ten drawn afresh)', '        for c in g.conns:', '            c[2] = max(-8.0, min(8.0, c[2] + random.gauss(0, sigma))) if random.random() < 0.9 else random.uniform(-2, 2)',
+      '    if random.random() < 0.1:                      # a new connection: never into an input, never a loop', '        srcs = [i for i, k in g.nodes.items() if k != "out"]', '        dsts = [i for i, k in g.nodes.items() if k in ("hid", "out")]', '        for _ in range(20):', '            a, b = random.choice(srcs), random.choice(dsts)',
+      '            if a != b and not any(c[0] == a and c[1] == b for c in g.conns) and not reaches(g, b, a):', '                g.conns.append([a, b, random.uniform(-1, 1), True, innov(a, b)])', '                break',
+      '    if random.random() < 0.04:                     # a new neuron in the middle of a connection', '        on = [c for c in g.conns if c[3]]', '        if on:', '            c = random.choice(on)', '            if c[4] not in splits:', '                splits[c[4]], next_node[0] = next_node[0], next_node[0] + 1', '            n = splits[c[4]]',
+      '            if n not in g.nodes:', '                c[3] = False', '                g.nodes[n] = "hid"', '                g.conns += [[c[0], n, 1.0, True, innov(c[0], n)], [n, c[1], c[2], True, innov(n, c[1])]]',
+      '    if random.random() < 0.01 and g.conns:', '        c = random.choice(g.conns)', '        c[3] = not c[3]', '', '',
+      'def cross(fit, other):                             # genes lined up by innovation: the matching ones from either parent, the rest from the fitter', '    B = {c[4]: c for c in other.conns}', '    conns = []', '    for c in fit.conns:', '        d = B.get(c[4])', '        src = d if d is not None and random.random() < 0.5 else c',
+      '        conns.append([src[0], src[1], src[2], (c[3] and (d is None or d[3])) or random.random() > 0.75, src[4]])', '    return Genome(dict(fit.nodes), conns)', '', '',
+      'def play_genome(g, seed):                          # its average return over a few episodes, the same starts for every genome of a generation', '    state = random.getstate()', '    random.seed(seed)', '    w, total = World(), 0.0', '    for _ in range(episodes):', '        o, done = w.reset(), False', '        while not done:', '            o, r, done = w.step(g.act(o))', '            total += r', '    random.setstate(state)', '    return total / episodes', '', '',
+      'pop, species, threshold, next_sp = [first_genome() for _ in range(pop_size)], [], 3.0, 1', 'champ = pop[0]', `for gen in range(${x.big(steps)}):`, '    for g in pop:', '        g.fit = play_genome(g, 1000 + gen)', '    for S in species:', '        S["members"] = []',
+      '    for g in pop:                                   # each into the first species near enough, else a new species', '        home = next((S for S in species if distance(g, S["rep"]) < threshold), None)', '        if home is None:', '            home = {"id": next_sp, "rep": g, "members": [], "best": -1e9, "stale": 0}', '            species.append(home)', '            next_sp += 1', '        home["members"].append(g)',
+      '    species = [S for S in species if S["members"]]', '    threshold = max(0.5, threshold * (0.95 if len(species) < 2 else 1.05 if len(species) > 10 else 1.0))   # 3 as in the paper; 5% a generation when there are over 10 species, or one', '    lo = min(g.fit for g in pop)',
+      '    for S in species:', '        S["members"].sort(key=lambda g: -g.fit)', '        if S["members"][0].fit > S["best"] + 1e-9:', '            S["best"], S["stale"] = S["members"][0].fit, 0', '        else:', '            S["stale"] += 1',
+      '        S["adj"] = sum(g.fit - lo + 1e-3 for g in S["members"]) / len(S["members"])   # shared fitness: divided by its size', '    champ = max(pop, key=lambda g: g.fit)',
+      '    alive = [S for S in species if S["stale"] < 15 or champ in S["members"]]   # a species that has not improved for 15 generations dies out', '    total = sum(S["adj"] for S in alive)', '    share = [int(S["adj"] / total * (pop_size - 1)) for S in alive]',
+      '    for i in range(pop_size - 1 - sum(share)):', '        share[i % len(alive)] += 1', '    nxt = [champ.copy()]',
+      '    for S, k in zip(alive, share):', '        if k > 0 and len(S["members"]) >= 5 and S["members"][0] is not champ:   # a big species keeps its best', '            nxt.append(S["members"][0].copy())', '            k -= 1', '        parents = S["members"][:max(1, (len(S["members"]) + 1) // 2)]',
+      '        for _ in range(k):', '            a, b = random.choice(parents), random.choice(parents)', '            child = cross(*(sorted([a, b], key=lambda g: -g.fit))) if a is not b and random.random() < 0.75 else a.copy()', '            mutate(child)', '            nxt.append(child)',
+      '    for S in species:', '        S["rep"] = random.choice(S["members"])', '    pop = nxt[:pop_size]', '    while len(pop) < pop_size:', '        c = champ.copy()', '        mutate(c)', '        pop.append(c)',
+      `    if gen % ${x.every} == 0:`, '        hid = sum(1 for k in champ.nodes.values() if k == "hid")', '        print(f"generation {gen:4d}  best {champ.fit:.2f}  species {len(species)}  hidden neurons {hid}  connections {sum(c[3] for c in champ.conns)}")', '', '',
+      'def best_move(obs):                                # its best move: the champion\'s', '    return champ.act(obs)'];
   }
 
   // ERL: a genetic algorithm whose every move teaches a DQN; the DQN's network joins the population every few generations

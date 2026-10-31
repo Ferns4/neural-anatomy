@@ -422,13 +422,55 @@
      as bars, with what it looked at when there is room; what it looked at alone; the whole generation, its
      population and how varied it is; MAP-Elites' grid; the family line of the best; the map of styles. A small
      screen gives the grid, the family line and the map the whole picture. */
+  /* A race (lab-builder.js startRace): the two sides of the same world from the same start, side by side (one above the
+     other when narrow), each with its name, its return and how its episode ended, the winner of the episode framed;
+     above them, the episodes each has won. */
+  function drawRace(ctx, r, L) {
+    const R = L.race, d = L.data, wide = r.w > 520, gap = 14, top = 22, [A, B] = R.sides;
+    const score = `${A.label} ${R.wins[0]} – ${R.wins[1]} ${B.label}`, result = R.done ? (R.winner >= 0 ? ` · ${R.sides[R.winner].label} won this episode` : ' · a draw') : '';
+    text(ctx, fit(ctx, `Race · episode ${R.ep} · ${score}${result}`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: theme.c('ink') });
+    const half = wide ? (r.w - gap) / 2 : (r.h - top - gap) / 2;
+    const boxes = wide ? [{ x: r.x, y: r.y + top, w: half, h: r.h - top }, { x: r.x + half + gap, y: r.y + top, w: half, h: r.h - top }]
+      : [{ x: r.x, y: r.y + top, w: r.w, h: half }, { x: r.x, y: r.y + top + half + gap, w: r.w, h: half }];
+    R.sides.forEach((S, k) => {
+      const b = boxes[k], win = R.done && R.winner === k, M = S.method && NA.brl.METHODS[S.method];
+      const line = `${S.label}${M ? ` (${M.short})` : ''} · return ${fmt(S.ret, S.ret === Math.round(S.ret) ? 0 : 2)}${S.end ? ` · ${END_TEXT[S.end] || S.end}` : ''}`;
+      text(ctx, fit(ctx, line, b.w - 4, 11.5, 650), b.x + 2, b.y + 8, { size: 11.5, w: 650, color: theme.c(win ? 'good' : S.end ? (GOOD_END.includes(S.end) ? 'good' : NEUTRAL_END.includes(S.end) ? 'ink-2' : 'critical') : 'ink-2') });
+      const wb = { x: b.x, y: b.y + 18, w: b.w, h: Math.max(40, b.h - 18) };
+      NA.rlEnvs.draw(ctx, wb, d.world, S.snap, theme, { k: d.nA, now: L.now, small: wb.w < 330 });
+      if (win) { ctx.strokeStyle = theme.c('good'); ctx.lineWidth = 2.5; NA.rr(ctx, wb.x + 1.5, wb.y + 1.5, wb.w - 3, wb.h - 3, 8); ctx.stroke(); }
+    });
+  }
+  /* Which did better? (lab-builder.js askPref): the two tries of a pair side by side (one above the other when narrow),
+     replayed from their pictures together; each says how many moves it has made and, once over, how it ended. Not
+     their returns: you judge by what you see. */
+  function drawPrefPair(ctx, r, L) {
+    const S = L.prefShow, d = L.data, wide = r.w > 520, gap = 14, top = 22, tries = [S.pair.A, S.pair.B];
+    text(ctx, fit(ctx, `Which did better? Pair ${S.pair.n}: the same start, played twice`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: theme.c('ink') });
+    const half = wide ? (r.w - gap) / 2 : (r.h - top - gap) / 2;
+    const boxes = wide ? [{ x: r.x, y: r.y + top, w: half, h: r.h - top }, { x: r.x + half + gap, y: r.y + top, w: half, h: r.h - top }]
+      : [{ x: r.x, y: r.y + top, w: r.w, h: half }, { x: r.x, y: r.y + top + half + gap, w: r.w, h: half }];
+    tries.forEach((T, k) => {
+      const b = boxes[k], last = T.snaps.length - 1, i = Math.min(S.at, last), over = S.at >= last;
+      const line = `${k ? 'The second try (a quarter of its moves at random)' : 'The first try'} · move ${fmtInt(Math.max(0, i))}${over ? ` · ${END_TEXT[T.end] || (T.end === 'time' ? 'time up' : 'over')}` : ''}`;
+      text(ctx, fit(ctx, line, b.w - 4, 11.5, 650), b.x + 2, b.y + 8, { size: 11.5, w: 650, color: theme.c(over ? 'ink' : 'ink-2') });
+      const wb = { x: b.x, y: b.y + 18, w: b.w, h: Math.max(40, b.h - 18) };
+      NA.rlEnvs.draw(ctx, wb, d.world, T.snaps[i], theme, { k: d.nA, now: L.now, small: wb.w < 330 });
+      ctx.strokeStyle = theme.c(k ? 's2' : 's1', 0.8); ctx.lineWidth = 2; NA.rr(ctx, wb.x + 1, wb.y + 1, wb.w - 2, wb.h - 2, 8); ctx.stroke();
+    });
+  }
   function drawControl(ctx, r, L) {
+    if (L.prefShow) { L.hits = []; drawPrefPair(ctx, r, L); return; }
+    if (L.race) { L.hits = []; drawRace(ctx, r, L); return; }
     const d = L.data, D = L.demo, ev = L.evo, Wd = NA.rlEnvs.WORLDS[d.world] || {}, BD = NA.builderDepth && L.depth ? NA.builderDepth : null;
     if (!D || !D.snap) { drawWorldStill(ctx, r, d); return; }
     L.hits = [];
     if (BD) BD.observe(L); // a new generation: its styles and how varied it is, for the views that show them
-    const nA = d.nA, val = D.out && d.output.k > nA, wide = r.w > 520, top = 22, nRows = nA + (val ? 1 : 0);
+    const nA = d.cont ? d.dA : d.nA, val = D.out && (d.cont ? d.method === 'gauss' : d.output.k > nA), wide = r.w > 520, top = 22, nRows = nA + (val ? 1 : 0);
     const view = L.you ? 'best' : BD ? BD.view(L, wide) : L.evoView === 'generation' ? 'generation' : L.evoView === 'grid' && !wide ? 'grid' : 'best';
+    // the value map, where it went (builder-rlx.js): the whole picture
+    if ((view === 'map' || view === 'visits') && NA.rlx) { NA.rlx.draw(view, ctx, r, L); return; }
+    if ((view === 'neatnet' || view === 'species' || view === 'shapes') && NA.neat) { NA.neat.draw(view, ctx, r, L); return; }
     if (!wide && ev && (view === 'grid' || view === 'family' || view === 'styles')) {
       // MAP-Elites' grid (a tap on a cell watches that style), the family line, the map of styles: the whole picture
       if (view === 'grid') { const side = Math.max(60, Math.min(r.w - 22, r.h - 44)); drawGrid(ctx, { x: r.x + Math.max(0, (r.w - side - 22) / 2), y: r.y, w: side + 22, h: r.h }, L, ev, Wd); }
@@ -462,7 +504,7 @@
     const ret = D.ret || 0, gen = view === 'generation' && ev && ev.last && Wd.trace ? ghostsNow(L, ev, Wd) : null;
     if (gen) text(ctx, fit(ctx, `Generation ${fmtInt(ev.last.gen + 1)}: all ${ev.last.members.length} members at once, from the same start`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: theme.c('ink-2') });
     // (who has the controls: you since you jumped in, the network since you handed back)
-    else text(ctx, fit(ctx, `${L.you ? (D.took ? `You took over at move ${fmtInt(D.took)} · ` : 'You play · ') : D.gave ? `The network again from move ${fmtInt(D.gave)} · ` : L.watchCell !== null && L.watchCell !== undefined && ev && ev.archive ? 'One style’s elite · ' : view === 'generation' && ev ? 'The best of the last generation · ' : ''}Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(GOOD_END.includes(D.end) ? 'good' : NEUTRAL_END.includes(D.end) ? 'ink-2' : 'critical') : theme.c('ink-2') });
+    else text(ctx, fit(ctx, `${D.lookBack ? `Looking back: move ${fmtInt(D.lookBack.at)} of ${fmtInt(D.lookBack.of)} · ` : ''}${L.you ? (D.took ? `You took over at move ${fmtInt(D.took)} · ` : 'You play · ') : D.gave ? `The network again from move ${fmtInt(D.gave)} · ` : L.watchCell !== null && L.watchCell !== undefined && ev && ev.archive ? 'One style’s elite · ' : view === 'generation' && ev ? 'The best of the last generation · ' : ''}Episode ${D.ep} · move ${D.t || 0} · return ${fmt(ret, ret === Math.round(ret) ? 0 : 2)}${D.end ? ` · ${END_TEXT[D.end] || D.end}` : ''}`, r.w - 4, 12, 650), r.x + 2, r.y + 9, { size: 12, w: 650, color: D.end ? theme.c(GOOD_END.includes(D.end) ? 'good' : NEUTRAL_END.includes(D.end) ? 'ink-2' : 'critical') : theme.c('ink-2') });
     // under the world, where the episode's return came from, term by term (for worlds whose steps report the reward table's parts)
     const rewH = BD && !gen && BD.hasRewards(L) && wr.h >= (wide ? 200 : 170) ? 58 : 0, world = rewH ? { x: wr.x, y: wr.y, w: wr.w, h: wr.h - rewH - 8 } : wr;
     NA.rlEnvs.draw(ctx, world, d.world, D.snap, theme, { k: nA, ghosts: gen || undefined, ghostsOnly: !!gen && d.world !== 'arena', now: L.now });
@@ -484,7 +526,10 @@
   }
   // the outputs: Q-values or scores (signed, around a zero line), or probabilities (0 to 1); returns the height used
   function drawOutputs(ctx, br, L, rowH) {
-    const d = L.data, D = L.demo, nA = d.nA, val = D.out && d.output.k > nA, M = d.method, probs = D.out && (M === 'pg' || M === 'a2c' || M === 'ppo') ? NA.brl.softmax(D.out, nA) : null;
+    if (L.data.cont) return drawNumbers(ctx, br, L, rowH);
+    const d = L.data, D0 = L.demo, nA = d.nA, val = D0.out && d.output.k > nA, M = d.method, probs = D0.out && (M === 'pg' || M === 'a2c' || M === 'ppo') ? NA.brl.softmax(D0.out, nA) : null;
+    // (dueling: the bars are the Q-values, from the value and the advantages; the value is the critic's line below)
+    const D = d.duel && D0.out ? Object.assign(Object.create(D0), { out: Float64Array.from([...NA.brl.qValues(D0.out, nA, true), D0.out[nA]]) }) : D0;
     text(ctx, fit(ctx, L.you ? (D.out ? 'What the network would do here (your move in colour)' : D.end ? 'Between episodes' : 'Your moves (train it to compare)') : !D.out ? (D.end ? 'Between episodes' : 'Random moves: not trained yet') : M === 'dqn' ? 'Q-values: the reward it expects for each move' : probs ? 'The probability of each move' : 'Its score for each move: the highest is the one it picks', br.w, 11, 650), br.x, br.y + 4, { size: 11, w: 650, color: theme.c('muted') });
     const lab = Math.min(110, br.w * 0.38), bx = br.x + lab + 6, bw = br.w - lab - 6 - 52, y0 = br.y + 18, inset = rowH >= 18 ? 4 : 3;
     // Q-values from a zero line (their sign means something); evolution's move scores, which only rank the moves, from
@@ -511,6 +556,30 @@
     if (D.out && !probs && lo < 0) { ctx.strokeStyle = theme.c('ink-2', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(Math.round(z) + 0.5, y0 + 2); ctx.lineTo(Math.round(z) + 0.5, y0 + nA * rowH - 2); ctx.stroke(); }
     if (val) text(ctx, `The critic’s value of this state: ${fmt(D.out[nA], 2)}`, br.x, y0 + nA * rowH + rowH / 2, { size: 11.5, color: theme.c('ink-2') });
     return 18 + (nA + (val ? 1 : 0)) * rowH;
+  }
+  /* A world set by numbers (SAC, TD3, PPO with a Gaussian policy): each number the network sets now, from −1 to 1
+     around a middle line, with its name; for SAC its spread too (how far its tries stray from the middle), for the
+     Gaussian PPO the spread it learned; the critic's value when it has one. While you play, your move is named. */
+  function drawNumbers(ctx, br, L, rowH) {
+    const d = L.data, D = L.demo, n = d.dA, M = d.method, val = D.out && M === 'gauss', a = D.out ? NA.brl.contMove(M, D.out, n) : null;
+    text(ctx, fit(ctx, L.you ? (D.out ? 'What the network would set here (you are playing with moves)' : 'Your moves (train it to compare)') : !D.out ? (D.end ? 'Between episodes' : 'Random moves: not trained yet') : 'The numbers it sets now, from −1 to 1', br.w, 11.5, 600), br.x, br.y + 8, { size: 11.5, w: 600, color: theme.c('ink-2') });
+    const lab = Math.min(110, br.w * 0.38), bx = br.x + lab + 6, bw = br.w - lab - 6 - 52, y0 = br.y + 18, inset = rowH >= 18 ? 4 : 3, X = (v) => bx + ((v + 1) / 2) * bw, z = X(0);
+    for (let k = 0; k < n; k++) {
+      const y = y0 + k * rowH;
+      text(ctx, fit(ctx, d.cActions[k], lab, 11.5, 600), br.x, y + rowH / 2, { size: 11.5, w: 600, color: theme.c('ink') });
+      ctx.fillStyle = theme.c('line', 0.5); NA.rr(ctx, bx, y + inset, bw, rowH - 2 * inset, 3); ctx.fill();
+      if (a) {
+        // (the spread: SAC's from its outputs, the Gaussian PPO's learned beside the network)
+        const ls = M === 'sac' ? Math.max(-5, Math.min(2, D.out[n + k])) : M === 'gauss' && L.agent && L.agent.logStd ? L.agent.logStd[k] : null;
+        if (ls !== null) { const mu = M === 'sac' ? D.out[k] : a[k], sg = Math.exp(ls), lo = M === 'sac' ? Math.tanh(mu - sg) : Math.max(-1, mu - sg), hi = M === 'sac' ? Math.tanh(mu + sg) : Math.min(1, mu + sg); ctx.fillStyle = theme.c('s1', 0.22); NA.rr(ctx, X(lo), y + inset, Math.max(2, X(hi) - X(lo)), rowH - 2 * inset, 3); ctx.fill(); }
+        const x0 = Math.min(z, X(a[k])), w = Math.max(2, Math.abs(X(a[k]) - z));
+        ctx.fillStyle = theme.c('s2', 0.95); NA.rr(ctx, x0, y + inset, w, rowH - 2 * inset, 3); ctx.fill();
+        text(ctx, fmt(a[k], 2), bx + bw + 6, y + rowH / 2, { size: 11, mono: true, color: theme.c('ink') });
+      }
+    }
+    ctx.strokeStyle = theme.c('ink-2', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(Math.round(z) + 0.5, y0 + 2); ctx.lineTo(Math.round(z) + 0.5, y0 + n * rowH - 2); ctx.stroke();
+    if (val) text(ctx, `The critic’s value of this state: ${fmt(D.out[n], 2)}`, br.x, y0 + n * rowH + rowH / 2, { size: 11.5, color: theme.c('ink-2') });
+    return 18 + (n + (val ? 1 : 0)) * rowH;
   }
   /* A generation, best first: each member's fitness as a bar (in the colours of the replay; hover one for what it
      is), how far it has got through judging them, how varied the population is generation by generation, and with
@@ -612,6 +681,7 @@
     const d = L.data;
     if (!d) return;
     if (d.error) return; // the lab shows the problem's error as text above the picture
+    if (NA.bgen && NA.bgen.owns(d.family)) return NA.bgen.draw(ctx, r, L);
     if (d.table) return drawTable(ctx, r, L);
     if (d.family === 'control') return drawControl(ctx, r, L);
     if (d.family === 'series') return drawSeries(ctx, r, L);
@@ -629,6 +699,7 @@
   V.preview = function (ctx, W, Hh, d) {
     ctx.clearRect(0, 0, W, Hh);
     if (!d || d.error) return;
+    if (NA.bgen && NA.bgen.owns(d.family)) { NA.bgen.preview(ctx, W, Hh, d); return; }
     if (d.table) { drawTable(ctx, { x: 0, y: 0, w: W, h: Hh }, { data: d, model: null }); return; }
     if (d.family === 'control') { drawWorldStill(ctx, { x: 4, y: 4, w: W - 8, h: Hh - 8 }, d); return; }
     if (d.family === 'series') { drawSeries(ctx, { x: 0, y: 0, w: W, h: Hh + 14 }, { data: d, model: null }); return; }

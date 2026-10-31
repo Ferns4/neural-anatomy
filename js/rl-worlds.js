@@ -122,6 +122,35 @@
   // the 4 tracks a model trained on random tracks is scored on: never trained on (seeds far from training's)
   const TEST_SEEDS = [7001, 7002, 7003, 7004];
   E.TRACKS = TRACKS;
+  /* A track of your own (the model builder's editor draws it): 5 to 16 points inside the field, 160 × 125 m, none on
+     top of the next; a loop at least 120 m round whose tightest bend leaves the car room (its middle line at least
+     5 m from the bend's centre, as tight as the Hairpins go) and which never runs into itself. { ok, why, at (where the trouble is), T (built) }. */
+  const OWN = new Map();
+  E.trackCheck = function (pts) {
+    const inField = (p) => Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[0] >= 4 && p[0] <= 156 && p[1] >= 4 && p[1] <= 121;
+    if (!Array.isArray(pts) || pts.length < 5 || pts.length > 16 || !pts.every(inField)) return { ok: false, why: 'A track needs 5 to 16 points, all inside the field.' };
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 3) return { ok: false, why: `Points ${i + 1} and ${((i + 1) % pts.length) + 1} are on top of each other: move one away.`, at: a };
+    }
+    const key = pts.map((p) => p.join(',')).join(';');
+    let T = OWN.get(key);
+    if (!T) { T = buildTrack(pts.map((p) => [+p[0], +p[1]]), 'Your own'); OWN.set(key, T); if (OWN.size > 40) OWN.delete(OWN.keys().next().value); }
+    if (T.L < 120) return { ok: false, why: `It is only ${Math.round(T.L)} m round: a track needs 120 m at least.`, T };
+    let k = 0;
+    for (let i = 1; i < T.N; i++) if (Math.abs(T.curv[i]) > Math.abs(T.curv[k])) k = i;
+    if (T.minR < HW + 0.5) return { ok: false, why: `A bend is too tight: its middle line turns ${T.minR.toFixed(1)} m from the bend’s centre, and the car needs ${HW + 0.5} m. Spread the points there.`, at: [T.cx[k], T.cy[k]], T };
+    // running into itself: two places far apart along the way round, nearer each other than the track is wide
+    const near = (2 * HW + 1) ** 2;
+    for (let i = 0; i < T.N; i += 2) {
+      for (let j = i + 2; j < T.N; j += 2) {
+        if (Math.min(j - i, T.N - j + i) * T.ds < 30) continue;
+        const dx = T.cx[i] - T.cx[j], dy = T.cy[i] - T.cy[j];
+        if (dx * dx + dy * dy < near) return { ok: false, why: 'It runs into itself: two parts of the track come closer than its width. Move them apart.', at: [(T.cx[i] + T.cx[j]) / 2, (T.cy[i] + T.cy[j]) / 2], T };
+      }
+    }
+    return { ok: true, T };
+  };
 
   /* The car: speed builds toward 24 m/s with the throttle and drops with the brake (never below 3); steering turns
      it at up to 1.6 rad/s, but never sharper than its grip allows (14 m/s² sideways: at speed, a bend has to be
@@ -137,11 +166,13 @@
   class Track {
     constructor(o = {}) {
       this.view = o.view === 'camera' ? 'camera' : 'rays';
-      this.trackId = TRACKS[o.track] || o.track === 'random' ? o.track : 'esses'; this.random = this.trackId === 'random';
-      this.track = this.random ? randomTrack(TEST_SEEDS[0]) : trackOf(this.trackId);
+      const own = o.track === 'own' ? E.trackCheck(o.pts) : null; // (a track of your own, when it works)
+      this.trackId = own && own.ok ? 'own' : TRACKS[o.track] || o.track === 'random' ? o.track : 'esses'; this.random = this.trackId === 'random';
+      this.track = this.random ? randomTrack(TEST_SEEDS[0]) : own && own.ok ? own.T : trackOf(this.trackId);
       this.laps = o.laps > 0 ? clamp(Math.round(o.laps), 1, 20) : 4; this.steps = o.steps > 0 ? Math.min(o.steps, 6000) : 0; this.nA = 4;
       this.vmax = o.vmax > VMIN ? Math.min(o.vmax, 60) : VMAX; this.grip = o.grip > 0 ? Math.min(o.grip, 60) : GRIP; this.range = o.range > 0 ? Math.min(o.range, 100) : RANGE;
       this.actions = ['steer left', 'straight on', 'steer right', 'brake'];
+      this.dA = 2; this.cActions = ['steering', 'throttle']; // (continuous: steering −1 left to 1 right; throttle 1 full, below 0 the brake)
       if (this.view === 'camera') { this.input = { kind: 'image', c: 2, h: 16, w: 16 }; this.obsSize = 512; this.obsNames = NA.range(512).map((i) => (i < 256 ? `track at (${i % 16}, ${Math.floor(i / 16)})` : 'speed')); }
       else { this.input = { kind: 'vector', dim: 8 }; this.obsSize = 8; this.obsNames = [...RAY_NAMES, 'speed']; }
       this.rays = new Float32Array(7);
@@ -168,6 +199,8 @@
       o[7] = this.v / this.vmax;
       return o;
     }
+    // where the car is in the track's box, 0 to 1 each way (one track only: on random tracks, none)
+    where() { if (this.random) return null; const [x0, y0, x1, y1] = this.track.box; return [(this.x - x0) / (x1 - x0), (this.y - y0) / (y1 - y0)]; }
     // how far it is across the track (−1 at the left wall, 1 at the right) and its heading to the track's way round
     side() { return sideAt(this.track, this.x, this.y, this.k) / HW; }
     heading() { const T = this.track; return wrapAngle(this.th - Math.atan2(T.ty[this.k], T.tx[this.k])); }
@@ -186,8 +219,10 @@
       return o;
     }
     step(a) {
-      const T = this.track, gas = a !== 3, steer = a === 0 ? -1 : a === 2 ? 1 : 0;
-      if (gas) this.v += ACC * DT * (1 - this.v / this.vmax); else this.v = Math.max(VMIN, this.v - BRAKE * DT);
+      const T = this.track, ca = typeof a === 'number' ? null : a;
+      if (ca) a = ca[1] < -0.2 ? 3 : ca[0] < -0.33 ? 0 : ca[0] > 0.33 ? 2 : 1; // (the nearest move)
+      const gas = ca ? clamp(ca[1], -1, 1) : a !== 3 ? 1 : -1, steer = ca ? clamp(ca[0], -1, 1) : a === 0 ? -1 : a === 2 ? 1 : 0;
+      if (gas > 0) this.v += gas * ACC * DT * (1 - this.v / this.vmax); else this.v = Math.max(VMIN, this.v + gas * BRAKE * DT);
       this.th += steer * Math.min(STEER, this.grip / Math.max(this.v, 0.5)) * DT;
       this.x += this.v * Math.cos(this.th) * DT; this.y += this.v * Math.sin(this.th) * DT;
       this.t++; this.a = a;
@@ -209,13 +244,13 @@
       const rw = this.rw, progress = ds / T.L, center = Math.min(1, Math.abs(side) / HW), wall = Math.max(0, HW - Math.abs(side)), finished = this.end === 'finished';
       const parts = this.rf ? null : {};
       let r = 0;
-      if (this.rf) r = this.rf({ progress, speed: this.v, crashed: +crashed, lap: +lap, center, t: this.t, turn: steer, brake: +!gas, wall, ahead: this.rays[3], finished: +finished, laps: this.lap, side: clamp(side / HW, -1, 1), bend: this.bend(0) / DEG, heading: this.heading() / DEG });
+      if (this.rf) r = this.rf({ progress, speed: this.v, crashed: +crashed, lap: +lap, center, t: this.t, turn: steer, brake: gas < 0 ? -gas : 0, wall, ahead: this.rays[3], finished: +finished, laps: this.lap, side: clamp(side / HW, -1, 1), bend: this.bend(0) / DEG, heading: this.heading() / DEG });
       else {
         r = pay(parts, 'rProgress', rw.rProgress * progress, r); if (lap) r = pay(parts, 'rLap', rw.rLap, r); if (crashed) r = pay(parts, 'rCrash', rw.rCrash, r); r = pay(parts, 'rStep', rw.rStep, r);
         if (rw.rSpeed) r = pay(parts, 'rSpeed', rw.rSpeed * this.v, r);
         if (rw.rCenter) r = pay(parts, 'rCenter', rw.rCenter * center, r);
-        if (steer) r = pay(parts, 'rSteer', rw.rSteer, r);
-        if (!gas) r = pay(parts, 'rBrake', rw.rBrake, r);
+        if (steer) r = pay(parts, 'rSteer', rw.rSteer * Math.abs(steer), r);
+        if (gas < 0) r = pay(parts, 'rBrake', -rw.rBrake * gas, r); // (as hard as it brakes: all of it for the move Brake)
         if (wall < 2) r = pay(parts, 'rNearWall', rw.rNearWall, r);
         if (finished) r = pay(parts, 'rFinish', rw.rFinish, r);
       }
@@ -429,6 +464,7 @@
       this.maxSteps = o.steps > 0 ? Math.min(o.steps, 3000) : 300; this.thrust = (o.engine === 'strong' ? 3.5 : o.engine === 'weak' ? 1.8 : 2.4) * this.g + 1; this.fuelMax = o.fuel > 0 ? Math.min(o.fuel, 3000) : 150;
       this.padHalf = o.padWidth > 0 && o.padWidth !== 12 ? clamp(o.padWidth, 4, 40) / 2 : PAD; // half the pad's width, m
       this.view = 'state'; this.nA = 4; this.actions = ['nothing', 'main engine', 'turn left', 'turn right'];
+      this.dA = 2; this.cActions = ['main engine', 'turning']; // (continuous: the engine's throttle, off at 0 or below; turning −1 left to 1 right)
       this.input = { kind: 'vector', dim: 7 }; this.obsSize = 7;
       this.obsNames = ['across from the pad', 'height', 'speed across', 'speed up', 'tilt', 'spin', 'fuel left'];
       this.rw = E.rewardTable('lander', o); this.rf = E.rewardFormula('lander', o.rFormula); E.sensors(this, 'lander', o);
@@ -440,6 +476,8 @@
       this.rng = rng;
       this.pad = this.randomPad ? r.uniform(-20, 20) : 0;
       this.x = this.pad + r.uniform(-12, 12); this.y = 30; this.vx = r.uniform(-2, 2); this.vy = r.uniform(-2, 0); this.th = r.uniform(-0.3, 0.3); this.w = r.uniform(-0.2, 0.2);
+      // (a curriculum's level: lower, slower and straighter at first)
+      if ((this.level ?? 1) < 1) { const k = 0.25 + 0.75 * this.level; this.x = this.pad + (this.x - this.pad) * k; this.y = 8 + 22 * this.level; this.vx *= k; this.vy *= k; this.th *= k; this.w *= k; }
       this.windPhase = r.uniform(0, TAU); this.t = 0; this.end = null; this.a = null; this.engine = 0; this.burn = 0; this.landX = null; this.fuel = this.fuelMax;
       this.phi = this.potential(); this.trace = [this.x, this.y, this.th];
       return this.obs();
@@ -449,12 +487,14 @@
     rawObs() { return Float32Array.of((this.x - this.pad) / 20, this.y / 30, this.vx / 5, this.vy / 5, this.th / 0.6, this.w / 1.5, this.fuel / this.fuelMax); }
     feet() { const c = Math.cos(this.th), s = Math.sin(this.th); return [-FOOT, FOOT].map((lx) => [this.x + lx * c - LEG * s, this.y - lx * s - LEG * c]); }
     step(a) {
-      const dt = 0.08, main = a === 1 && this.fuel > 0, turn = a === 2 ? -1 : a === 3 ? 1 : 0;
+      const ca = typeof a === 'number' ? null : a;
+      if (ca) a = ca[0] > 0.5 ? 1 : ca[1] < -0.5 ? 2 : ca[1] > 0.5 ? 3 : 0; // (the nearest move)
+      const dt = 0.08, main = this.fuel > 0 ? (ca ? clamp(ca[0], 0, 1) : a === 1 ? 1 : 0) : 0, turn = ca ? clamp(ca[1], -1, 1) : a === 2 ? -1 : a === 3 ? 1 : 0;
       let ax = -0.04 * this.vx + this.windNow(), ay = -this.g - 0.04 * this.vy;
-      if (main) { ax += this.thrust * Math.sin(this.th); ay += this.thrust * Math.cos(this.th); this.burn++; this.fuel--; }
+      if (main) { ax += main * this.thrust * Math.sin(this.th); ay += main * this.thrust * Math.cos(this.th); this.burn += main; this.fuel = Math.max(0, this.fuel - main); }
       this.w = (this.w + turn * 2.6 * dt) * 0.985;
       this.vx += ax * dt; this.vy += ay * dt; this.x += this.vx * dt; this.y += this.vy * dt; this.th += this.w * dt;
-      this.t++; this.a = a; this.engine = main ? 1 : 0;
+      this.t++; this.a = a; this.engine = main;
       if (this.t % 2 === 0) this.trace.push(this.x, this.y, this.th);
       // touching down: a foot at or below the ground, or the body itself
       const F = this.feet(), touch = F.some(([fx, fy]) => fy <= this.ground(fx)) || this.y - 0.9 <= this.ground(this.x);
@@ -471,11 +511,11 @@
       const parts = this.rf ? null : {};
       let r = 0;
       if (this.rf) {
-        r = this.rf({ landed: +landed, crashed: +crashed, dist, speed, tilt: this.th / DEG, engine: +main, turn: Math.abs(turn), h: this.y, vx: this.vx, vy: this.vy, fuel: this.fuel / this.fuelMax, t: this.t, closer,
+        r = this.rf({ landed: +landed, crashed: +crashed, dist, speed, tilt: this.th / DEG, engine: main, turn: Math.abs(turn), h: this.y, vx: this.vx, vy: this.vy, fuel: this.fuel / this.fuelMax, t: this.t, closer,
           x: this.x - this.pad, spin: this.w / DEG, offpad: +offpad, away: +away, timeup: +timeup, ground: this.y - this.ground(this.x), wind: this.windNow() });
       } else {
-        if (landed) r = pay(parts, 'rLand', rw.rLand, r); if (crashed) r = pay(parts, 'rCrash', rw.rCrash, r); if (main) r = pay(parts, 'rFuel', rw.rFuel, r); r = pay(parts, 'rShape', rw.rShape * closer, r);
-        if (turn) r = pay(parts, 'rTurn', rw.rTurn, r);
+        if (landed) r = pay(parts, 'rLand', rw.rLand, r); if (crashed) r = pay(parts, 'rCrash', rw.rCrash, r); if (main) r = pay(parts, 'rFuel', rw.rFuel * main, r); r = pay(parts, 'rShape', rw.rShape * closer, r);
+        if (turn) r = pay(parts, 'rTurn', rw.rTurn * Math.abs(turn), r);
         if (rw.rTilt) r = pay(parts, 'rTilt', rw.rTilt * Math.abs(this.th / DEG), r);
         r = pay(parts, 'rStep', rw.rStep, r);
         if (offpad) r = pay(parts, 'rOffPad', rw.rOffPad, r);
@@ -539,9 +579,9 @@
   /* axes: what the two numbers of behavior() measure (MAP-Elites' grid); demoMs: a move every this many ms when the
      results play it (these move in small steps); trace: a whole generation can be drawn at once */
   Object.assign(E.WORLDS, {
-    track: { name: 'Race track', make: (o) => new Track(o), what: '7 distances to the walls and its speed, or a camera above it', goal: 'drive 4 laps without touching the walls', axes: ['average speed', 'side of the track it keeps'], demoMs: 40, trace: true },
+    track: { name: 'Race track', cont: true, make: (o) => new Track(o), what: '7 distances to the walls and its speed, or a camera above it', goal: 'drive 4 laps without touching the walls', axes: ['average speed', 'side of the track it keeps'], demoMs: 40, trace: true },
     arena: { name: 'Drone arena', make: (o) => new Arena(o), what: 'what each column of its view holds, a radar and its lives, or the picture itself', goal: 'destroy 10 drones before they reach it', axes: ['how much it walks', 'how often it fires'], demoMs: 70, trace: true },
-    lander: { name: 'Land a rocket', make: (o) => new Lander(o), what: 'where it is, how fast it moves, its tilt, spin and fuel', goal: 'touch down softly on the pad', axes: ['where it comes down', 'how much it burns'], demoMs: 40, trace: true },
+    lander: { name: 'Land a rocket', cont: true, make: (o) => new Lander(o), what: 'where it is, how fast it moves, its tilt, spin and fuel', goal: 'touch down softly on the pad', axes: ['where it comes down', 'how much it burns'], demoMs: 40, trace: true },
   });
   // =====================================================================================================
   // pictures

@@ -318,6 +318,8 @@
            with grow and prune starting small, a network with no hidden layer (the inputs straight to the outputs)
            and copies of it, so every neuron and layer it ends with is one evolution added */
         const small = this.grow && this.gopt.start === 'small', b0 = small ? [] : this.blocks, s0 = small ? this.nets.get([]).getWeights() : w0;
+        // (grow and prune: the family tree of shapes, each shape that appears with the one it came from)
+        if (this.grow) this.shapeTree = new Map([[Nets.key(b0), { key: Nets.key(b0), parent: null, gen: 0, units: unitsOf(b0), most: 0, best: -Infinity, last: 0 }]]);
         this.pop = NA.range(this.size).map((k) => { const w = Float32Array.from(s0); if (k) for (let i = 0; i < w.length; i++) w[i] += this.rng.gauss(0, 0.5); return { blocks: b0, w, op: k ? 'a copy moved at random' : small ? 'no hidden layer: the smallest network' : 'the network you built', born: 0, id: this.newId(), parents: [] }; });
         // novelty search: judged by how new its behaviour is (a world that measures none: by its return, as the genetic algorithm)
         this.novel = this.kind === 'novelty' && typeof this.world.behavior === 'function';
@@ -387,6 +389,8 @@
         prot: P[k].prot || undefined, acts: this.grow && this.gopt.ops.act ? P[k].blocks.map((b) => b.act || 'relu') : undefined })),
         fit[shown[0]], mean, this.novel ? null : best, extra);
       if (this.grow) this.last.shapes = extra.shapes;
+      // (the family tree: how many members each shape has had at most, its best fitness, when it was last seen)
+      if (this.shapeTree) { const count = new Map(); P.forEach((g, k) => { const key = Nets.key(g.blocks), q = this.shapeTree.get(key); if (!q) return; count.set(key, (count.get(key) || 0) + 1); q.best = Math.max(q.best, fit[k]); q.last = this.gen; }); for (const [key, c] of count) { const q = this.shapeTree.get(key); q.most = Math.max(q.most, c); } this.bestShape = Nets.key(best.blocks); }
       if (this.novel) this.champion(P[shown[0]], fit[shown[0]]);
       // the next generation: the best two unchanged (op null: passed on as they were), then children
       const next = [best, P[order[1]]].map((g) => Object.assign(this.copy(g), { op: null })), sens = new Map();
@@ -412,7 +416,15 @@
         this.mutate(child.w, this.mutation === 'safe' ? sens.get(ia) : null);
         child.op = mixed ? 'mixed and mutated' : 'mutated';
         // grow and prune: some of the children (a quarter unless set) are born with one change to their shape
-        if (this.grow && this.rng.next() < this.gopt.rate) { const r = EV.mutateArch(child, this.rng, this.gopt, this.io); if (r) Object.assign(child, r, { shapeGen: this.gen + 1 }); }
+        if (this.grow && this.rng.next() < this.gopt.rate) {
+          const r = EV.mutateArch(child, this.rng, this.gopt, this.io);
+          if (r) {
+            const from = Nets.key(child.blocks);
+            Object.assign(child, r, { shapeGen: this.gen + 1 });
+            const k = Nets.key(child.blocks);
+            if (this.shapeTree && !this.shapeTree.has(k) && this.shapeTree.size < 600) this.shapeTree.set(k, { key: k, parent: from, gen: this.gen + 1, units: unitsOf(child.blocks), most: 0, best: -Infinity, last: this.gen + 1, how: r.op || child.op });
+          }
+        }
         next.push(child);
       }
       // ERL: every few generations the DQN's network takes the place of the worst

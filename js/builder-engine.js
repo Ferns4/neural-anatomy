@@ -302,6 +302,12 @@
     rbf: { label: 'Radial basis', defaults: { units: 16, width: 0.5 } },
     maxout: { label: 'Maxout', defaults: { units: 16, pieces: 2 } },
     moe: { label: 'Mixture of experts', defaults: { experts: 4, units: 16, top: 2, act: 'relu' } },
+    upsample: { label: 'Upsample', defaults: { size: 2 } },
+    sample: { label: 'Sample (VAE)', defaults: { beta: 0.3 } },
+    graphconv: { label: 'Graph convolution', defaults: { units: 16, act: 'relu', agg: 'mean' } },
+    skip: { label: 'Skip connection', defaults: { back: 1, merge: 'add' } },
+    kan: { label: 'Kolmogorov–Arnold', defaults: { units: 8, grid: 6 } },
+    hopfield: { label: 'Hopfield memory', defaults: { memories: 16, beta: 4 } },
   };
   // squeeze-and-excitation's bottleneck: the channels divided by the ratio, rounded half up, at least 1 (in whole
   // numbers, so Python's (2C + r) // 2r gives the same)
@@ -315,6 +321,10 @@
     hinge: { id: 'hinge', label: 'Hinge', outputs: ['classes'] },
     mae: { id: 'mae', label: 'Absolute error', outputs: ['value'] },
     huber: { id: 'huber', label: 'Huber', outputs: ['value'] },
+    // a middle and a spread for each number (the first half of the outputs, then their log variances)
+    gauss: { id: 'gauss', label: 'Gaussian (middle and spread)', outputs: ['value'] },
+    // a mixture of bell curves: m weights (scores), m middles and m log spreads
+    mdn: { id: 'mdn', label: 'Mixture of bell curves', outputs: ['value'] },
   };
   const OPTIMIZERS = {
     sgd: { id: 'sgd', label: 'SGD' },
@@ -383,8 +393,9 @@
 
   /* What one block makes of the shape it receives: { out, params, problem }. When the block does not fit, out
      and params are what they would be once the suggested fix is in (or the input passed through unchanged when
-     there is no fix), so the blocks after it can still be checked. */
-  function blockShape(spec, inS) {
+     there is no fix), so the blocks after it can still be checked. hist: the input's shape and every block's output
+     before this one (where a skip connection reaches back to; none inside parallel branches). */
+  function blockShape(spec, inS, hist) {
     const ok = (out, params) => ({ out: out.slice(), params, problem: null });
     const fail = (reason, fix = null, out = inS, params = 0) => ({ out: out.slice(), params, problem: { reason, fix } });
     if (!spec || !own(BLOCKS, spec.type)) return fail(`"${spec && spec.type}" is not a kind of block this builder knows.`);
@@ -544,6 +555,51 @@
         if (kind === 3) return fail(`A mixture of experts needs a flat vector or a sequence, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
         return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
       }
+      case 'upsample': {
+        if (kind !== 3) return fail(`Upsampling makes a picture bigger, but this is ${describe(inS)}.`);
+        if (!isInt(s.size)) return fail('Upsampling needs a whole-number size, at least 1.');
+        const [C, H, W] = inS;
+        if (H * s.size > 128 || W * s.size > 128) return fail(`${s.size} × ${s.size} would make this picture (${shapeText(inS)}) larger than 128 × 128.`);
+        return ok([C, H * s.size, W * s.size], 0);
+      }
+      case 'sample':
+        if (kind !== 1) return fail(`Sample reads a flat vector of middles and spreads, but this is ${describe(inS)}.`, kind === 3 ? [{ type: 'flatten' }] : null, kind === 3 ? [Math.max(1, size(inS) >> 1)] : inS);
+        if (inS[0] < 2 || inS[0] % 2) return fail(`Sample needs an even number of inputs, a middle and a spread for each number it draws, but it is given ${inS[0]}: make the layer before it ${Math.max(2, inS[0] + (inS[0] % 2))} wide.`, null, [Math.max(1, inS[0] >> 1)]);
+        if (!(typeof s.beta === 'number' && s.beta >= 0)) return fail('Sample needs a weight β of at least 0 for its pull toward a bell curve.');
+        return ok([inS[0] / 2], 0);
+      case 'graphconv': {
+        if (kind !== 2 || inS[1] <= inS[0]) return fail(`A graph convolution reads a graph: a row for each node holding its features, then its links to the other nodes, but this is ${describe(inS)}.`);
+        if (!isInt(s.units)) return fail('A graph convolution needs a whole number of units, at least 1.');
+        if (!own(A, s.act)) return fail(unknownAct(s.act));
+        const N = inS[0], F = inS[1] - N;
+        return ok([N, s.units + N], F * s.units + s.units);
+      }
+      case 'kan': {
+        if (!isInt(s.units)) return fail('A Kolmogorov–Arnold layer needs a whole number of units, at least 1.');
+        if (!isInt(s.grid, 2) || s.grid > 32) return fail('A Kolmogorov–Arnold layer needs 2 to 32 bumps on each edge.');
+        const p = (F) => s.units * F * (s.grid + 1) + s.units;
+        if (kind === 3) return fail(`A Kolmogorov–Arnold layer needs a flat vector or a sequence, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [s.units], p(size(inS)));
+        return ok(kind === 1 ? [s.units] : [inS[0], s.units], p(inS[kind - 1]));
+      }
+      case 'hopfield': {
+        if (!isInt(s.memories)) return fail('A Hopfield memory needs at least 1 pattern to remember.');
+        if (!(typeof s.beta === 'number' && s.beta > 0)) return fail('A Hopfield memory needs a sharpness β above 0.');
+        if (kind === 3) return fail(`A Hopfield memory compares a flat vector (or each position of a sequence) with its patterns, but this is ${describe(inS)}.`, [{ type: 'flatten' }], [size(inS)], s.memories * size(inS));
+        return ok(inS, s.memories * inS[kind - 1]);
+      }
+      case 'skip': {
+        if (!hist) return fail('A skip connection cannot go inside parallel branches (an empty branch is already one): put it in the main stack.');
+        const Bk = hist.length - 1;
+        if (Bk < 1) return fail('A skip connection needs a block before it to reach around.');
+        if (!isInt(s.back) || s.back > Bk) return fail(`A skip connection here reaches back 1 to ${Bk} block${Bk === 1 ? '' : 's'} (${Bk} is the model's input), not ${s.back}.`);
+        if (s.merge !== 'add' && s.merge !== 'concat') return fail(`"${s.merge}" is not a way to join a skip connection this builder knows (add or join).`);
+        const src = hist[Bk - s.back], from = s.back === Bk ? 'the input' : `block ${Bk - s.back}`;
+        if (s.merge === 'add') return sameShape(src, inS) ? ok(inS, 0) : fail(`To add ${from}'s output (${shapeText(src)}) it must have this one's shape (${shapeText(inS)}). Join them side by side instead, or reach back to a block of the same size.`);
+        if (src.length !== kind) return fail(`Joined outputs must be the same kind of data, but ${from} gives ${describe(src)} and this is ${describe(inS)}.`);
+        if (kind === 2 && src[0] !== inS[0]) return fail(`Joined sequences must have the same positions, but ${from} has ${src[0]} and this ${inS[0]}.`);
+        if (kind === 3 && (src[1] !== inS[1] || src[2] !== inS[2])) return fail(`Joined pictures must be the same size, but ${from}'s is ${src[1]} × ${src[2]} and this ${inS[1]} × ${inS[2]}: upsample or pool one of them.`);
+        return ok(kind === 1 ? [inS[0] + src[0]] : kind === 2 ? [inS[0], inS[1] + src[1]] : [inS[0] + src[0], inS[1], inS[2]], 0);
+      }
       case 'flatten':
         return ok([size(inS)], 0);
       case 'gap':
@@ -621,8 +677,10 @@
       return res;
     }
     let shape = inp.shape, params = inp.params;
+    const hist = [shape.slice()]; // (the input, then every block's output: where a skip connection reaches back to)
     for (const spec of blocks) {
-      const r = blockShape(spec, shape), e = { in: shape.slice(), out: r.out, params: r.params, problem: r.problem };
+      const r = blockShape(spec, shape, hist), e = { in: shape.slice(), out: r.out, params: r.params, problem: r.problem };
+      hist.push(r.out.slice());
       if (r.branches) e.branches = r.branches; // parallel branches: the shapes of the blocks in each
       res.shapes.push(e);
       if (r.problem) res.ok = false;
@@ -2095,9 +2153,218 @@
     }
   }
 
+  /* Upsample: each pixel repeated size × size times (nearest neighbour), to bring a pooled picture back to its size,
+     as the second half of a U-Net does. */
+  class Upsample {
+    constructor(spec, cfg, inS, outS, ctx) { const [C, H, W] = inS; Object.assign(this, { type: 'upsample', spec, inShape: inS, outShape: outS, C, H, W, s: cfg.size, params: [], mem: new Mem(ctx.Arr) }); }
+    alloc(B) { const { C, H, W, s } = this; this.out = this.mem.view('out', B * C * H * s * W * s); this.dx = this.mem.view('dx', B * C * H * W); }
+    each(B, fn) { const { C, H, W, s } = this, H2 = H * s, W2 = W * s; for (let bc = 0; bc < B * C; bc++) for (let y = 0; y < H2; y++) { const yi = Math.floor(y / s); for (let x = 0; x < W2; x++) fn((bc * H2 + y) * W2 + x, (bc * H + yi) * W + Math.floor(x / s)); } }
+    forward(x, B) { const out = this.out; this.each(B, (o, i) => { out[o] = x[i]; }); return out; }
+    backward(dy, B, needDx) { if (!needDx) return null; const dx = this.dx; dx.fill(0); this.each(B, (o, i) => { dx[i] += dy[o]; }); return dx; }
+  }
+
+  /* Sample (a VAE's middle): its input is two halves, the middles μ and the log variances of a bell curve per number;
+     while training it gives μ + σ·ε (ε drawn from N(0, 1): the reparameterisation trick, so the gradient flows
+     through), otherwise μ. It adds β × the KL divergence from N(0, 1), summed over its numbers and averaged over the
+     batch, to the loss (this.kl), pulling the codes toward a bell curve that new ones can be drawn from. */
+  class Sample {
+    constructor(spec, cfg, inS, outS, ctx) { Object.assign(this, { type: 'sample', spec, inShape: inS, outShape: outS, k: outS[0], beta: cfg.beta > 0 ? cfg.beta : 0, model: ctx.model, params: [], mem: new Mem(Float64Array), kl: 0 }); }
+    alloc(B) { const k = this.k, m = this.mem; this.out = m.view('out', B * k); this.eps = m.view('eps', B * k); this.dx = m.view('dx', B * 2 * k); }
+    forward(x, B, train) {
+      const k = this.k, out = this.out, eps = this.eps;
+      let kl = 0;
+      this.x = x;
+      for (let b = 0; b < B; b++) for (let j = 0; j < k; j++) {
+        const mu = x[b * 2 * k + j], lv = Math.max(-8, Math.min(8, x[b * 2 * k + k + j])), e = train ? this.model.rng.gauss() : 0;
+        eps[b * k + j] = e; out[b * k + j] = mu + Math.exp(0.5 * lv) * e;
+        kl += 0.5 * (mu * mu + Math.exp(lv) - 1 - lv);
+      }
+      this.kl = this.beta * kl / B;
+      return out;
+    }
+    backward(dy, B, needDx) {
+      if (!needDx) return null;
+      const k = this.k, x = this.x, dx = this.dx, eps = this.eps, s = this.beta / B;
+      for (let b = 0; b < B; b++) for (let j = 0; j < k; j++) {
+        const mu = x[b * 2 * k + j], raw = x[b * 2 * k + k + j], lv = Math.max(-8, Math.min(8, raw)), g = dy[b * k + j];
+        dx[b * 2 * k + j] = g + s * mu;
+        dx[b * 2 * k + k + j] = raw > -8 && raw < 8 ? g * 0.5 * Math.exp(0.5 * lv) * eps[b * k + j] + s * 0.5 * (Math.exp(lv) - 1) : 0;
+      }
+      return dx;
+    }
+  }
+
+  /* Graph convolution (message passing; after Kipf and Welling, 2017): each node's new features are a Dense layer of
+     the mean (or the sum) of its own features and its neighbours'. A graph comes as positions (its nodes) × features, the
+     last N numbers of each row being that node's row of the adjacency matrix (1 where two nodes are linked); they are
+     passed on unchanged after the new features, so the next graph layer can read them too. */
+  class GraphConv {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const N = inS[0], F = inS[1] - N, U = outS[1] - N;
+      Object.assign(this, { type: 'graphconv', spec, inShape: inS, outShape: outS, N, F, U, sum: cfg.agg === 'sum', scr: ctx.scr, mem: new Mem(ctx.Arr), fn: activation(cfg.act, ctx.f64) });
+      this.W = param(ctx, 'weights', [U, F], true); this.b = param(ctx, 'bias', [U], false); this.params = [this.W, this.b];
+      for (let j = 0; j < U; j++) gauss(ctx, this.W, initSd(ctx.init, F, this.fn.he), j * F, (j + 1) * F);
+    }
+    alloc(B) { const m = this.mem, R = B * this.N; this.h = m.view('h', R * this.F); this.z = m.view('z', R * this.U); this.a = m.view('a', R * this.U); this.dA = m.view('dA', R * this.U); this.dz = m.view('dz', R * this.U); this.dh = m.view('dh', R * this.F); this.out = m.view('out', R * (this.U + this.N)); this.dx = m.view('dx', R * (this.F + this.N)); this.deg = m.view('deg', R); }
+    // each node and the nodes it is linked to (on the same row of the adjacency)
+    linked(x, b, i, fn) { const { N, F } = this, row = (b * N + i) * (F + N) + F; fn(i); for (let j = 0; j < N; j++) if (j !== i && x[row + j] > 0.5) fn(j); }
+    forward(x, B) {
+      const { N, F, U } = this, Fi = F + N, Fo = U + N, h = this.h;
+      this.x = x;
+      for (let b = 0; b < B; b++) for (let i = 0; i < N; i++) {
+        const hi = (b * N + i) * F;
+        let deg = 0;
+        h.fill(0, hi, hi + F);
+        this.linked(x, b, i, (j) => { deg++; const xj = (b * N + j) * Fi; for (let f = 0; f < F; f++) h[hi + f] += x[xj + f]; });
+        this.deg[b * N + i] = deg;
+        if (!this.sum) for (let f = 0; f < F; f++) h[hi + f] /= deg;
+      }
+      linear(this.z, h, this.W.w, this.b.w, B * N, F, U);
+      activate(this.a, this.z, B * N * U, this.fn);
+      const out = this.out, a = this.a;
+      for (let r = 0; r < B * N; r++) { for (let u = 0; u < U; u++) out[r * Fo + u] = a[r * U + u]; for (let j = 0; j < N; j++) out[r * Fo + U + j] = x[r * Fi + F + j]; }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { N, F, U } = this, Fi = F + N, Fo = U + N, R = B * N, dA = this.dA;
+      for (let r = 0; r < R; r++) for (let u = 0; u < U; u++) dA[r * U + u] = dy[r * Fo + u];
+      activateBack(this.dz, dA, this.z, this.a, R * U, this.fn);
+      linearBack(this.scr, needDx ? this.dh : null, false, this.W.g, this.b.g, this.dz, this.h, this.W.w, R, F, U);
+      if (!needDx) return null;
+      const dx = this.dx, dh = this.dh, x = this.x;
+      dx.fill(0);
+      for (let b = 0; b < B; b++) for (let i = 0; i < N; i++) {
+        const hi = (b * N + i) * F, w = this.sum ? 1 : 1 / this.deg[b * N + i];
+        this.linked(x, b, i, (j) => { const xj = (b * N + j) * Fi; for (let f = 0; f < F; f++) dx[xj + f] += dh[hi + f] * w; });
+        for (let j = 0; j < N; j++) dx[(b * N + i) * Fi + F + j] += dy[(b * N + i) * Fo + U + j];
+      }
+      return dx;
+    }
+  }
+
+  /* Skip connection: adds (or joins side by side) the output of an earlier block to what it receives. back says how
+     far: 1 is the input of the block before it (a residual around that block), 2 the input of the one before that,
+     and so on, as far back as the model's input. Its gradient goes both ways: on to the block before it, and to the
+     earlier output, where the model adds it to the gradient arriving there (Model.backward). */
+  class Skip {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const src = ctx.index - 1 - cfg.back, srcS = src < 0 ? ctx.inShape : ctx.chk.shapes[src].out, cat = cfg.merge === 'concat';
+      // joined: each row (a vector's one, a sequence's positions; an image's channels follow one another) gets the earlier row after it
+      const R = inS.length === 2 ? inS[0] : 1;
+      Object.assign(this, { type: 'skip', spec, inShape: inS, outShape: outS, model: ctx.model, src, cat, R, w1: size(inS) / R, w2: size(srcS) / R, n: size(inS), ns: size(srcS), params: [], mem: new Mem(ctx.Arr) });
+    }
+    alloc(B) { this.out = this.mem.view('out', B * size(this.outShape)); this.dx = this.mem.view('dx', B * this.n); this.ds = this.mem.view('ds', B * this.ns); }
+    forward(x, B) {
+      const s = this.model.outAt(this.src), out = this.out;
+      if (!this.cat) { for (let i = 0, n = B * this.n; i < n; i++) out[i] = x[i] + s[i]; return out; }
+      const { R, w1, w2 } = this, w = w1 + w2;
+      for (let r = 0; r < B * R; r++) { for (let j = 0; j < w1; j++) out[r * w + j] = x[r * w1 + j]; for (let j = 0; j < w2; j++) out[r * w + w1 + j] = s[r * w2 + j]; }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const ds = this.ds, { R, w1, w2 } = this, w = w1 + w2;
+      if (!this.cat) { for (let i = 0, n = B * this.n; i < n; i++) ds[i] = dy[i]; this.model.pend(this.src, ds, B * this.ns); return needDx ? dy : null; }
+      const dx = this.dx;
+      for (let r = 0; r < B * R; r++) { for (let j = 0; j < w1; j++) dx[r * w1 + j] = dy[r * w + j]; for (let j = 0; j < w2; j++) ds[r * w2 + j] = dy[r * w + w1 + j]; }
+      this.model.pend(this.src, ds, B * this.ns);
+      return needDx ? dx : null;
+    }
+  }
+
+  /* Kolmogorov–Arnold layer (KAN; Liu and others, 2024): every edge from an input to a unit has a function of its own,
+     learned: a weight on SiLU(x), plus a sum of G bumps (Gaussians spread evenly over −2…2) each with a weight of its
+     own. A unit adds up its edges' functions and a bias. Where a dense layer learns numbers on fixed bends, this learns
+     the bends. */
+  class KAN {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const F = inS[inS.length - 1], U = cfg.units, G = cfg.grid;
+      Object.assign(this, { type: 'kan', spec, inShape: inS, outShape: outS, F, U, G, rows: inS.length === 2 ? inS[0] : 1, scr: ctx.scr, mem: new Mem(ctx.Arr), h: 4 / Math.max(1, G - 1) });
+      this.cen = Array.from({ length: G }, (_, g) => (G > 1 ? -2 + (4 * g) / (G - 1) : 0));
+      this.Wb = param(ctx, 'base weights', [U, F], true); this.C = param(ctx, 'bump weights', [U, F, G], true); this.b = param(ctx, 'bias', [U], false);
+      this.params = [this.Wb, this.C, this.b];
+      gauss(ctx, this.Wb, initSd(ctx.init, F, false)); gauss(ctx, this.C, 0.1 / Math.sqrt(F));
+    }
+    alloc(B) { const m = this.mem, R = B * this.rows; this.out = m.view('out', R * this.U); this.sx = m.view('sx', R * this.F); this.phi = m.view('phi', R * this.F * this.G); this.dx = m.view('dx', R * this.F); }
+    forward(x, B) {
+      const { F, U, G, h, cen } = this, R = B * this.rows, out = this.out, sx = this.sx, phi = this.phi, Wb = this.Wb.w, C = this.C.w, bb = this.b.w;
+      this.x = x;
+      for (let r = 0; r < R; r++) {
+        for (let i = 0; i < F; i++) { const v = x[r * F + i]; sx[r * F + i] = v / (1 + Math.exp(-v)); for (let g = 0; g < G; g++) { const t = (v - cen[g]) / h; phi[(r * F + i) * G + g] = Math.exp(-t * t); } }
+        for (let j = 0; j < U; j++) {
+          let s = bb[j];
+          for (let i = 0; i < F; i++) { s += Wb[j * F + i] * sx[r * F + i]; const c = (j * F + i) * G, p = (r * F + i) * G; for (let g = 0; g < G; g++) s += C[c + g] * phi[p + g]; }
+          out[r * U + j] = s;
+        }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { F, U, G, h, cen } = this, R = B * this.rows, x = this.x, sx = this.sx, phi = this.phi, Wb = this.Wb.w, C = this.C.w, dWb = this.Wb.g, dC = this.C.g, db = this.b.g, dx = this.dx;
+      if (needDx) dx.fill(0);
+      for (let r = 0; r < R; r++) for (let j = 0; j < U; j++) {
+        const g0 = dy[r * U + j];
+        if (!g0) continue;
+        db[j] += g0;
+        for (let i = 0; i < F; i++) {
+          const c = (j * F + i) * G, p = (r * F + i) * G, v = x[r * F + i];
+          dWb[j * F + i] += g0 * sx[r * F + i];
+          for (let g = 0; g < G; g++) dC[c + g] += g0 * phi[p + g];
+          if (needDx) {
+            const sg = 1 / (1 + Math.exp(-v));
+            let d = Wb[j * F + i] * (sg + v * sg * (1 - sg));
+            for (let g = 0; g < G; g++) d += C[c + g] * phi[p + g] * (-2 * (v - cen[g]) / (h * h));
+            dx[r * F + i] += g0 * d;
+          }
+        }
+      }
+      return needDx ? dx : null;
+    }
+  }
+
+  /* Hopfield memory (a modern Hopfield network; Ramsauer and others, 2020): M patterns of its own, learned. What comes in
+     is compared with each (a dot product, times β); a softmax makes the similarities weights, and out comes the weighted
+     mix of the patterns: with a large β, the stored pattern most like the input. Attention whose keys and values are
+     its memories. */
+  class Hopfield {
+    constructor(spec, cfg, inS, outS, ctx) {
+      const F = inS[inS.length - 1], M = cfg.memories;
+      Object.assign(this, { type: 'hopfield', spec, inShape: inS, outShape: outS, F, M, beta: cfg.beta, rows: inS.length === 2 ? inS[0] : 1, mem: new Mem(ctx.Arr) });
+      this.Xi = param(ctx, 'patterns', [M, F], true); this.params = [this.Xi];
+      gauss(ctx, this.Xi, 1 / Math.sqrt(F));
+    }
+    alloc(B) { const m = this.mem, R = B * this.rows; this.out = m.view('out', R * this.F); this.p = m.view('p', R * this.M); this.dx = m.view('dx', R * this.F); this.dp = m.view('dp', this.M); }
+    forward(x, B) {
+      const { F, M, beta } = this, R = B * this.rows, Xi = this.Xi.w, p = this.p, out = this.out;
+      this.x = x;
+      for (let r = 0; r < R; r++) {
+        let mx = -Infinity;
+        for (let m = 0; m < M; m++) { let s = 0; for (let i = 0; i < F; i++) s += x[r * F + i] * Xi[m * F + i]; s *= beta; p[r * M + m] = s; if (s > mx) mx = s; }
+        let z = 0;
+        for (let m = 0; m < M; m++) { const e = Math.exp(p[r * M + m] - mx); p[r * M + m] = e; z += e; }
+        for (let i = 0; i < F; i++) out[r * F + i] = 0;
+        for (let m = 0; m < M; m++) { const q = (p[r * M + m] /= z); for (let i = 0; i < F; i++) out[r * F + i] += q * Xi[m * F + i]; }
+      }
+      return out;
+    }
+    backward(dy, B, needDx) {
+      const { F, M, beta } = this, R = B * this.rows, x = this.x, Xi = this.Xi.w, dXi = this.Xi.g, p = this.p, dp = this.dp, dx = this.dx;
+      for (let r = 0; r < R; r++) {
+        let dot = 0;
+        for (let m = 0; m < M; m++) { let s = 0; for (let i = 0; i < F; i++) s += dy[r * F + i] * Xi[m * F + i]; dp[m] = s; dot += p[r * M + m] * s; }
+        if (needDx) for (let i = 0; i < F; i++) dx[r * F + i] = 0;
+        for (let m = 0; m < M; m++) {
+          const q = p[r * M + m], ds = q * (dp[m] - dot) * beta;
+          for (let i = 0; i < F; i++) { dXi[m * F + i] += q * dy[r * F + i] + ds * x[r * F + i]; if (needDx) dx[r * F + i] += ds * Xi[m * F + i]; }
+        }
+      }
+      return needDx ? dx : null;
+    }
+  }
+
   const LAYERS = { dense: Dense, activation: Act, dropout: Dropout, layernorm: LayerNormBlock, attention: Attention, transformer: Transformer, conv: Conv, pool: Pool, flatten: Flatten, gap: Gap,
     gated: Gated, batchnorm: BatchNorm, noise: Noise, fourier: Fourier, rnn: Recurrent, conv1d: Conv1d, position: Position, seqpool: SeqPool, patches: Patches, avgpool: AvgPool, parallel: Parallel,
-    sepconv: SepConv, se: SE, coords: Coords, augment: Augment, gmp: Gmp, attnpool: AttnPool, ssm: SSM, rbf: RBF, maxout: Maxout, moe: MoE };
+    sepconv: SepConv, se: SE, coords: Coords, augment: Augment, gmp: Gmp, attnpool: AttnPool, ssm: SSM, rbf: RBF, maxout: Maxout, moe: MoE,
+    upsample: Upsample, sample: Sample, graphconv: GraphConv, skip: Skip, kan: KAN, hopfield: Hopfield };
 
   // ------------------------------------------------------------------ losses
   function resolveLoss(loss, kind) {
@@ -2118,7 +2385,10 @@
       this.rng = new NA.RNG((seed * 7919 + 101) >>> 0); // dropout masks, apart from the initialisation stream
       const ctx = { Arr, f64, init, rng: new NA.RNG(seed), scr: this.mem, model: this };
       this.embed = inp.kind === 'tokens' ? new Embed(ctx, inp.vocab, inp.len, inp.embed) : null;
-      this.layers = blocks.map((spec, i) => new LAYERS[spec.type](spec, withDefaults(spec), chk.shapes[i].in, chk.shapes[i].out, ctx));
+      // (a skip connection finds the block it reaches back to by its place, and that block's shape in the check)
+      Object.assign(ctx, { chk, inShape: inputShape(input).shape });
+      this.layers = blocks.map((spec, i) => { ctx.index = i; return new LAYERS[spec.type](spec, withDefaults(spec), chk.shapes[i].in, chk.shapes[i].out, ctx); });
+      this.outs = []; this._pend = [];
       const last = blocks.length ? chk.shapes[blocks.length - 1].out : inputShape(input).shape, K = chk.outShape[chk.outShape.length - 1];
       const head = { type: 'dense', units: K, act: 'linear' };
       this.layers.push(new Dense(head, head, last, chk.outShape, ctx, true));
@@ -2127,7 +2397,7 @@
       this.nested = [].concat(...this.layers.map((L) => L.inner || []));
       this.paramCount = this.params.reduce((s, p) => s + p.w.length, 0);
       // a layer sends a gradient back to its input only when something before it learns
-      let learns = !!this.embed;
+      let learns = !!this.embed || !!opts.inputGrad;
       for (const L of this.layers) { L.needDx = learns; if (L.params.length) learns = true; }
       this.inSize = inp.kind === 'tokens' ? inp.len : size(inputShape(input).shape);
       this.outSize = size(chk.outShape);
@@ -2152,9 +2422,14 @@
       let x;
       if (this.embed) x = this.embed.forward(X, xo, B);
       else { x = this.x0; for (let i = 0, n = B * this.inSize; i < n; i++) x[i] = X[xo + i]; }
-      for (const L of this.layers) x = L.forward(x, B, train);
+      this.xIn = x;
+      for (let i = 0; i < this.layers.length; i++) { x = this.layers[i].forward(x, B, train); this.outs[i] = x; }
       return x;
     }
+    // what a skip connection reads: the output of layer src (−1: the input, as the first block received it)
+    outAt(src) { return src < 0 ? this.xIn : this.outs[src]; }
+    // and the gradient it sends there, added when the backward pass reaches that output
+    pend(src, g, n) { (this._pend[src + 1] || (this._pend[src + 1] = [])).push([g, n]); }
 
     lossAndGrad(out, Y, B, loss) {
       const r = this._loss(out, Y, 0, B, loss, true);
@@ -2173,6 +2448,50 @@
       let sum = 0, correct = 0, count = 0;
       if (this.kind === 'value') {
         const delta = L.delta, inv = 1 / B;
+        if (L.id === 'mdn') {
+          /* a mixture of m bell curves for the first target (the others are not read): m scores (a softmax makes them the
+             mixture's weights π), m middles μ and m log spreads s (clamped to ±7). −log Σ π·N(y; μ, e^s), less ½ log 2π;
+             each curve's gradient is weighted by its share of the point, its responsibility r */
+          const m = Math.floor(K / 3), lp = this.mem.get('mdn', Math.max(1, m), Float64Array);
+          for (let b = 0; b < B; b++) {
+            const o = b * K, y = Y[yo + o];
+            let mx = -Infinity;
+            for (let k = 0; k < m; k++) mx = Math.max(mx, out[o + k]);
+            let zs = 0;
+            for (let k = 0; k < m; k++) zs += Math.exp(out[o + k] - mx);
+            const lz = mx + Math.log(zs);
+            let lm = -Infinity;
+            for (let k = 0; k < m; k++) { const s = Math.max(-7, Math.min(7, out[o + 2 * m + k])), t = (y - out[o + m + k]) * Math.exp(-s); lp[k] = out[o + k] - lz - 0.5 * t * t - s; if (lp[k] > lm) lm = lp[k]; }
+            let tot = 0;
+            for (let k = 0; k < m; k++) tot += Math.exp(lp[k] - lm);
+            const ll = lm + Math.log(tot);
+            sum -= ll;
+            if (d) {
+              for (let k = 0; k < m; k++) {
+                const r = Math.exp(lp[k] - ll), pi = Math.exp(out[o + k] - lz), raw = out[o + 2 * m + k], s = Math.max(-7, Math.min(7, raw)), e = Math.exp(-s), t = (y - out[o + m + k]) * e;
+                d[o + k] = (pi - r) * inv; d[o + m + k] = -r * t * e * inv; d[o + 2 * m + k] = raw > -7 && raw < 7 ? -r * (t * t - 1) * inv : 0;
+              }
+              for (let j = 3 * m; j < K; j++) d[o + j] = 0;
+            }
+          }
+          return { loss: sum * inv, sum, correct: 0, count: B };
+        }
+        if (L.id === 'gauss') {
+          /* pairs: the first half of the outputs are middles μ, the second half log variances s (clamped to ±7), and only
+             the first half of the targets is read. ½(s + (y − μ)²·e^(−s)) per number: the negative log-likelihood of y
+             under a normal distribution, less ½ log 2π */
+          const m = K >> 1;
+          for (let b = 0; b < B; b++) {
+            const o = b * K;
+            for (let j = 0; j < m; j++) {
+              const raw = out[o + m + j], s = Math.max(-7, Math.min(7, raw)), e = Math.exp(-s), r = out[o + j] - Y[yo + o + j];
+              sum += 0.5 * (s + r * r * e);
+              if (d) { d[o + j] = r * e * inv; d[o + m + j] = raw > -7 && raw < 7 ? 0.5 * (1 - r * r * e) * inv : 0; }
+            }
+            if (d) for (let j = 2 * m; j < K; j++) d[o + j] = 0;
+          }
+          return { loss: sum * inv, sum, correct: 0, count: B };
+        }
         for (let i = 0, n = B * K; i < n; i++) {
           const r = out[i] - Y[yo + i], ar = Math.abs(r);
           let l, g;
@@ -2233,8 +2552,34 @@
     backward() {
       const B = this._B;
       let dy = this.dOut;
-      for (let i = this.layers.length - 1; i >= 0 && dy; i--) dy = this.layers[i].backward(dy, B, this.layers[i].needDx);
+      const P = this._pend;
+      for (let i = this.layers.length - 1; i >= 0 && dy; i--) {
+        dy = this.layers[i].backward(dy, B, this.layers[i].needDx);
+        // the gradients skip connections sent to this output (layer i − 1's; P[0], the input's) join the one arriving here
+        const q = P[i];
+        if (q && q.length) { if (dy) for (const [g, n] of q) for (let k = 0; k < n; k++) dy[k] += g[k]; q.length = 0; }
+      }
+      for (const q of P) if (q) q.length = 0;
       if (this.embed) this.embed.backward(dy, B);
+      return dy; // (with inputGrad: the gradient of the input itself)
+    }
+    // a VAE's KL divergence, from its Sample blocks: part of its loss
+    _kl() { let s = 0; for (const L of this.layers) if (L.kl) s += L.kl; for (const L of this.nested) if (L.kl) s += L.kl; return s; }
+    /* Halfway through: the output of layer upTo (a code, at a bottleneck) for B examples, and from a layer on: the
+       model's outputs for B codes given to layer from. Both in evaluation mode; the arrays are the layers' own. */
+    encode(X, B, upTo) {
+      this._alloc(B);
+      let x;
+      if (this.embed) x = this.embed.forward(X, 0, B);
+      else { x = this.x0; for (let i = 0, n = B * this.inSize; i < n; i++) x[i] = X[i]; }
+      for (let i = 0; i <= upTo; i++) x = this.layers[i].forward(x, B, false);
+      return x;
+    }
+    decode(from, Z, B) {
+      this._alloc(B);
+      let x = Z;
+      for (let i = from; i < this.layers.length; i++) x = this.layers[i].forward(x, B, false);
+      return x;
     }
 
     zeroGrad() { for (const p of this.params) p.g.fill(0); }
@@ -2262,7 +2607,7 @@
       const gradNorm = Math.sqrt(ss);
       // a non-finite gradient would turn every weight into NaN; skip the update and let the loss show it
       if (isFinite(gradNorm)) this._update(opt, opt.clip > 0 && gradNorm > opt.clip ? opt.clip / gradNorm : 1);
-      return { loss: r.loss, correct: r.correct, count: r.count, gradNorm };
+      return { loss: r.loss + this._kl(), correct: r.correct, count: r.count, gradNorm };
     }
 
     /* One update from a gradient of your own, for training methods whose loss is not one of the builder's (the
@@ -2292,7 +2637,7 @@
       if (this._dB !== B) { this.dOut = this.mem.view('dOut', B * this.outSize); this._dB = B; }
       this.dOut.fill(0);
       grad(out, this.dOut);
-      this.backward();
+      return this.backward();
     }
     getGrads(into) {
       const out = into || new Float32Array(this.paramCount);
@@ -2345,8 +2690,8 @@
       const bs = Math.max(1, batch | 0);
       let sum = 0, correct = 0, count = 0;
       for (let s = 0; s < n; s += bs) {
-        const b = Math.min(bs, n - s), r = this._loss(this._forward(X, s * this.inSize, b, false), Y, s * this.ySize, b, loss, false);
-        sum += r.sum; correct += r.correct; count += r.count;
+        const b = Math.min(bs, n - s), r = this._loss(this._forward(X, s * this.inSize, b, false), Y, s * this.ySize, b, loss, false), kl = this._kl();
+        sum += r.sum + (kl ? kl * (this.kind === 'tokens' ? r.count : b) : 0); correct += r.correct; count += r.count;
       }
       return { loss: count ? sum / count : 0, correct, count };
     }

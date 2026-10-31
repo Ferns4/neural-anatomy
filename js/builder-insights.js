@@ -50,7 +50,8 @@
     }
     // the gradient through the layers: does it reach the first ones?
     if (!classic && !stuck && L.model && L.model.gradNorms && run.step >= 50) {
-      const g = L.model.gradNorms(), top = Math.max(...g, 1e-30), ratio = top / Math.max(g[0], 1e-30);
+      // (the layers with weights: a Flatten or a pooling first has no gradient of its own)
+      const g = L.model.gradNorms().filter((v, i) => L.model.layers[i].params && L.model.layers[i].params.length), top = Math.max(...g, 1e-30), ratio = top / Math.max(g[0], 1e-30);
       if (g.length >= 4 && g[0] < 1e-3 * top && top > 1e-8) {
         const squash = dense.some((b) => b.act === 'sigmoid' || b.act === 'tanh');
         add('warn', 'The first layers hardly learn (vanishing gradients)', `${g[0] === 0 ? 'The last step did not change the first layer at all' : `The last step changed the first layer ${ratio > 1e5 ? 'over 100,000' : fmtInt(Math.round(ratio))} times less than the most-changed one`}. The gradient is multiplied by each layer’s slope on its way back, and ${squash ? 'sigmoid and tanh slopes are small (a sigmoid’s is at most 0.25), so it fades layer by layer' : 'small slopes add up over many layers'}. ReLU keeps a slope of 1 where it is active; BatchNorm, LayerNorm and residual connections also keep the gradient alive. The gradient chart in the Training tab shows every layer.`,
@@ -84,7 +85,7 @@
     // the validation loss jumping about: steps too large
     if (!classic && n >= 10 && !stuck) {
       const tail = vals.slice(-8), jumps = tail.slice(1).map((v, i) => Math.abs(v - tail[i]) / Math.max(tail[i], 1e-9)), mean = jumps.reduce((a, b) => a + b, 0) / Math.max(1, jumps.length);
-      if (mean > 0.25) add('warn', 'The loss jumps around', `The validation loss changes by ${fmtPct(mean, 0)} from one measurement to the next on average. The steps are too large to settle into the bottom of the valley: they bounce from wall to wall. A smaller learning rate or gradient clipping calms them.`,
+      if (mean > 0.25 && tail.every((v) => v > 0)) add('warn', 'The loss jumps around', `The validation loss changes by ${fmtPct(mean, 0)} from one measurement to the next on average. The steps are too large to settle into the bottom of the valley: they bounce from wall to wall. A smaller learning rate or gradient clipping calms them.`,
         [{ label: `Learning rate ${lr10(T.lr, 1 / 3)}`, run: () => L.edit((s) => { s.train.lr = lr10(s.train.lr, 1 / 3); }) }, !T.clip ? { label: 'Clip gradients at 1', run: () => L.edit((s) => { s.train.clip = 1; }) } : null]);
     }
     // boosting past its best
@@ -146,11 +147,16 @@
       const planned = run.limit || NA.brl.stepsFor(w, s.method);
       notes({ L, d, s, run, eps: got.eps, W: got.W, add, again, setPs, ga, method: s.method, own: !!d.ownReward, settled: run.done || run.step >= 0.25 * planned, switchTo: (m) => switchTo(L, m) });
     }
-    if (ga && L.check && L.check.params > 1500 && low && run.step >= 100) {
+    if (ga && s.method !== 'neat' && L.check && L.check.params > 1500 && low && run.step >= 100) {
       // (in the words of the method it learns by)
       const est = s.method === 'es' || s.method === 'cem', how = { es: 'Evolution strategies work out which way to move every weight from a few nudged copies of the network', cem: 'The cross-entropy method draws whole networks from a bell curve over the weights and refits the curve to the best',
         me: 'MAP-Elites mutates weights and keeps the best network of each style of play', novelty: 'Novelty search mutates weights and keeps what behaves in new ways', erl: 'Evolution mutates weights and keeps what plays better, with a DQN joining it now and then' }[s.method] || 'A genetic algorithm searches blindly, by mutating weights and keeping what plays better';
       add('warn', 'A lot of weights to evolve', `${how}. With ${fmtInt(L.check.params)} weights, ${est ? 'what a few dozen tries can tell it about each one is mostly noise' : 'most mutations are noise'}, and progress is slow. A smaller network gives each ${est ? 'try' : 'mutation'} more say.`);
+    }
+    // Copy you: it picks your moves, but it does not get your results (the moments you never showed it)
+    if (s.method === 'bc' && L.agent && L.agent.agree > 0.85 && vm !== null && vm < 0.5 && (run.done || run.step >= 500)) {
+      add('info', 'It copies your moves, not your results', `Its best move is yours ${fmtPct(L.agent.agree, 0)} of the time on the moments you showed it, yet its best moves score ${fmtPct(vm, 0)}. One move unlike yours takes it into a moment you never played, where it has no example to copy, and the next move is a guess too: the errors compound. Show it those moments (Jump in where it goes wrong), or let rewards take over: start a PPO run from this network (Start from, in the Training tab).`,
+        [{ label: 'Jump in and show it more', run: () => { if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); if (L.centerView !== 'results') { L.centerView = 'results'; L.layoutCenter(); } L.playYourself(true); } }]);
     }
     /* grow and prune: new shapes that keep losing. The best has kept one shape for 40 generations or more while other
        shapes played beside it (the generations' shape counts), and it has not learned the world yet. */

@@ -85,9 +85,26 @@
      every step, −1 on hitting anything (the run ends), +1 at the finish. Its score: the share of the course run.
      Settings: course (its length, 150 m), run (its speed, 8 m/s) and jump (the speed it takes off at, 5.5 m/s). */
   const RUN = 8, DTR = 0.05, JUMP = 5.5, GRAV = 15, HURDLE = 0.7, BAR = 1.2, TALL = 1.8, LOW = 1.0, COURSE = 150;
+  /* A course of your own (the model builder's editor): 1 to 60 obstacles, each [metres from the start, 1 for a bar or
+     0 for a hurdle], from 6 m in to 3 m before the finish, none within a metre of another; the same course every
+     episode. { ok, why, close (the nearest two, m apart) }. */
+  E.courseCheck = function (list, course) {
+    const C = course > 0 ? clamp(course, 40, 1000) : COURSE;
+    if (!Array.isArray(list) || !list.length || list.length > 60) return { ok: false, why: Array.isArray(list) && list.length > 60 ? 'A course has 60 obstacles at most.' : 'Put at least one obstacle on the course.' };
+    if (!list.every((q) => Array.isArray(q) && Number.isFinite(q[0]) && q[0] >= 6 && q[0] <= C - 3)) return { ok: false, why: `Every obstacle has to stand between 6 m and ${C - 3} m, on this ${C} m course.` };
+    const xs = list.map((q) => +q[0]).sort((a, b) => a - b);
+    let close = Infinity;
+    for (let i = 1; i < xs.length; i++) {
+      if (xs[i] - xs[i - 1] < 1) return { ok: false, why: `Two obstacles stand at ${xs[i].toFixed(1)} m, less than a metre apart: move one.` };
+      close = Math.min(close, xs[i] - xs[i - 1]);
+    }
+    return { ok: true, close };
+  };
   class Hurdles {
     constructor(o = {}) {
-      this.bars = o.obstacles === 'mixed'; this.view = 'state'; this.nA = 3; this.actions = ['run', 'jump', 'duck'];
+      // (a course of your own: its obstacles, the same every episode)
+      this.own = o.obstacles === 'own' && E.courseCheck(o.obst, o.course).ok ? o.obst.map((q) => ({ x: +q[0], bar: !!q[1] })).sort((a, b) => a.x - b.x) : null;
+      this.bars = o.obstacles === 'mixed' || !!(this.own && this.own.some((q) => q.bar)); this.view = 'state'; this.nA = 3; this.actions = ['run', 'jump', 'duck'];
       this.course = o.course > 0 ? clamp(o.course, 40, 1000) : COURSE; this.run = o.run > 0 ? clamp(o.run, 2, 20) : RUN; this.jumpV = o.jump > 0 ? clamp(o.jump, 2, 12) : JUMP;
       this.maxSteps = Math.ceil(this.course / (this.run * DTR)) + 10;
       this.input = { kind: 'vector', dim: 9 }; this.obsSize = 9;
@@ -97,7 +114,9 @@
     reset(rng) {
       const r = rng || seeded(11);
       this.rng = rng; this.obst = [];
-      for (let x = 14 + r.uniform(0, 4); x < this.course - 4; x += r.uniform(7, 14)) this.obst.push({ x, bar: this.bars && r.next() < 0.4 });
+      if (this.own) this.obst = this.own.map((q) => ({ x: q.x, bar: q.bar }));
+      else for (let x = 14 + r.uniform(0, 4); x < this.course - 4; x += r.uniform(7, 14)) this.obst.push({ x, bar: this.bars && r.next() < 0.4 });
+      if ((this.level ?? 1) < 1) { const lim = (this.course - 4) * (0.25 + 0.75 * this.level); this.obst = this.obst.filter((q) => q.x < lim); } // (a curriculum's level: obstacles early on only)
       this.x = 0; this.y = 0; this.vy = 0; this.duck = 0; this.t = 0; this.end = null; this.jumps = 0; this.ducking = 0; this.hit = null;
       this.trace = [this.x, this.y, 0];
       return this.obs();
@@ -338,6 +357,7 @@
   class Arm {
     constructor(o = {}) {
       this.maxSteps = o.steps > 0 ? clamp(Math.round(o.steps), 20, 2000) : 120; this.view = 'state'; this.nA = 5; this.actions = ['shoulder ↺', 'shoulder ↻', 'elbow ↺', 'elbow ↻', 'brake'];
+      this.dA = 3; this.cActions = ['shoulder', 'elbow', 'brake']; // (continuous: each motor from −1, full ↻, to 1, full ↺, both at once; the brake from 0, off, to 1, full)
       // how near counts as reaching it (12 cm), and how hard its motors push (6 rad/s²)
       this.reach = o.reach > 0 ? clamp(o.reach, 0.02, 0.5) : 0.12; this.acc = o.motors > 0 ? clamp(o.motors, 1, 30) : 6;
       this.input = { kind: 'vector', dim: 10 }; this.obsSize = 10;
@@ -351,15 +371,19 @@
       const R = r.uniform(0.6, 1.65), A = r.uniform(0.3, Math.PI - 0.3);
       this.tx = R * Math.cos(A); this.ty = R * Math.sin(A);
       if (this.hand()[1] < 0.05) this.q2 = 0;
+      // (a curriculum's level: the target nearer the hand at first)
+      if ((this.level ?? 1) < 1) { const [hx, hy] = this.hand(), k = 0.3 + 0.7 * this.level; this.tx = hx + (this.tx - hx) * k; this.ty = Math.max(0.15, hy + (this.ty - hy) * k); }
       [this.hx, this.hy] = this.hand(); this.d = Math.hypot(this.tx - this.hx, this.ty - this.hy);
       this.trace = [this.q1, this.q2, 0];
       return this.obs();
     }
     rawObs() { return Float32Array.of(Math.sin(this.q1), Math.cos(this.q1), Math.sin(this.q2), Math.cos(this.q2), this.w1 / 3, this.w2 / 3, (this.tx - this.hx) / 2, (this.ty - this.hy) / 2, this.tx / 2, this.ty / 2); }
     step(a) {
-      const dt = 0.05, acc = this.acc;
+      const dt = 0.05, acc = this.acc, ca = typeof a === 'number' ? null : a;
+      if (ca) a = ca[2] > 0.5 ? 4 : Math.abs(ca[0]) >= Math.abs(ca[1]) ? (ca[0] >= 0 ? 0 : 1) : ca[1] >= 0 ? 2 : 3; // (the nearest move)
       this.a = a;
-      if (a === 0) this.w1 += acc * dt; else if (a === 1) this.w1 -= acc * dt; else if (a === 2) this.w2 += acc * dt; else if (a === 3) this.w2 -= acc * dt; else { this.w1 *= 0.5; this.w2 *= 0.5; }
+      if (ca) { const k = 1 - 0.5 * clamp(ca[2], 0, 1); this.w1 = (this.w1 + clamp(ca[0], -1, 1) * acc * dt) * k; this.w2 = (this.w2 + clamp(ca[1], -1, 1) * acc * dt) * k; }
+      else if (a === 0) this.w1 += acc * dt; else if (a === 1) this.w1 -= acc * dt; else if (a === 2) this.w2 += acc * dt; else if (a === 3) this.w2 -= acc * dt; else { this.w1 *= 0.5; this.w2 *= 0.5; }
       this.w1 *= 0.94; this.w2 *= 0.94;
       // (bump: a joint at the end of its swing, or the hand stopped by the bench)
       let q1 = this.q1 + this.w1 * dt, q2 = this.q2 + this.w2 * dt, bump = 0;
@@ -372,12 +396,12 @@
       const reached = d < this.reach && moved / dt < 0.6, done = reached || this.t >= this.maxSteps;
       if (this.t % 2 === 0) this.trace.push(this.q1, this.q2, d);
       if (done) this.end = reached ? 'reached' : 'lost';
-      const rw = this.rw, pushed = a >= 0 && a <= 3, braked = a === 4, parts = this.rf ? null : {};
+      const rw = this.rw, pushed = ca ? Math.max(Math.abs(clamp(ca[0], -1, 1)), Math.abs(clamp(ca[1], -1, 1))) : a >= 0 && a <= 3 ? 1 : 0, braked = ca ? clamp(ca[2], 0, 1) : a === 4 ? 1 : 0, parts = this.rf ? null : {};
       let r = 0;
-      if (this.rf) r = this.rf({ reached: +reached, dist: d, closer, speed: moved / dt, elbow: this.q2 / DEG, t: this.t, shoulder: this.q1 / DEG, bump, braked: +braked, hx, hy });
+      if (this.rf) r = this.rf({ reached: +reached, dist: d, closer, speed: moved / dt, elbow: this.q2 / DEG, t: this.t, shoulder: this.q1 / DEG, bump, braked, hx, hy });
       else {
         if (reached) r = pay(parts, 'rReach', rw.rReach, r); r = pay(parts, 'rApproach', rw.rApproach * closer, r); r = pay(parts, 'rStep', rw.rStep, r);
-        if (pushed) r = pay(parts, 'rPush', rw.rPush, r); if (braked) r = pay(parts, 'rBrake', rw.rBrake, r); if (bump) r = pay(parts, 'rBump', rw.rBump, r);
+        if (pushed) r = pay(parts, 'rPush', rw.rPush * pushed, r); if (braked) r = pay(parts, 'rBrake', rw.rBrake * braked, r); if (bump) r = pay(parts, 'rBump', rw.rBump, r);
       }
       return { obs: this.obs(), r, done, parts };
     }
@@ -455,7 +479,7 @@
     memory: { name: 'Remember the lamp', make: (o) => new Memory(o), what: 'the lamp (at the first step only), the junction and how far along it is, or the last 16 of these', goal: 'turn at the junction the way the lamp said', axes: ['which way it turns', 'how long it takes'], demoMs: 260, trace: false },
     mountain: { name: 'Mountain cart', make: (o) => new Mountain(o), what: 'its position and speed', goal: 'reach the flag on the right-hand hill', axes: ['how far left it goes', 'how far right it goes'], demoMs: 30, trace: true },
     swingup: { name: 'Swing up a pendulum', make: (o) => new SwingUp(o), what: 'the pendulum’s angle and how fast it turns', goal: 'swing it up and keep it upright', axes: ['how soon it gets it up', 'how fast it swings'], demoMs: 35, trace: true },
-    arm: { name: 'Robot arm', make: (o) => new Arm(o), what: 'its joint angles and speeds, and where the target is', goal: 'bring the hand onto the target and stop there', axes: ['how bent it keeps its elbow', 'how far its hand travels'], demoMs: 45, trace: true },
+    arm: { name: 'Robot arm', cont: true, make: (o) => new Arm(o), what: 'its joint angles and speeds, and where the target is', goal: 'bring the hand onto the target and stop there', axes: ['how bent it keeps its elbow', 'how far its hand travels'], demoMs: 45, trace: true },
   });
 
   // =====================================================================================================

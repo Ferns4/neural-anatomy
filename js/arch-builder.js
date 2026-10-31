@@ -14,11 +14,11 @@
   // the builder's palette: layers, sequences, images and reshapes, then the input and the output
   const TONE = { dense: 's1', activation: 's1', dropout: 's1', layernorm: 's1', attention: 's7', transformer: 's7', conv: 's4', pool: 's4', flatten: 's6', gap: 's6',
     gated: 's1', batchnorm: 's1', noise: 's1', fourier: 's1', rnn: 's7', conv1d: 's7', position: 's7', seqpool: 's7', patches: 's4', avgpool: 's4', linear: 's5', knn: 's5', tree: 's5', forest: 's5', boost: 's5', parallel: 's3',
-    sepconv: 's4', se: 's4', coords: 's4', augment: 's4', gmp: 's6', attnpool: 's7', ssm: 's7', rbf: 's1', maxout: 's1', moe: 's3' };
+    sepconv: 's4', se: 's4', coords: 's4', augment: 's4', gmp: 's6', attnpool: 's7', ssm: 's7', rbf: 's1', maxout: 's1', moe: 's3', upsample: 's4', sample: 's1', graphconv: 's5', skip: 's3', kan: 's1', hopfield: 's1' };
   const NAME = { dense: 'Dense', activation: 'Activation', dropout: 'Dropout', layernorm: 'LayerNorm', attention: 'Self-attention', transformer: 'Transformer', conv: 'Convolution', pool: 'Max pool', flatten: 'Flatten', gap: 'Global average pool',
     gated: 'Gated (GLU)', batchnorm: 'BatchNorm', noise: 'Gaussian noise', fourier: 'Fourier features', rnn: 'Recurrent', conv1d: 'Conv 1-D', position: 'Positions', seqpool: 'Sequence pool', patches: 'Patches', avgpool: 'Average pool',
     linear: 'Linear model', knn: 'k-nearest neighbours', tree: 'Decision tree', forest: 'Random forest', boost: 'Gradient boosting', parallel: 'Parallel branches',
-    sepconv: 'Separable conv', se: 'Squeeze-excite', coords: 'Coordinates', augment: 'Random shifts', gmp: 'Global max pool', attnpool: 'Attention pool', ssm: 'State space', rbf: 'Radial basis', maxout: 'Maxout', moe: 'Mixture of experts' };
+    sepconv: 'Separable conv', se: 'Squeeze-excite', coords: 'Coordinates', augment: 'Random shifts', gmp: 'Global max pool', attnpool: 'Attention pool', ssm: 'State space', rbf: 'Radial basis', maxout: 'Maxout', moe: 'Mixture of experts', upsample: 'Upsample', sample: 'Sample (VAE)', graphconv: 'Graph convolution', skip: 'Skip connection', kan: 'Kolmogorov–Arnold', hopfield: 'Hopfield memory' };
   const RNN_NAME = { lstm: 'LSTM', gru: 'GRU', rnn: 'RNN' };
   // each recurrent cell's gates in PyTorch's order: [symbol, name, function]
   const RNN_GATES = { lstm: [['i', 'input gate', 'sigmoid'], ['f', 'forget gate', 'sigmoid'], ['g', 'candidate', 'tanh'], ['o', 'output gate', 'sigmoid']], gru: [['r', 'reset gate', 'sigmoid'], ['z', 'update gate', 'sigmoid'], ['n', 'candidate', 'tanh']], rnn: [['h', 'state', 'tanh']] };
@@ -61,10 +61,13 @@
     rbf: 'set the starting width to 0.1, then to 2, on the spiral: narrow bumps leave holes, wide ones blur the boundary.',
     maxout: 'set its pieces to 2, 3 and 4 and compare the runs with a dense ReLU layer of the same width.',
     moe: 'switch between all, top 2 and top 1, and open the gate on a few examples: which expert takes which kind of example?',
+    upsample: 'take it out of the tiny U-Net and pool less instead: what does seeing the whole shape at once do to the overlap?',
+    sample: 'set its β to 0, then to 1: with 0 it is a plain autoencoder and its random codes decode to nonsense; with 1 every picture looks alike.',
+    graphconv: 'compare one round with two, and averages with sums, on the friend groups; then the template with no message passing at all.',
   };
   // the attribute each block gets in the Python tab's Model class (js/builder-py.js): self.dense3, self.conv1, …
   const PYMOD = { dense: 'dense', dropout: 'drop', layernorm: 'norm', attention: 'attn', transformer: 'block', conv: 'conv', gated: 'glu', batchnorm: 'bn', noise: 'noise', rnn: 'rnn', conv1d: 'conv', patches: 'patch', parallel: 'par',
-    sepconv: 'sep', se: 'se', augment: 'aug', attnpool: 'apool', ssm: 'ssm', rbf: 'rbf', maxout: 'maxout', moe: 'moe' };
+    sepconv: 'sep', se: 'se', augment: 'aug', attnpool: 'apool', ssm: 'ssm', rbf: 'rbf', maxout: 'maxout', moe: 'moe', sample: 'sample', graphconv: 'gc', kan: 'kan', hopfield: 'hop' };
   const PYACT = { relu: (z) => `F.relu(${z})`, leaky: (z) => `F.leaky_relu(${z}, 0.05)`, elu: (z) => `F.elu(${z})`, gelu: (z) => `F.gelu(${z}, approximate="tanh")`, swish: (z) => `F.silu(${z})`,
     softplus: (z) => `F.softplus(${z})`, tanh: (z) => `torch.tanh(${z})`, sigmoid: (z) => `torch.sigmoid(${z})`, sine: (z) => `torch.sin(${z})`, gaussian: (z) => `torch.exp(-${z} ** 2)`, linear: (z) => z };
   const shapeText = (s) => (s && s.length ? s.join(' × ') : '?');
@@ -162,7 +165,7 @@
   const BUFS = { dense: ['z', 'a', 'out'], activation: ['out'], dropout: ['out'], layernorm: ['out', 'xhat', 'rstd'], attention: ['out'],
     transformer: ['h1', 'xh1', 'r1', 'mid', 'h2', 'xh2', 'r2', 'u', 'g', 'mo', 'out'], conv: ['z', 'a', 'out'], pool: ['out'], flatten: ['out'], gap: ['out'],
     gated: ['z1', 'z2', 'a2', 'out'], batchnorm: ['out', 'xhat'], noise: ['out'], fourier: ['out'], rnn: ['out', 'gates', 'c'], conv1d: ['z', 'a', 'out'], position: ['out'], seqpool: ['out', 'arg'], patches: ['out'], avgpool: ['out'],
-    sepconv: ['mid', 'z', 'out'], se: ['s', 'a1', 'g', 'out'], gmp: ['out', 'arg'], attnpool: ['att', 'out'], ssm: ['u', 'h', 'out'], rbf: ['d2', 'out'], maxout: ['z', 'out'], moe: ['ae', 'logits', 'gate', 'out'] };
+    sepconv: ['mid', 'z', 'out'], se: ['s', 'a1', 'g', 'out'], gmp: ['out', 'arg'], attnpool: ['att', 'out'], ssm: ['u', 'h', 'out'], rbf: ['d2', 'out'], maxout: ['z', 'out'], moe: ['ae', 'logits', 'gate', 'out'], sample: ['out', 'eps'], graphconv: ['h', 'z', 'a', 'out'], kan: ['sx', 'phi', 'out'], hopfield: ['p', 'out'] };
   let FRESH = null, PROBE = null, PYCODE = null;
   function runProbe(model, d) {
     const va = d.nVa > 0, n = va ? d.nVa : d.nTr;
@@ -264,7 +267,8 @@
     // a block inside a branch lives in its parallel block's branch module: model.par2.branches[0].dense1
     const pyAt = (i, stem) => (i > nb && SLOT[i] ? `${pyAt(SLOT[i].owner, 'par')}.branches[${SLOT[i].br}].${stem}${SLOT[i].k + 1}` : NA.builderPy && NA.builderPy.attrPath ? NA.builderPy.attrPath(L.setup, i, stem) : `model.${stem}${i + 1}`);
     const pyName = (i) => (PYMOD[BK(i).type] ? pyAt(i, PYMOD[BK(i).type]) : null);
-    const T0 = seq ? d.input.len : 1, D0 = seq ? d.input.embed : 0;
+    // (a class for every pixel or node: as many answers as the output has positions)
+    const T0 = seq ? d.input.len : d.output && d.output.kind === 'tokens' && chk.outShape ? chk.outShape[0] : 1, D0 = seq ? d.input.embed : 0;
 
     // ---- what the example is, and what the model makes of it
     const target = P ? P.y : null;
@@ -298,6 +302,12 @@
       if (fam === 'surface') return `the point (${fmt(P.x[0], 2)}, ${fmt(P.x[1], 2)}), whose height is ${fmt(target[0], 3)}`;
       if (fam === 'series') return `the last ${P.x.length} values of the series, whose next one is ${fmt(target[0], 3)}`;
       if (fam === 'digits') return d.task === 'shapes' ? `a drawn ${names[target[0]]}` : `a handwritten ${names[target[0]]}`;
+      if (NA.bgen && NA.bgen.owns(fam)) {
+        return fam === 'recon' ? (d.task === 'denoise' ? 'a damaged picture, whose answer is the clean one' : 'a picture, whose answer is the picture itself')
+          : fam === 'gan' ? `${d.z} random number${d.z > 1 ? 's' : ''} (${Array.from(P.x).slice(0, 4).map((v) => fmt(v, 2)).join(', ')}${d.z > 4 ? ', …' : ''}), from which it makes ${d.pixels ? 'a picture' : 'a point'}`
+            : fam === 'contrast' ? 'a picture, with no answer: it learns from two views of each' : fam === 'segment' ? `a ${d.input.h} × ${d.input.w} picture of shapes, the shape of every pixel to be found`
+              : fam === 'graph' ? `a graph of ${d.nodes} people, whose groups are to be found` : `x = ${fmt(P.x[0], 3)}, whose target is ${fmt(target[0], 3)}`;
+      }
       const words = Array.from(P.ids, word);
       if (fam === 'seqclass') { const pad = d.pad >= 0 ? word(d.pad) : null; let n = words.length; while (pad !== null && n > 1 && words[n - 1] === pad) n--; return `"${words.slice(0, n).join(' ')}", which is ${names[target[0]]}`; }
       return `"${words.slice(0, 14).join(' ')}${words.length > 14 ? ' …' : ''}"`;
@@ -307,11 +317,20 @@
       if (d.family === 'control') return `its outputs pick “${d.actions[ctlAct()]}”`;
       if (out.kind === 'classes') return `the model says ${names[pred] || 'class ' + (pred + 1)} (${fmtPct(probs[pred], 0)})${pred === target[0] ? ', right' : `, wrong`}`;
       if (out.kind === 'value') return `the model says ${fmt(P.logits[0], 3)}`;
+      if (d.family === 'segment' || d.family === 'graph') return `its answers are right at ${tokRight} of ${tokCount} ${d.family === 'segment' ? 'pixels' : 'people who do not say their group'}`;
       return `its next-token guesses are right at ${tokRight} of ${tokCount} position${tokCount === 1 ? '' : 's'}`;
     };
     const lossText = () => {
       if (!nums) return '';
       const id = (L.setup.loss || {}).id;
+      // (a GAN's and contrastive learning's losses are their trainers'; a picture rebuilt: every pixel; a middle and a spread)
+      if (d.family === 'gan' || d.family === 'contrast') return '';
+      if (d.family === 'recon') {
+        const dl = (L.setup.loss || {}).delta || 0.2, per = (r) => (id === 'mae' ? Math.abs(r) : id === 'huber' ? (Math.abs(r) <= dl ? 0.5 * r * r : dl * (Math.abs(r) - 0.5 * dl)) : 0.5 * r * r);
+        let s = 0; for (let k = 0; k < target.length; k++) s += per(P.logits[k] - target[k]);
+        return `${id === 'mae' ? 'Σ |ŷ − y|' : id === 'huber' ? 'Σ Huber(ŷ − y)' : '½ Σ (ŷ − y)²'} over its ${target.length} pixels = ${fmt(s, 4)}`;
+      }
+      if (d.family === 'spread' && id === 'gauss') { const sv = clamp(P.logits[1], -7, 7), r = P.logits[0] - target[0]; return `½(s + (ŷ − y)²·e^(−s)) = ${fmt(0.5 * (sv + r * r * Math.exp(-sv)), 4)}`; }
       if (out.kind === 'value') {
         const r = P.logits[0] - target[0], a = Math.abs(r), dl = (L.setup.loss || {}).delta || 0.2;
         return id === 'mae' ? `|ŷ − y| = ${fmt(a, 4)}` : id === 'huber' ? `Huber(ŷ − y) = ${fmt(a <= dl ? 0.5 * r * r : dl * (a - 0.5 * dl), 4)}` : `½(ŷ − y)² = ${fmt(0.5 * r * r, 4)}`;
@@ -3033,7 +3052,7 @@ y = ${pyAct(c.act, 'ssm.C(torch.stack(hs))')}                 # (${T}, ${U})`;
     function outputNode() {
       const prob = chk.problem && !d.error ? chk.problem : null, base = { id: 'output', title: 'Output', tone: prob ? 'critical' : 's2' };
       const lossName = (NA.bx.LOSSES[(L.setup.loss || {}).id] || {}).label || 'loss';
-      base.sub = out.kind === 'classes' ? `${K} class scores` : out.kind === 'value' ? `${K === 1 ? 'one number' : K + ' numbers'}` : out.kind === 'tokens' ? `next-token scores (${K})` : '';
+      base.sub = out.kind === 'classes' ? `${K} class scores` : out.kind === 'value' ? `${K === 1 ? 'one number' : K + ' numbers'}` : out.kind === 'tokens' ? (d.family === 'segment' || d.family === 'graph' ? `${K} scores at every ${d.family === 'segment' ? 'pixel' : 'node'}` : `next-token scores (${K})`) : '';
       const sIn = inS(nb), F = sIn ? sIn[sIn.length - 1] : '?';
       const about0 = out.kind === 'classes' ? `The output head is a dense layer without an activation: ${K} weighted sums of the ${F} numbers that reach it, one score (logit) per class. The softmax turns the scores into probabilities, positive and adding up to 1, and the answer is the class with the largest. Training uses the ${lossName.toLowerCase()} loss.`
         : out.kind === 'value' ? `The output head is a dense layer without an activation: a weighted sum of the ${F} numbers that reach it, plus a bias. That number is the model's answer; training pulls it toward the target with the ${lossName.toLowerCase()} loss.`
@@ -3046,7 +3065,7 @@ ${out.kind === 'value' ? 'print(z.item(), Yva[0].item())                     # t
       const lay = layOf(nb), Wt = lay.W.w, bb = lay.b.w, xin = inVals(nb), Fn = lay.nIn;
       const lossLine = `loss for this example: ${lossText()}`;
       if (out.kind === 'tokens') {
-        const T = T0, V = K, labels = Array.from(P.ids, word), probsAll = new Float32Array(T * V);
+        const T = T0, V = K, labels = P.ids ? Array.from(P.ids, word) : Array.from({ length: T }, (_, t) => (d.family === 'graph' ? `node ${t + 1}` : d.input.kind === 'image' ? `(${t % d.input.w}, ${Math.floor(t / d.input.w)})` : String(t))), probsAll = new Float32Array(T * V);
         tokPreds.forEach((q, t) => probsAll.set(q.probs, t * V));
         const LY = W2({ t: [0, 0, 1, 0.12], z: [0.08, 0.2, 0.42, 0.38], p: [0.58, 0.2, 0.42, 0.38], list: [0, 0.65, 1, 0.35] }, { t: [0, 0, 1, 0.14], z: [0.13, 0.2, 0.87, 0.22], p: [0.13, 0.48, 0.87, 0.22], list: [0, 0.75, 1, 0.25] });
         return Object.assign(base, {

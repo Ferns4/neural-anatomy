@@ -218,7 +218,7 @@
       id: 'explore', level: 'Beginner', topic: 'Rewards', title: 'Try the other levers', problem: 'levers', template: 'mlp', ps: { levers: 5, explore: 0 }, free: ['explore'],
       brief: 'Five lights and five levers. DQN starts without exploring: it always pulls the lever that looks best so far, so a lever that paid once gets pulled for good, and the others are never tried.',
       goals: [{ metric: 0.95 }],
-      hint: 'Select the Output block and let it explore: random moves for the first 300 moves or more, fewer and fewer as it learns.',
+      hint: 'Open the Training tab and let it explore: random moves for the first 300 moves or more, fewer and fewer as it learns.',
       solution: { ps: { explore: 300 } },
     },
     {
@@ -239,7 +239,7 @@
       id: 'farsight', level: 'Intermediate', topic: 'Rewards', title: 'Look further ahead', problem: 'catch', template: 'mlp', ps: { gamma: 0, method: 'a2c', normReward: false }, free: ['gamma'], train: { steps: 5000 },
       brief: 'Catch pays only when the ball lands. With a discount of 0 nothing that comes later counts, so the moves that bring the paddle under the ball never learn that they helped. (Its rewards are not normalised here: it learns from them as the world pays them.)',
       goals: [{ metric: 0.9 }],
-      hint: 'Raise the discount γ on the Output block to 0.95: a reward a few steps away still counts now, and flows back to the moves that earned it.',
+      hint: 'Raise the discount γ in the Training tab to 0.95: a reward a few steps away still counts now, and flows back to the moves that earned it.',
       solution: { ps: { gamma: 0.95 } },
     },
     {
@@ -274,7 +274,7 @@
       id: 'laps', level: 'Intermediate', topic: 'Rewards', title: 'Four laps', problem: 'track', template: 'mlp', ps: { method: 'dqn' }, free: ['method'],
       brief: 'The race track, learned by DQN. Its random moves end in a wall at the first bends, so it hardly ever finds out what lies beyond them, and it never gets round.',
       goals: [{ metric: 0.95 }],
-      hint: 'Let it evolve instead: select the Output block and set Learns by to the genetic algorithm. Every driver of a generation is judged by how far it got, and the ones that got furthest are kept and bred.',
+      hint: 'Let it evolve instead: set Learns by (in the Training tab, or at the top) to the genetic algorithm. Every driver of a generation is judged by how far it got, and the ones that got furthest are kept and bred.',
       solution: { ps: { method: 'ga' } },
     },
     {
@@ -331,14 +331,14 @@
       id: 'trapped', level: 'Advanced', topic: 'Rewards', title: 'The long way round', problem: 'trap', template: 'mlp', ps: { method: 'es' }, free: ['method'],
       brief: 'The robot is paid for every step that takes it closer to the goal in a straight line, but a wall stands just under the goal, and the way round leads away from it first. Evolution strategies only ever moves its network towards nudged copies that did better: it drives straight at the goal into the wall, no small change gets it any closer from there, and there it stays.',
       goals: [{ metric: 0.9 }],
-      hint: 'Set Learns by to Novelty search on the Output block. It breeds a population as the genetic algorithm does, but from the robots that end up somewhere new rather than the ones that got closest: they spread out along the wall and round its far end (watch The whole generation), and on the way one finds the goal.',
+      hint: 'Set Learns by to Novelty search, in the Training tab. It breeds a population as the genetic algorithm does, but from the robots that end up somewhere new rather than the ones that got closest: they spread out along the wall and round its far end (watch The whole generation), and on the way one finds the goal.',
       solution: { ps: { method: 'novelty' } },
     },
     {
       id: 'styles', level: 'Advanced', topic: 'Rewards', title: 'Many ways to drive', problem: 'track', template: 'mlp', ps: { method: 'ga' }, free: ['method'],
       brief: 'A genetic algorithm finds one good way round the track, and its population soon looks all alike. Find at least 80 different styles of driving instead (fast or slow, keeping left or right), each with the best driver of that style.',
       goals: [{ styles: 80 }],
-      hint: 'Set Learns by to MAP-Elites on the Output block. It keeps the best driver of every style in a grid of 12 × 12, and breeds new ones from any of them; a click on a cell of the grid watches that style drive.',
+      hint: 'Set Learns by to MAP-Elites, in the Training tab. It keeps the best driver of every style in a grid of 12 × 12, and breeds new ones from any of them; a click on a cell of the grid watches that style drive.',
       solution: { ps: { method: 'me' } },
     },
     {
@@ -350,6 +350,20 @@
     },
   );
   const byId = Object.fromEntries(LIST.map((c) => [c.id, c]));
+  /* Paths: the challenges in an order that builds one idea on another, for anyone who wants to be led through them.
+     Each challenge is in one path at most. */
+  const PATHS = [
+    { id: 'networks', title: 'From a line to a network', blurb: 'What hidden layers, neurons and activations each add.', ids: ['bend', 'ring', 'hill', 'v', 'spiral', 'vanish', 'growup'] },
+    { id: 'training', title: 'Training well', blurb: 'Learning rates, steps that settle, and getting there fast.', ids: ['timid', 'calm', 'speed', 'wiggle', 'ripples', 'saddle'] },
+    { id: 'classic', title: 'Classic machine learning', blurb: 'Trees, forests, neighbours and straight lines: models that are not networks.', ids: ['questions', 'straight', 'neighbours', 'forest', 'stumps', 'checker'] },
+    { id: 'sequences', title: 'Sequences and series', blurb: 'Order, memory and attention, and forecasting what comes next.', ids: ['order', 'pattern', 'chaos', 'lookback', 'chaostrees', 'parity', 'budget', 'tinychaos'] },
+    { id: 'pictures', title: 'Pictures', blurb: 'Convolutions, and what they see.', ids: ['digits', 'shapes'] },
+    { id: 'rewards1', title: 'Rewards: first steps', blurb: 'Exploring, being paid for the right thing, and seeing enough of the world.', ids: ['explore', 'warmer', 'sauna', 'lookahead', 'motion', 'farsight', 'steady'] },
+    { id: 'rewards2', title: 'Rewards: harder worlds', blurb: 'Memory, cheap crashes, evolution, pixels and many ways to drive.', ids: ['crash', 'lamp', 'reach', 'lights', 'evolve', 'pixels', 'laps', 'trigger', 'trapped', 'styles', 'anymaze'] },
+  ];
+  const pathOf = (id) => PATHS.find((p) => p.ids.includes(id)) || null;
+  // the first challenge of a path not done yet (done: a set of ids), or null
+  const nextIn = (path, done) => path.ids.find((id) => !done.has(id)) || null;
   const FAM_OF = (ch) => NA.builderTasks.byId[ch.problem].family;
   const isClassic = (type) => !!(NA.cml && NA.cml.isClassic(type));
   const TABLE_NAMES = {};
@@ -419,5 +433,5 @@
     return (FAM[ch.id] = BT.make(p, S.ps[ch.problem], 1, S.custom).family);
   }
 
-  NA.builderChallenges = { LIST, LEVELS, byId, progress, passed, setup, sameData, describe, family };
+  NA.builderChallenges = { LIST, LEVELS, byId, progress, passed, setup, sameData, describe, family, PATHS, pathOf, nextIn };
 })(window.NA);

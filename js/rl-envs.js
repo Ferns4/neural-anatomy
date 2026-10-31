@@ -166,10 +166,20 @@
      maze every episode. closer: a bonus of 0.1 for every step that brings it closer to the goal by the shortest
      safe way, and as much off for every step away (reward shaping: it cannot change which route is best, since
      any route's bonuses add up to the same, but it says which way is warmer long before the goal is found). */
+  /* A maze of your own (the model builder's editor draws it): 6 rows of 8 squares, each floor (.), a wall (#), a pit
+     (X), the start (S) or the goal (G); one start, one goal, and a safe way from one to the other. { ok, why, steps }. */
+  E.mazeCheck = function (rows) {
+    if (!Array.isArray(rows) || rows.length !== 6 || !rows.every((r) => typeof r === 'string' && /^[.#XSG]{8}$/.test(r))) return { ok: false, why: 'A maze is 6 rows of 8 squares.' };
+    const all = rows.join(''), nS = all.split('S').length - 1, nG = all.split('G').length - 1;
+    if (nS !== 1) return { ok: false, why: nS ? 'It has more than one start: keep one.' : 'It needs a start: put one with the Start tool.' };
+    if (nG !== 1) return { ok: false, why: nG ? 'It has more than one goal: keep one.' : 'It needs a goal: put one with the Goal tool.' };
+    const steps = RL().shortest(new (RL().Maze)(rows));
+    return steps ? { ok: true, steps } : { ok: false, why: 'There is no safe way from the start to the goal: walls or pits block every route.' };
+  };
   class MazeWorld {
     constructor(o = {}) {
       this.view = ['square', 'picture'].includes(o.view) ? o.view : 'around'; this.random = !!o.random; this.slip = o.slip || 0; this.closer = !!o.closer;
-      const def = RL().MAZE_SET.find((m) => m.id === o.maze) || RL().MAZE_SET[0];
+      const def = o.maze === 'own' && E.mazeCheck(o.rows).ok ? { rows: o.rows } : RL().MAZE_SET.find((m) => m.id === o.maze) || RL().MAZE_SET[0];
       this.fixed = new (RL().Maze)(def.rows); this.fixed.slip = this.slip; this.maze = this.fixed; this.dist = MazeWorld.distances(this.fixed);
       const n = this.fixed.n, W = this.fixed.W, H = this.fixed.H;
       this.input = this.view === 'square' ? { kind: 'vector', dim: n } : this.view === 'picture' ? { kind: 'image', c: 5, h: H, w: W } : { kind: 'vector', dim: 104 };
@@ -185,6 +195,8 @@
       this.needDist = this.closer || !!this.rf || this.shown.includes('safe steps to the goal');
       this.anyDist = this.rf ? MazeWorld.distances(this.fixed, true) : null;
     }
+    // where it is on the maze, 0 to 1 each way (one maze only: on random mazes, none)
+    where() { if (this.random) return null; const M = this.maze; return [((this.s % M.W) + 0.5) / M.W, (Math.floor(this.s / M.W) + 0.5) / M.H]; }
     // the fewest safe steps from every square to the goal (-1: none); pits: through pits as well
     static distances(M, pits) {
       const d = new Int16Array(M.n).fill(-1), q = [M.goal];
@@ -286,6 +298,7 @@
       const s = this.start;
       this.rng = rng;
       this.x = rng.uniform(-this.xStart, this.xStart); this.v = rng.uniform(-s, s); this.th = rng.uniform(-s, s); this.w = rng.uniform(-s, s); this.t = 0; this.a = null; this.sx = 0; this.sth = 0; this.pushed = 0;
+      this.gNow = this.g * (0.35 + 0.65 * (this.level ?? 1)); // (a curriculum's level: weaker gravity at first)
       this.hist = [0, 0, 0].map(() => [this.x / this.edge, this.th / this.limit]);
       return this.obs();
     }
@@ -300,7 +313,7 @@
       // a = 1 pushes right, 0 left; anything else (you, trying it yourself, not pushing) not at all
       const F = a === 1 ? this.force : a === 0 ? -this.force : 0, ct = Math.cos(this.th), st = Math.sin(this.th);
       const tmp = (F + this.pml * this.w * this.w * st) / 1.1;
-      const acc = (this.g * st - ct * tmp) / (this.half * (4 / 3 - (0.1 * ct * ct) / 1.1)), xacc = tmp - (this.pml * acc * ct) / 1.1;
+      const acc = ((this.gNow ?? this.g) * st - ct * tmp) / (this.half * (4 / 3 - (0.1 * ct * ct) / 1.1)), xacc = tmp - (this.pml * acc * ct) / 1.1;
       this.hist.push([this.x / this.edge, this.th / this.limit]); this.hist.shift();
       this.x += 0.02 * this.v; this.v += 0.02 * xacc; this.th += 0.02 * this.w; this.w += 0.02 * acc;
       this.t++; this.a = a; this.sx += this.x; this.sth += Math.abs(this.th);

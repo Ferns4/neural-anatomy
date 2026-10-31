@@ -147,6 +147,90 @@
     },
   });
 
+  Object.assign(PG.G, {
+    skip: {
+      what: 'Adds (or joins side by side) the output of an earlier block to what reaches it. The signal can skip the blocks between, and on the way back so can the gradient. Residual connections, the trick behind very deep networks, add around one or two blocks; a U-Net joins its early, sharp layers to its late, coarse ones.',
+      deep: [
+        'In a deep stack each layer has to pass on everything the next one needs, and the gradient fades as it comes back through many layers. He and others (2015) gave each pair of layers a shortcut: x + F(x). The layers then learn only what to change, F, and when there is nothing to change they can leave it at 0. The gradient arrives at x both through F and straight along the shortcut, so it reaches the first layers undiminished. Networks of 150 layers trained where 30 had failed, and nearly every large network since has residual connections, transformers included.',
+        'Adding needs the two to be the same shape. Joining puts them side by side (a vector’s numbers, each position’s features, a picture’s channels) and lets the next layer weigh both: DenseNet joins every earlier output, and a U-Net joins each upsampled map to the map of the same size on the way down, so its answers keep the early layers’ sharp edges.',
+        'Here a skip connection reaches back any number of blocks, to what went into the block before it, or further, as far as the model’s input. In PyTorch the outputs it needs are kept in variables (h1, h2, …) as the forward pass goes.',
+      ],
+      how: ['Keep the output of the earlier block it reaches back to.', 'Add it to what reaches this block, number by number (the same shape), or join the two side by side.', 'On the way back, send the gradient both ways: to the block before, and straight to the earlier output.'],
+      math: ['y = x + h_earlier   (add)', 'y = [x, h_earlier]   (join)', '∂L/∂h_earlier += ∂L/∂y'],
+      params: 'none',
+      use: ['Deep stacks that would otherwise not train (try the Skip connections template on two spirals).', 'U-Nets, which join early and late maps of the same size.'],
+      watch: ['To add, the shapes must match: reach back to a block of the same size, or join instead.', 'It cannot go inside one of your parts, or inside parallel branches (an empty branch is already one).'],
+      code: 'h1 = x                       # kept\nx = self.dense2(x)\nx = self.dense3(x)\nx = x + h1                   # or torch.cat([x, h1], -1)', try: 'spiral',
+    },
+    kan: {
+      what: 'A Kolmogorov–Arnold layer. Every edge from an input to a unit carries a function of its own, learned: a weighted sum of bumps (Gaussians spread evenly from −2 to 2) plus a weighted SiLU. A unit adds up its edges’ functions. A dense layer learns numbers between fixed bends; this learns the bends, one for every edge.',
+      deep: [
+        'Kolmogorov and Arnold showed in 1957 that any continuous function of several numbers can be written with sums and functions of one number each. Liu and others (2024) turned that into a layer: put a learnable one-variable function on every edge, and add them up at the units. They used B-splines on a grid; here each function is a sum of G Gaussian bumps on a fixed grid, which is the same idea in its smoothest form, plus SiLU(x) so that there is something to extend the curve beyond the grid.',
+        'Each edge has G + 1 numbers instead of 1, so a KAN layer is G + 1 times the size of a dense one of the same width, and slower; in return, small KANs fit smooth formulas closely, and each edge’s curve can be drawn and read. Whether they beat a dense network of the same size is still argued about: try it on a curve and on the spirals.',
+      ],
+      how: ['For every input: its SiLU, and how near it is to each bump’s centre, e^(−((x − c)/h)²).', 'For every unit: add, over the inputs, the SiLU times a weight and each bump times a weight of its own, plus a bias.'],
+      math: ['φ_ji(x) = w_ji · SiLU(x) + Σ_g c_jig · e^(−((x − c_g)/h)²)', 'y_j = b_j + Σ_i φ_ji(x_i)'],
+      params: 'units × inputs × (bumps + 1) + units',
+      use: ['Smooth curves and surfaces from few inputs.', 'Seeing what a layer learned: each edge is a curve you could draw.'],
+      watch: ['Its inputs should mostly fall between −2 and 2, where the bumps are: beyond, only the SiLU part bends.', 'More bumps make finer curves, and more numbers to learn.'],
+      code: 'bumps = torch.exp(-((x[..., None] - centres) / h) ** 2)          # (..., inputs, G)\ny = base(F.silu(x)) + torch.einsum("...ig,uig->...u", bumps, coef)', try: 'sine',
+    },
+    hopfield: {
+      what: 'A memory of patterns the model learns. What comes in is compared with each pattern (a dot product, times β); a softmax turns the similarities into weights, and out comes the weighted mix of the patterns: with a large β, the pattern most like the input. A modern Hopfield network, which is attention whose keys and values are the memories.',
+      deep: [
+        'Hopfield (1982) built a network that stores patterns as the low points of an energy: started near a stored pattern, it slides down to it, completing a half-remembered pattern. The classic version stores about 0.14 patterns per neuron before memories blur into each other. Ramsauer and others (2020) found an energy whose update is exactly softmax(β x·Ξᵀ)Ξ: it stores exponentially many patterns, retrieves in one step, and is the same sum as a transformer’s attention.',
+        'Here the patterns are learned like any weights: the gradient moves each one toward the inputs it is recalled for and what the layers after it need. On noisy pictures it can learn clean prototypes and recall the nearest: a memory that cleans up what it is given.',
+      ],
+      how: ['Compare the input with each of the M patterns: s_m = β · x·ξ_m.', 'Turn the similarities into weights with a softmax.', 'Give the weighted mix of the patterns.'],
+      math: ['p = softmax(β · x Ξᵀ)', 'y = p Ξ'],
+      params: 'patterns × the numbers in each',
+      use: ['Cleaning up or completing inputs from remembered prototypes (try the Hopfield memory template on noisy pictures).', 'Seeing attention as memory recall.'],
+      watch: ['A small β blends every pattern into a grey average; a large one recalls a single pattern and its gradient reaches few of them.', 'Its output has its input’s size.'],
+      code: 'y = (beta * x @ self.patterns.T).softmax(-1) @ self.patterns', try: 'denoise',
+    },
+    upsample: {
+      what: 'Makes a picture bigger by repeating each pixel as a small square (nearest neighbour). Networks that answer for every pixel shrink the picture to see more of it at once, then need a way back up to its full size: this is the simplest one, and it learns nothing.',
+      deep: [
+        'A picture pooled twice from 16 × 16 to 4 × 4 lets a 3 × 3 filter see the whole of a shape at once, but its answer is now 4 × 4. Upsampling by 4 gives every pixel of the original size the answer of the coarse pixel it lies in: blocky, but in the right place. A convolution after it smooths the blocks.',
+        'A U-Net (Ronneberger and others, 2015) does this in steps and joins each upsampled map with the map of the same size from the way down, a skip connection: the coarse path knows what is there, the fine path where its edges are. Here a Parallel block with an empty branch is that skip. Other ways up are learned (transposed convolutions) or smooth (bilinear); nearest neighbour followed by a convolution avoids the checkerboard patterns transposed convolutions can leave.',
+      ],
+      how: ['For every pixel of the bigger picture, find the pixel of the small one it lies in.', 'Copy its value, channel by channel.', 'On the way back, add up the gradients of the copies of each pixel.'],
+      math: ['y[c, i, j] = x[c, ⌊i / s⌋, ⌊j / s⌋]', '∂L/∂x[c, i, j] = Σ over its s × s copies of ∂L/∂y'],
+      params: 'none',
+      use: ['The way back up in a U-Net, for segmentation.', 'A decoder that draws pictures from a small code.'],
+      watch: ['Blocky answers on their own: follow it with a convolution.', 'It grows the picture, and every layer after it costs as much as on a picture that size.'],
+      code: 'x = x.repeat_interleave(2, 2).repeat_interleave(2, 3)   # or F.interpolate(x, scale_factor=2)', try: 'segment',
+    },
+    sample: {
+      what: 'The middle of a variational autoencoder (VAE). It reads a middle and a spread for each number of the code, and while learning draws the code from that bell curve; when the model is used it gives the middles. It also pulls every bell curve toward one standard bell curve, N(0, 1), so that any code drawn from N(0, 1) decodes to something like the training examples: the model can make new ones.',
+      deep: [
+        'An autoencoder’s codes can sit anywhere, with gaps between them that decode to nonsense. A VAE (Kingma and Welling, 2013) makes the encoder give a bell curve for each picture instead of a point, and adds to the loss how far each bell curve is from the standard one: the KL divergence, ½ Σ (μ² + σ² − 1 − log σ²). Codes are pulled toward the middle and spread out to fill it, so the map has no holes.',
+        'Drawing a random code would stop the gradient. The reparameterisation trick draws ε from N(0, 1) and makes the code μ + σ·ε: the randomness sits in ε, and the gradient flows into μ and σ as through any sum and product. The encoder gives log σ² rather than σ, so any number it gives is a valid spread.',
+        'β weighs the pull. With β = 0 it is a plain autoencoder; with β too large every bell curve becomes the standard one, the codes carry nothing and the decoder draws the average picture (posterior collapse). The builder measures the pictures’ error as squared error on each pixel, the log-likelihood of a bell curve of spread 1 around each, so β = 1, the textbook value, pulls too hard here; 0.3 balances them.',
+      ],
+      how: ['Split its input in two: the middles μ and the log variances s (held between −8 and 8).', 'While learning: draw ε from N(0, 1) and give μ + e^(s/2)·ε; when used, give μ.', 'Add β · ½ Σ (μ² + e^s − 1 − s), averaged over the batch, to the loss.'],
+      math: ['z = μ + σ · ε,  ε ~ N(0, 1),  σ = e^(s/2)', 'KL = ½ Σ (μ² + σ² − 1 − log σ²)', 'loss = rebuilding error + β · KL'],
+      params: 'none: the layer before it gives the middles and spreads (twice as many numbers as the code)',
+      use: ['A VAE that draws new pictures from random codes.', 'A map of codes with no holes, where nearby codes decode to similar pictures.'],
+      watch: ['The layer before it must give an even number of outputs: the first half middles, the second half spreads.', 'Blurry pictures: lower β. Codes that will not decode when drawn at random: raise it.'],
+      code: 'mu, logvar = x.chunk(2, -1)\nz = mu + (0.5 * logvar).exp() * torch.randn_like(mu)        # while training\nkl = 0.5 * (mu ** 2 + logvar.exp() - 1 - logvar).sum(-1).mean()\nloss = rebuild_loss + beta * kl', try: 'vae',
+    },
+    graphconv: {
+      what: 'Message passing on a graph: each node averages (or adds up) its own features and its neighbours’, then one dense layer, the same for every node, makes its new features. A node can then know what its neighbours know; two rounds, what their neighbours know too.',
+      deep: [
+        'A graph is nodes and links between them: people and friendships, atoms and bonds, roads and crossings. It has no order and no grid, so neither a convolution nor a recurrent layer fits it. Graph convolution (Kipf and Welling, 2017) carries the convolution’s idea over: the same small weights used everywhere, each node combining what is around it. Here a graph comes as a sequence of nodes, each row holding the node’s features and then its links to every node (1 where linked), passed on unchanged so that another round can follow.',
+        'Averaging keeps a node with many links on the same scale as one with few; adding up lets it count them (as GIN, Xu and others, 2019, showed, sums tell apart more kinds of neighbourhood than averages can). k rounds let information travel k links. Too many rounds blur the whole graph into one average (over-smoothing).',
+        'The problem here is friend groups: only one person in each group says which group they are in, so the rest must learn it from who they are linked to. A model with no message passing sees only its own row and does no better than guessing.',
+      ],
+      how: ['For each node: add up its own features and those of the nodes it is linked to.', 'With the average, divide by how many that is.', 'One dense layer, the same for every node, and the activation.', 'Pass the links on after the new features.'],
+      math: ['m_i = (1 / |N(i) ∪ {i}|) Σ over j in N(i) ∪ {i} of h_j', 'h′_i = act(W · m_i + b)'],
+      params: 'features × units + units, the same for every node',
+      use: ['Classifying nodes from their neighbours (friend groups, the kind of a paper from its citations).', 'With a pool after it, classifying whole graphs, such as molecules.'],
+      watch: ['It reads the last N numbers of each row as the links, so it needs a graph.', 'Many rounds over-smooth: every node ends up alike.'],
+      code: 'a = ((links > 0.5).float() + torch.eye(n)).clamp(max=1)     # each node and its neighbours\nm = (a @ h) / a.sum(-1, keepdim=True)                         # their average\nh = act(self.lin(m))', try: 'groups',
+    },
+  });
+
   // ------------------------------------------------------------------ here, in your model
   const n = (v) => Number(v).toLocaleString('en'), T = (s) => s.join(' × ');
   const HERE = {
@@ -159,6 +243,12 @@
     ssm: (c, si, so, P) => `Here ${c.state} memories read ${si[0]} steps of ${si[1]} number${si[1] === 1 ? '' : 's'}: ${c.state} decays, B of ${c.state} × ${si[1]}, C of ${c.units} × ${c.state} and ${c.units} biases, ${n(P)} learned numbers, the same at every step.`,
     rbf: (c, si, so, P) => `Here ${c.units} units each have a centre of ${si[si.length - 1]} numbers and a width: ${c.units} × ${si[si.length - 1]} + ${c.units} = ${n(P)} learned numbers${si.length === 2 ? `, the same at each of the ${si[0]} positions` : ''}.`,
     maxout: (c, si, so, P) => { const F = si[si.length - 1]; return `Here ${c.units} units have ${c.pieces} pieces each, every piece ${F} weights and a bias: ${c.pieces} × ${c.units} × ${F + 1} = ${n(P)} learned numbers${si.length === 2 ? `, the same at each of the ${si[0]} positions` : ''}.`; },
+    skip: (c, si, so, P) => `Here it ${c.merge === 'concat' ? 'joins' : 'adds'} what went into the block${c.back > 1 ? ` ${c.back} before it` : ' before it'} ${c.merge === 'concat' ? `after the ${T(si)} it receives, making ${T(so)}` : `to the ${T(si)} it receives`}, and learns nothing.`,
+    kan: (c, si, so, P) => { const F = si[si.length - 1]; return `Here ${F} input${F === 1 ? '' : 's'} reach ${c.units} units over ${F * c.units} edges, each a curve of ${c.grid} bumps and a SiLU (${c.grid + 1} numbers), plus ${c.units} biases: ${n(P)} learned numbers${si.length === 2 ? `, the same at each of the ${si[0]} positions` : ''}.`; },
+    hopfield: (c, si, so, P) => `Here ${c.memories} patterns of ${si[si.length - 1]} numbers each (${n(P)} learned numbers) are compared with what comes in${si.length === 2 ? ' at each position' : ''}, with a sharpness β of ${c.beta}; out comes their mix, ${T(so)}.`,
+    upsample: (c, si, so) => `Here each of the ${si[0]} channels grows from ${si[1]} × ${si[2]} to ${so[1]} × ${so[2]}, each pixel repeated ${c.size} × ${c.size}. It learns nothing.`,
+    sample: (c, si, so) => `Here it reads ${si[0]} numbers, ${so[0]} middles and ${so[0]} log spreads, and gives a code of ${so[0]}: drawn from the bell curves while training, their middles when used. β ${c.beta} × their KL divergence from N(0, 1) joins the loss. It learns nothing itself.`,
+    graphconv: (c, si, so, P) => { const N = si[0], F = si[1] - N; return `Here ${N} nodes each have ${F} feature${F === 1 ? '' : 's'} and ${N} links. Each takes the ${c.agg === 'sum' ? 'sum' : 'average'} of its own and its neighbours’ features, then ${F} × ${c.units} weights and ${c.units} biases (${n(P)} learned numbers, the same for every node) make ${c.units} new ones; the links are passed on, so ${T(so)} comes out.`; },
     moe: (c, si, so, P) => { const F = si[si.length - 1], E = c.experts, U = c.units; return `Here ${E} experts of ${U} units (${E} × ${n(F * U + U)} learned numbers) and a gate with ${E} outputs (${n(F * E + E)}): ${n(P)} in all. ${c.top ? `Each ${si.length === 2 ? 'position' : 'example'} uses the top ${c.top}.` : `Every ${si.length === 2 ? 'position' : 'example'} uses every expert.`}`; },
   };
   const baseInModel = PG.inModel;
@@ -173,6 +263,67 @@
   const D = PG.drawMore;
   const grid = (k, x0, y0, n, s, val) => { for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) k.box(x0 + j * s, y0 + i * s, s - 1, s - 1, k.theme.seqColor(val(i, j))); };
 
+  D.skip = (ctx, W, H, t, k) => {
+    // three blocks in a row and a shortcut around the last two; a pulse goes both ways
+    const bx = [0.12, 0.38, 0.62, 0.86].map((f) => W * f), y = k.mid + 4, ph = (t * 0.6) % 1;
+    for (let i = 0; i < 3; i++) k.line(bx[i] + 14, y, bx[i + 1] - 14, y, k.c('line-2'), 1.6);
+    bx.forEach((x, i) => k.box(x - 13, y - 10, 26, 20, k.c(i === 3 ? 's2' : 's1', 0.85)));
+    ctx.strokeStyle = k.c('s3'); ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(bx[1], y - 11); ctx.bezierCurveTo(bx[1], y - 46, bx[3], y - 46, bx[3], y - 11); ctx.stroke();
+    const px = bx[1] + (bx[3] - bx[1]) * ph, py = y - 11 - 26.5 * Math.sin(Math.PI * ph);
+    k.dot(px, py, 4, k.c('s3'));
+    k.label('+', bx[3], y, { size: 13, color: k.c('panel') });
+    k.label('the earlier output added on: the signal and its gradient skip the blocks between', W / 2, H - 6, { maxW: W - 12 });
+  };
+  D.kan = (ctx, W, H, t, k) => {
+    // two inputs, two units; each edge a small curve of its own, drawn on the edge
+    const ins = [[W * 0.12, H * 0.28], [W * 0.12, H * 0.66]], outs = [[W * 0.86, H * 0.28], [W * 0.86, H * 0.66]];
+    ins.forEach((a, i) => outs.forEach((b, j) => {
+      k.line(a[0], a[1], b[0], b[1], k.c('line-2'), 1);
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, w = 34, hh = 12, ph = t * 0.8 + i * 1.7 + j * 2.3;
+      ctx.fillStyle = k.c('panel'); ctx.fillRect(mx - w / 2 - 2, my - hh - 2, w + 4, 2 * hh + 4);
+      ctx.strokeStyle = k.c(j ? 's2' : 's1'); ctx.lineWidth = 1.8; ctx.beginPath();
+      for (let s = 0; s <= 24; s++) { const u = -1 + s / 12, v = 0.6 * Math.sin(2.2 * u + ph) * Math.exp(-u * u * 0.4) + 0.25 * u; s ? ctx.lineTo(mx + (u * w) / 2, my - v * hh) : ctx.moveTo(mx + (u * w) / 2, my - v * hh); }
+      ctx.stroke();
+    }));
+    [...ins, ...outs].forEach((p, i) => k.dot(p[0], p[1], 5, k.c(i < 2 ? 'ink-2' : 's7')));
+    k.label('a learned curve on every edge; each unit adds up its curves', W / 2, H - 6, { maxW: W - 12 });
+  };
+  D.hopfield = (ctx, W, H, t, k) => {
+    // four stored patterns; a noisy input; the weights of the recall, and what comes out
+    const n = 5, s = Math.min(5.5, (H - 30) / (2 * n)), pats = [0, 1, 2, 3].map((q) => (i, j) => ((i + j + q) % 4 === 0 || (q === 1 && i === 2) || (q === 2 && j === 2) ? 1 : 0)), now = Math.floor(t / 2.2) % 4;
+    const inp = (i, j) => Math.max(0, Math.min(1, pats[now](i, j) * 0.8 + 0.35 * (Math.sin(i * 7.1 + j * 3.3 + t) * 0.5)));
+    grid(k, W * 0.05, k.mid - (n * s) / 2 - 4, n, s, inp);
+    pats.forEach((pf, q) => { const x0 = W * 0.36 + (q % 2) * (n * s + 10), y0 = 8 + Math.floor(q / 2) * (n * s + 12); grid(k, x0, y0, n, s, pf); if (q === now) { ctx.strokeStyle = k.c('s2'); ctx.lineWidth = 2; ctx.strokeRect(x0 - 2, y0 - 2, n * s + 3, n * s + 3); } });
+    grid(k, W * 0.8, k.mid - (n * s) / 2 - 4, n, s, pats[now]);
+    k.label('a noisy input → the most alike of its patterns, recalled', W / 2, H - 6, { maxW: W - 12 });
+  };
+  D.upsample = (ctx, W, H, t, k) => {
+    // a 3 × 3 picture becomes 6 × 6, each pixel a 2 × 2 square; the copies of one pixel light up in turn
+    const s = Math.min((H - 26) / 6, W * 0.14), x0 = W * 0.1, y0 = 6, x1 = W * 0.52, v = (i, j) => 0.15 + 0.8 * k.rnd(i * 3 + j + 4), p = Math.floor(t * 1.2) % 9, pi = Math.floor(p / 3), pj = p % 3;
+    grid(k, x0, y0 + s * 1.5, 3, s, v);
+    grid(k, x1, y0, 6, s, (i, j) => v(Math.floor(i / 2), Math.floor(j / 2)));
+    ctx.strokeStyle = k.c('s2'); ctx.lineWidth = 2;
+    ctx.strokeRect(x0 + pj * s, y0 + s * 1.5 + pi * s, s - 1, s - 1); ctx.strokeRect(x1 + 2 * pj * s, y0 + 2 * pi * s, 2 * s - 1, 2 * s - 1);
+    k.line(x0 + (pj + 1) * s + 2, y0 + s * (2 + pi), x1 + 2 * pj * s - 3, y0 + (2 * pi + 1) * s, k.c('s2', 0.7), 1.4);
+    k.label('each pixel becomes a square of copies', W / 2, H - 7, { maxW: W - 12 });
+  };
+  D.sample = (ctx, W, H, t, k) => {
+    // a bell curve for one number of the code (its middle and spread wander as it learns); draws fall under it
+    const base = H - 22, X = (v) => W * 0.5 + v * W * 0.16, mu = 0.8 * Math.sin(t * 0.5), sd = 0.45 + 0.25 * Math.sin(t * 0.33 + 1);
+    const curve = (m, s2, col, lw) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); for (let i = 0; i <= 80; i++) { const v = -2.8 + (5.6 * i) / 80, y = base - (H - 40) * Math.exp(-((v - m) ** 2) / (2 * s2 * s2)); i ? ctx.lineTo(X(v), y) : ctx.moveTo(X(v), y); } ctx.stroke(); };
+    curve(0, 1, k.c('muted', 0.6), 1.2); curve(mu, sd, k.c('s1'), 2.2);
+    for (let q = 0; q < 6; q++) { const e = Math.sin(q * 12.9898 + Math.floor(t * 2) * 78.233) * 1.4; k.dot(X(mu + sd * e), base + 6, 3, k.c('s2', 0.9)); }
+    k.line(X(-2.9), base, X(2.9), base, k.c('line-2'), 1);
+    k.label('μ + σ·ε: its draws (orange); pulled toward N(0, 1) (grey)', W / 2, H - 6, { maxW: W - 12 });
+  };
+  D.graphconv = (ctx, W, H, t, k) => {
+    // a small graph; one node at a time takes in its neighbours (their links light up) and takes their colour's mix
+    const P = [[0.15, 0.3], [0.3, 0.72], [0.45, 0.25], [0.6, 0.6], [0.78, 0.3], [0.88, 0.75]].map(([x, y]) => [W * x, 8 + (H - 30) * y]);
+    const E = [[0, 1], [0, 2], [1, 3], [2, 3], [3, 4], [4, 5], [3, 5]], now = Math.floor(t * 0.9) % P.length, near = E.filter((e) => e.includes(now)).map((e) => (e[0] === now ? e[1] : e[0]));
+    for (const [a, b] of E) { const lit = near.includes(a) && b === now || near.includes(b) && a === now; k.line(P[a][0], P[a][1], P[b][0], P[b][1], lit ? k.c('s2', 0.9) : k.c('line-2'), lit ? 2.6 : 1.2); }
+    P.forEach(([x, y], i) => { k.dot(x, y, i === now ? 9 : 7, k.c(i === now ? 's2' : i < 3 ? 's1' : 's4', i === now ? 1 : 0.8)); });
+    k.label('each node: the average of its own features and its neighbours’, then a dense layer', W / 2, H - 6, { maxW: W - 12 });
+  };
   D.sepconv = (ctx, W, H, t, k) => {
     // three channels, each with its own small filter at the same place; their three results mixed into one output
     const n = 5, s = Math.min((H - 30) / (3 * n) * 1.6, 9), tones = ['s1', 's4', 's7'], p = Math.floor(t * 1.6) % 9, pi = Math.floor(p / 3), pj = p % 3;

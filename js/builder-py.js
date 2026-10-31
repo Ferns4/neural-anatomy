@@ -345,6 +345,8 @@ def story():
   function dataCode(setup, d) {
     const p = BT.byId[setup.problem], s = setup.ps[setup.problem] || BT.defaults(p), fam = p.family, out = [];
     out.push(`# ---------------------------------------------------------------- data: ${p.label.toLowerCase()}`);
+    const own = NA.builderPyGen && NA.builderPyGen.data(setup, d, p, s, PY._i);
+    if (own) { out.push(...own); return out; }
     if (fam === 'plane' && !p.custom) {
       const g = PLANE_PY[p.dataset];
       out.push(`def make_points(n, noise):`, `    i = torch.arange(n)`, ...g.body,
@@ -600,6 +602,62 @@ def story():
         g = logits.softmax(-1)                             # (..., experts)
         outs = torch.stack([self.act(e(x)) for e in self.experts], -1)   # (..., units, experts)
         return (outs * g[..., None, :]).sum(-1)`,
+    sample: String.raw`class Sample(nn.Module):
+    """A VAE's middle: the first half of its input are middles mu, the second half the logs of their spreads squared.
+    While training it gives mu + sigma * eps, eps drawn from N(0, 1) (the reparameterisation trick: the gradient flows
+    through mu and sigma), otherwise mu. It keeps beta x the KL divergence from N(0, 1), summed over its numbers and
+    averaged over the batch, in .kl for the loss."""
+    def __init__(self, beta):
+        super().__init__()
+        self.beta, self.kl = beta, torch.tensor(0.0)
+
+    def forward(self, x):
+        mu, lv = x.chunk(2, -1)
+        lv = lv.clamp(-8, 8)
+        self.kl = self.beta * 0.5 * (mu ** 2 + lv.exp() - 1 - lv).sum(-1).mean()
+        return mu + (0.5 * lv).exp() * torch.randn_like(mu) if self.training else mu
+
+
+def kl(model):
+    """The KL divergences of the model's Sample blocks: part of a VAE's loss."""
+    return sum(m.kl for m in model.modules() if isinstance(m, Sample))`,
+    kan: String.raw`class KAN(nn.Module):
+    """Kolmogorov-Arnold layer: on every edge from an input to a unit a function of its own, learned: a weight on
+    SiLU(x), plus a sum of G bumps (Gaussians spread evenly over -2...2) each with a weight of its own."""
+    def __init__(self, d_in, units, grid):
+        super().__init__()
+        self.register_buffer("centres", torch.linspace(-2, 2, grid))
+        self.h = 4 / max(1, grid - 1)                           # the bumps' width: their spacing
+        self.base = nn.Linear(d_in, units)                      # the SiLU part, and the bias
+        self.coef = nn.Parameter(0.1 / math.sqrt(d_in) * torch.randn(units, d_in, grid))
+
+    def forward(self, x):
+        bumps = torch.exp(-((x[..., None] - self.centres) / self.h) ** 2)   # (..., d_in, grid)
+        return self.base(F.silu(x)) + torch.einsum("...ig,uig->...u", bumps, self.coef)`,
+    hopfield: String.raw`class Hopfield(nn.Module):
+    """A modern Hopfield memory: M learned patterns. The input is compared with each (a dot product, times beta), a
+    softmax makes the similarities weights, and out comes their weighted mix of the patterns."""
+    def __init__(self, d, memories, beta):
+        super().__init__()
+        self.patterns, self.beta = nn.Parameter(torch.randn(memories, d) / math.sqrt(d)), beta
+
+    def forward(self, x):
+        return (self.beta * x @ self.patterns.T).softmax(-1) @ self.patterns`,
+    graphconv: String.raw`class GraphConv(nn.Module):
+    """Message passing: each node's new features are one linear layer (the same for every node) of the mean, or the
+    sum, of its own features and its neighbours'. Each row of x is a node: its features, then its links to the n
+    nodes (1 where linked), passed on unchanged so another round can follow."""
+    def __init__(self, f_in, n, units, act, agg="mean"):
+        super().__init__()
+        self.n, self.lin, self.act, self.agg = n, nn.Linear(f_in, units), act, agg
+
+    def forward(self, x):
+        h, links = x[..., :-self.n], x[..., -self.n:]
+        a = ((links > 0.5).float() + torch.eye(self.n)).clamp(max=1)   # each node and the nodes linked to it
+        m = a @ h
+        if self.agg == "mean":
+            m = m / a.sum(-1, keepdim=True)
+        return torch.cat([self.act(self.lin(m)), links], -1)`,
   };
   // a block's settings with the engine's defaults filled in
   const cfg = (b) => Object.assign({}, (NA.bx.BLOCKS[b.type] || {}).defaults, ...Object.keys(b).filter((k) => b[k] !== undefined && b[k] !== null).map((k) => ({ [k]: b[k] })));
@@ -718,6 +776,15 @@ def story():
       else if (b.type === 'ssm') { helpers.add('ssm'); init.push(`self.ssm${n} = StateSpace(${last}, ${c.state}, ${c.units})`); put(`x = ${ACT_PY[c.act](`self.ssm${n}(x)`)}`); }
       else if (b.type === 'rbf') { helpers.add('rbf'); init.push(`self.rbf${n} = RBF(${last}, ${c.units}, ${flt(c.width)})`); put(`x = self.rbf${n}(x)`); }
       else if (b.type === 'maxout') { helpers.add('maxout'); init.push(`self.maxout${n} = Maxout(${last}, ${c.units}, ${c.pieces})`); put(`x = self.maxout${n}(x)`); }
+      else if (b.type === 'upsample') put(`x = x.repeat_interleave(${c.size}, 2).repeat_interleave(${c.size}, 3)   # each pixel ${c.size} × ${c.size}`);
+      else if (b.type === 'sample') { helpers.add('sample'); init.push(`self.sample${n} = Sample(beta=${flt(c.beta)})`); put(`x = self.sample${n}(x)`); }
+      else if (b.type === 'graphconv') {
+        const fIn = typeof si[1] === 'number' && typeof si[0] === 'number' ? si[1] - si[0] : `${si[1]} - ${si[0]}`;
+        helpers.add('graphconv'); init.push(`self.gc${n} = GraphConv(${fIn}, ${si[0]}, ${c.units}, ${ACT_FN[c.act] || 'F.relu'}${c.agg === 'sum' ? ', agg="sum"' : ''})`); put(`x = self.gc${n}(x)`);
+      }
+      else if (b.type === 'skip') put(c.merge === 'concat' ? `x = torch.cat([x, h${n - 1 - c.back}], ${si.length === 3 ? 1 : -1})   # joined with what was kept` : `x = x + h${n - 1 - c.back}                                  # added to what was kept`);
+      else if (b.type === 'kan') { helpers.add('kan'); init.push(`self.kan${n} = KAN(${last}, ${c.units}, ${c.grid})`); put(`x = self.kan${n}(x)`); }
+      else if (b.type === 'hopfield') { helpers.add('hopfield'); init.push(`self.hop${n} = Hopfield(${last}, ${c.memories}, ${flt(c.beta)})`); put(`x = self.hop${n}(x)`); }
       else if (b.type === 'moe') { helpers.add('moe'); init.push(`self.moe${n} = MixtureOfExperts(${last}, ${c.units}, ${c.experts}, top=${c.top}, act=${ACT_FN[c.act] || 'F.relu'})`); put(`x = self.moe${n}(x)`); }
       else if (b.type === 'parallel' && par) {
         const name = `${par.name}${n}`;
@@ -753,8 +820,8 @@ def story():
      differs between the copies (a first copy that reads 2 numbers, a second that reads 16) becomes an argument of the
      class, so it is used like a function: Bend(d_in=2), Bend(d_in=16). Names come from the part's name. */
   const PY_TAKEN = new Set(['Model', 'SelfAttention', 'TransformerBlock', 'Gated', 'GaussianNoise', 'MixedActivation', 'None', 'True', 'False',
-    'SeparableConv', 'SqueezeExcite', 'RandomShift', 'AttentionPool', 'StateSpace', 'RBF', 'Maxout', 'MixtureOfExperts']);
-  const STEMS = new Set(['dense', 'act', 'drop', 'norm', 'attn', 'block', 'conv', 'glu', 'bn', 'noise', 'rnn', 'pe', 'pos', 'patch', 'b', 'tok', 'out', 'sep', 'se', 'xy', 'aug', 'apool', 'ssm', 'rbf', 'maxout', 'moe']);
+    'SeparableConv', 'SqueezeExcite', 'RandomShift', 'AttentionPool', 'StateSpace', 'RBF', 'Maxout', 'MixtureOfExperts', 'Sample', 'GraphConv', 'KAN', 'Hopfield']);
+  const STEMS = new Set(['dense', 'act', 'drop', 'norm', 'attn', 'block', 'conv', 'glu', 'bn', 'noise', 'rnn', 'pe', 'pos', 'patch', 'b', 'tok', 'out', 'sep', 'se', 'xy', 'aug', 'apool', 'ssm', 'rbf', 'maxout', 'moe', 'sample', 'gc', 'kan', 'hop']);
   const wordsOf = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^A-Za-z0-9]+/).filter(Boolean);
   const specOf = (b) => { const c = Object.assign({}, b); delete c.id; delete c.grp; delete c.part; return c; };
   function partNames(setup) {
@@ -813,6 +880,11 @@ def story():
       case 'gmp': case 'attnpool': return k === 3 ? [s[0]] : [s[1]];
       case 'ssm': return [s[0], c.units];
       case 'rbf': case 'maxout': case 'moe': return k === 1 ? [c.units] : [s[0], c.units];
+      case 'upsample': return [s[0], SX.mul(s[1], c.size), SX.mul(s[2], c.size)];
+      case 'sample': return [SX.div(s[0], 2)];
+      case 'graphconv': return [s[0], SX.add(c.units, s[0])];
+      case 'kan': return k === 1 ? [c.units] : [s[0], c.units];
+      case 'hopfield': case 'skip': return s.slice();
       case 'parallel': {
         const outs = (b.branches || []).map((list) => list.reduce((sh, q) => symShape(q, sh), s));
         if ((c.merge || 'concat') !== 'concat' || !outs.length) return (outs[0] || s).slice();
@@ -825,7 +897,7 @@ def story():
   const ARGS = [null, ['d_in'], ['t_in', 'd_in'], ['c_in', 'h_in', 'w_in']], FREE = [null, ['D'], ['T', 'D'], ['C', 'H', 'W']];
   const ARG_TEXT = { d_in: 'the numbers it is given', t_in: 'the positions of the sequence it is given', c_in: 'the channels of the picture it is given', h_in: 'its height', w_in: 'its width' };
   const HELPER_NAME = { mixed: 'MixedActivation', attn: 'SelfAttention', block: 'TransformerBlock', gated: 'Gated', noise: 'GaussianNoise', sine: 'sine_positions',
-    sepconv: 'SeparableConv', se: 'SqueezeExcite', coords: 'coord_channels', augment: 'RandomShift', attnpool: 'AttentionPool', ssm: 'StateSpace', rbf: 'RBF', maxout: 'Maxout', moe: 'MixtureOfExperts' };
+    sepconv: 'SeparableConv', se: 'SqueezeExcite', coords: 'coord_channels', augment: 'RandomShift', attnpool: 'AttentionPool', ssm: 'StateSpace', rbf: 'RBF', maxout: 'Maxout', moe: 'MixtureOfExperts', sample: 'Sample', graphconv: 'GraphConv', kan: 'KAN', hopfield: 'Hopfield' };
   // every part's class (or classes, when copies differ in kind of input), and how each copy is made and used
   function planParts(setup, chk, names) {
     const byGrp = {}, classes = [], label = NA.builderLab && NA.builderLab.blockLabel ? NA.builderLab.blockLabel : (b) => b.type;
@@ -875,6 +947,9 @@ def story():
     }
     const names = partNames(setup), parts = planParts(setup, chk, names), parSink = [];
     for (const c of parts.classes) for (const h of c.helpers) helpers.add(h);
+    const keep = new Set(blocks.flatMap((b, j) => (b.type === 'skip' ? [j - 1 - cfg(b).back] : [])));
+    const kept = (j) => { if (keep.has(j)) fwd.push(`h${j + 1} = x`.padEnd(54) + '# kept for a skip connection'); };
+    kept(-1);
     for (let i = 0; i < blocks.length;) {
       const run = names.runs.find((r) => r.from === i);
       if (run) {
@@ -882,11 +957,13 @@ def story():
         const g = parts.byGrp[run.grp];
         init.push(g.make);
         fwd.push(`x = self.${g.inst}(x)`.padEnd(54) + `# ${shp(g.out)}`);
+        kept(run.to - 1);
         i = run.to;
         continue;
       }
       const sh = chk.shapes[i] || {}, e = emitBlock(blocks[i], sh.in || [], sh.out || [], i + 1, helpers, { name: 'Parallel', sink: parSink });
       init.push(...e.init); fwd.push(...e.fwd);
+      kept(i);
       i++;
     }
     const fin = chk.shapes.length ? (chk.shapes[chk.shapes.length - 1] || {}).out : inp.kind === 'tokens' ? [inp.len, inp.embed] : inp.kind === 'vector' ? [inp.dim] : inp.kind === 'series' ? [inp.len, inp.dim] : [inp.c, inp.h, inp.w];
@@ -923,6 +1000,8 @@ def story():
   // ------------------------------------------------------------------ loss, optimizer, training
   function lossCode(setup, d) {
     const L = setup.loss, o = d.output, K = o.kind === 'tokens' ? o.vocab : o.k;
+    const own = NA.builderPyGen && NA.builderPyGen.loss(setup, d, PY._i);
+    if (own) return own;
     if (o.kind === 'tokens') return [`def loss_fn(out, y):                          # cross-entropy at every position with a target`, `    return F.cross_entropy(out.reshape(-1, ${K}), y.reshape(-1), ignore_index=-1${L.smooth ? `, label_smoothing=${num(L.smooth)}` : ''})`];
     if (o.kind === 'value') {
       if (L.id === 'mae') return ['def loss_fn(out, y):                          # absolute error', '    return (out[:, 0] - y).abs().mean()'];
@@ -974,6 +1053,8 @@ def story():
       else if (b.type === 'sepconv') out.push(call(`${at('sep')}.depthwise`, 1), call(`${at('sep')}.pointwise`, gain(HE(cfg(b).act))));
       else if (b.type === 'se') out.push(call(`${at('se')}.squeeze`, gain(true)), call(`${at('se')}.excite`, 1));
       else if (b.type === 'maxout') out.push(call(`${at('maxout')}.lin`, gain(false)));
+      else if (b.type === 'graphconv') out.push(call(`${at('gc')}.lin`, gain(HE(cfg(b).act))));
+      else if (b.type === 'kan') out.push(call(`${at('kan')}.base`, 1));
       else if (b.type === 'moe') out.push(`for expert in ${at('moe')}.experts:`, `    ${call('expert', gain(HE(cfg(b).act)))}`, call(`${at('moe')}.gate`, 1));
       else if (b.type === 'attnpool' || b.type === 'ssm') {
         const w = b.type === 'ssm' ? `${at('ssm')}.B.weight` : `${at('apool')}.query.weight`;                 // no bias to zero
@@ -987,13 +1068,16 @@ def story():
     out.push('init_(model.out)');
     return out;
   }
-  function scoreCode(d) {
+  function scoreCode(d, setup) {
+    const own = NA.builderPyGen && NA.builderPyGen.score(d, setup);
+    if (own) return own;
     if (d.output.kind === 'value') return ['def score(out, y):                            # R²: 1 is perfect, 0 is no better than the mean', '    return 1 - ((out[:, 0] - y) ** 2).sum() / ((y - y.mean()) ** 2).sum()'];
     if (d.output.kind === 'tokens') return ['def score(out, y):                            # share of target tokens predicted right', '    mask = y != -1', '    return (out.argmax(-1)[mask] == y[mask]).float().mean()'];
     return ['def score(out, y):                            # accuracy', '    return (out.argmax(1) == y).float().mean()'];
   }
   function afterCode(setup, d) {
     const p = BT.byId[setup.problem];
+    if (NA.builderPyGen && NA.builderPyGen.owns(d)) return NA.builderPyGen.after(setup, d, Object.assign({ shapes: NA.bx.check(setup.blocks, d.input, d.output).shapes }, PY._i));
     if (d.family !== 'sequence') return [];
     if (p.task === 'language' || p.task === 'sentences') {
       const prompt = p.task === 'language' ? 'alice likes tea . bob likes milk . alice drinks' : BT.wordsOf(setup.ps[setup.problem].text).slice(0, 3).join(' ');
@@ -1236,12 +1320,13 @@ def story():
         `    leans more than ${+(W.limit * 180 / Math.PI).toFixed(1)} degrees or the cart runs off its track. ${pays(paysText)}; at most ${steps} steps."""`,
         '    actions = ["push left", "push right"]', `    max_steps = ${steps}`]), '',
         '    def reset(self):', '        self.x = random.uniform(-X_START, X_START)', '        self.v, self.th, self.w = (random.uniform(-START, START) for _ in range(3))', '        self.t, self.pushed = 0, 0',
+        d.s.curriculum === 'on' ? '        self.g_scale = 0.35 + 0.65 * getattr(self, "level", 1.0)   # (easy first: weaker gravity at first)' : null,
         rd ? '        self.hist = [(self.x / EDGE, self.th / LIMIT)] * 3     # the readings before this one' : null, '        return self.obs()', '',
         ...sense([rd ? '    def obs(self):                                # (4, 2): position and angle, the last 4 steps, oldest first; no speeds' : '    def obs(self):                                # position, speed, angle, turning speed, scaled to about ±1',
           rd ? '        return torch.tensor(self.hist + [(self.x / EDGE, self.th / LIMIT)])' : '        return torch.tensor([self.x / EDGE, self.v / 3, self.th / LIMIT, self.w / 3.5])']), '',
         `    def step(self, a):                            # one 0.02 s step: gravity ${drop(W.g)}, cart 1 kg, pole 0.1 kg and ${drop(W.len)} m, a push of ${drop(W.force)} N`,
         `        force = ${num(W.force)} if a == 1 else -${num(W.force)}`, '        ct, st = math.cos(self.th), math.sin(self.th)', `        tmp = (force + ${num(W.pml)} * self.w * self.w * st) / 1.1`,
-        `        acc = (${num(W.g)} * st - ct * tmp) / (${num(W.half)} * (4 / 3 - 0.1 * ct * ct / 1.1))`, `        xacc = tmp - ${num(W.pml)} * acc * ct / 1.1`,
+        `        acc = (${num(W.g)}${d.s.curriculum === 'on' ? ' * self.g_scale' : ''} * st - ct * tmp) / (${num(W.half)} * (4 / 3 - 0.1 * ct * ct / 1.1))`, `        xacc = tmp - ${num(W.pml)} * acc * ct / 1.1`,
         rd ? '        self.hist = self.hist[1:] + [(self.x / EDGE, self.th / LIMIT)]' : null,
         '        self.x, self.v, self.th, self.w = self.x + 0.02 * self.v, self.v + 0.02 * xacc, self.th + 0.02 * self.w, self.w + 0.02 * acc', '        self.t += 1',
         '        fell = abs(self.x) > EDGE or abs(self.th) > LIMIT', '        push = 1 if a == 1 else -1',
@@ -1279,7 +1364,7 @@ def story():
         ...SEEDED(4242, ['for _ in range(40):', ...PLAY('    '), '    caught += self.caught']).map((l) => '        ' + l), '        return caught / 40'];
     }
     // the maze
-    const def = NA.rl.MAZE_SET.find((m) => m.id === ws.maze) || NA.rl.MAZE_SET[0], view = ws.view, rnd = ws.random, slip = ws.slip || 0, most = E.make('maze', ws).maxSteps;
+    const def = ws.maze === 'own' && E.mazeCheck(ws.rows).ok ? { rows: ws.rows, name: 'your own maze' } : NA.rl.MAZE_SET.find((m) => m.id === ws.maze) || NA.rl.MAZE_SET[0], view = ws.view, rnd = ws.random, slip = ws.slip || 0, most = E.make('maze', ws).maxSteps;
     const obs = view === 'square' ? ['    def obs(self):                                # which square it is on: one input per square', '        return F.one_hot(torch.tensor(self.s), len(self.maze.cell)).float()']
       : view === 'picture' ? ['    def obs(self):                                # (5, 6, 8): walls, pits, the goal, where it is, where it has been', '        m = self.maze', '        p = torch.zeros(5, m.H, m.W)',
         '        for i, c in enumerate(m.cell):', '            y, x = divmod(i, m.W)', '            if c in "#XG":', '                p["#XG".index(c), y, x] = 1.0', '            if i in self.seen:', '                p[4, y, x] = 1.0', '        p[3, self.s // m.W, self.s % m.W] = 1.0', '        return p']
@@ -1331,6 +1416,7 @@ def story():
   // the method's training loop
   // whether the script keeps the best network: the gradient methods, unless it is set off
   const keepsBest = (d) => !NA.brl.isEvo(d.method) && d.s.keepBest !== false;
+  const PREF_PY = "# ---------------------------------------------------------------- Which did better? (learning from preferences)\n# The page shows you two tries and asks which did better; here the world's own reward answers (the try with the\n# larger return did better), as in the first experiments with this method (Christiano and others, 2017). A reward\n# model learns a reward per move whose totals agree with the answers, and PPO learns from its rewards, never the world's.\nreward_model = nn.Sequential(nn.Linear(Xva.shape[1] + n_actions, 32), nn.ReLU(), nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 1))\nrm_opt = torch.optim.Adam(reward_model.parameters(), lr=0.003)\ntries, pairs = [], []                               # tries: (what it saw, its moves, the world's return); pairs: (i, j, answer)\nask_every, explore = __EVERY__, 0.25                         # a new pair every so many steps; the second try's share of random moves\n\n\ndef rm_input(o, a):                                 # what the reward model sees: the observation, and the move one-hot\n    return torch.cat([o, F.one_hot(torch.as_tensor(a), n_actions).float()], -1)\n\n\ndef r_hat(o, a):                                    # the reward model's reward for move a after seeing o\n    with torch.no_grad():\n        return reward_model(rm_input(o, a)).item()\n\n\ndef one_try(seed, eps):\n    \"\"\"A try of the current policy from the start of seed, its moves sampled, a share eps of them at random.\"\"\"\n    w, saw, moves, ret = World(), [], [], 0.0\n    state = random.getstate()\n    random.seed(seed)\n    o, done = w.reset(), False\n    while not done and len(moves) < 400:\n        a = random.randrange(n_actions) if eps and random.random() < eps else int(torch.multinomial(outputs(o[None])[0, :n_actions].softmax(0), 1))\n        o2, r, done = w.step(a)\n        saw.append(o); moves.append(a); ret += r; o = o2\n    random.setstate(state)\n    return torch.stack(saw), torch.tensor(moves), ret\n\n\ndef fit_reward_model(steps):\n    \"\"\"The Bradley-Terry model: P(first did better) = sigmoid(total of its rewards - total of the other's), a\n    logistic loss, and a little pull of every reward toward 0 (the answers fix their differences, this their size).\"\"\"\n    for _ in range(steps):\n        i, j, y = random.choice(pairs)\n        (oa, ma, _), (ob, mb, _) = tries[i], tries[j]\n        ra, rb = reward_model(rm_input(oa, ma))[:, 0], reward_model(rm_input(ob, mb))[:, 0]\n        z = (ra.sum() - rb.sum()).clamp(-30, 30)\n        loss = F.binary_cross_entropy_with_logits(z, torch.tensor(y)) + 0.0005 * (ra.pow(2).sum() + rb.pow(2).sum())\n        rm_opt.zero_grad()\n        loss.backward()\n        torch.nn.utils.clip_grad_norm_(reward_model.parameters(), 1.0)\n        rm_opt.step()\n\n\ndef ask():\n    \"\"\"A new pair: two tries from the same start, the second with a quarter of its moves at random; the world answers.\"\"\"\n    a, b = one_try(5000 + len(pairs), 0.0), one_try(5000 + len(pairs), explore)\n    tries.extend([a, b])\n    pairs.append((len(tries) - 2, len(tries) - 1, 1.0 if a[2] > b[2] else 0.0 if b[2] > a[2] else 0.5))\n    fit_reward_model(min(400, 40 + 10 * len(pairs)))\n\n\nnext_ask = 0";
   function methodPy(d, T, steps, every, setup) {
     const s = d.s, m = d.method, g = flt(s.gamma), B = T.batch;
     // evolution (a genetic algorithm, evolution strategies, MAP-Elites): builder-py-worlds.js
@@ -1340,23 +1426,40 @@ def story():
     const keep = keepsBest(d);
     const report = (what) => (keep ? [`    if step % ${every} == 0:`, '        score = judge.score(best_move)', '        if score > best[0]:                        # its best yet: keep its weights', '            best = (score, copy.deepcopy(model.state_dict()))', `        print(f"step {step:5d}  ${what}  score {score:.3f}")`]
       : [`    if step % ${every} == 0:`, `        print(f"step {step:5d}  ${what}  score {judge.score(best_move):.3f}")`]);
+    // Copy you: your moves (demos.json, from the Python tab's Download your moves), a classifier's steps on them
+    if (m === 'bc') return ['# your moves, saved from the page (the Python tab\'s "Download your moves"): what it saw before each, and your move',
+      'with open("demos.json") as f:', '    demos = json.load(f)', 'X_demo, A_demo = torch.tensor(demos["obs"], dtype=torch.float32), torch.tensor(demos["moves"])', 'print(f"{len(A_demo)} moves of yours")',
+      `batch = ${B}`, `for step in range(${big(steps)}):`, '    i = torch.randint(len(A_demo), (batch,))',
+      '    loss = F.cross_entropy(model(X_demo[i])[:, :n_actions], A_demo[i])   # your move in that moment, as a class', ...update, ...report('loss {loss.item():.4f}')];
     // moves in 8 copies of the world, sampled from the policy, the copies as one batch: actor-critic and PPO (each
     // reward normalised as the page does, unless normReward is off)
-    const norm = (m === 'a2c' || m === 'ppo') && s.normReward !== false;
+    const norm = (m === 'a2c' || m === 'ppo' || m === 'pref' || m === 'gauss') && s.normReward !== false;
     const roll = (n) => [`    for t in range(${n}):                         # ${n} moves in each of 8 copies of the world, the copies as one batch`, '        out = outputs(torch.stack(obs))', '        dist = torch.distributions.Categorical(logits=out[:, :n_actions])', '        acts = dist.sample()',
-      '        X.append(torch.stack(obs)); A.append(acts); V.append(out[:, n_actions]); LP.append(dist.log_prob(acts))', '        rs, ds = [], []', '        for k, e in enumerate(envs):', '            o2, r, done = e.step(int(acts[k]))', '            obs[k] = e.reset() if done else o2', `            rs.append(${norm ? 'scale(k, r, done)' : 'r'}); ds.append(float(done))`, '        R.append(torch.tensor(rs)); D.append(torch.tensor(ds))'];
+      '        X.append(torch.stack(obs)); A.append(acts); V.append(out[:, n_actions]); LP.append(dist.log_prob(acts))', '        rs, ds = [], []', '        for k, e in enumerate(envs):', '            o2, r, done = e.step(int(acts[k]))', ...(m === 'pref' ? ['            r = r_hat(obs[k], int(acts[k]))       # the reward model\'s reward, not the world\'s'] : []), '            obs[k] = e.reset() if done else o2', `            rs.append(${norm ? 'scale(k, r, done)' : 'r'}); ds.append(float(done))`, '        R.append(torch.tensor(rs)); D.append(torch.tensor(ds))'];
     const scaler = norm ? ['class ReturnScale:', '    """Each reward divided by the running spread of the discounted return (as gym\'s NormalizeReward), kept within',
       '    ±10: a world that pays in hundreds then learns like one that pays in ones. The return it reports stays the world\'s."""', '    def __init__(self, n):', '        self.disc, self.n, self.mean, self.m2 = [0.0] * n, 0, 0.0, 0.0', '    def __call__(self, k, r, done):',
       '        self.disc[k] = self.disc[k] * gamma + r     # this copy\'s discounted return so far', '        self.n += 1', '        d = self.disc[k] - self.mean', '        self.mean += d / self.n                    # its running mean and spread, over every copy',
       '        self.m2 += d * (self.disc[k] - self.mean)', '        if done:', '            self.disc[k] = 0.0', '        sd = math.sqrt(self.m2 / (self.n - 1)) if self.n > 1 else 1.0', '        return max(-10.0, min(10.0, r / (sd + 1e-8)))', 'scale = ReturnScale(8)'] : [];
-    if (m === 'dqn') return [`gamma, explore, batch = ${g}, ${s.explore}, ${B}`, 'target = copy.deepcopy(model).eval()             # the target network: a copy, refreshed every 500 updates', 'memory = collections.deque(maxlen=10_000)          # the replay memory: (observation, move, reward, next observation or None)',
-      'obs = env.reset()', `for step in range(${big(steps)}):`, '    eps = max(0.05, 1 - step / explore) if explore else 0.0   # the chance of a random move: from 1 down to 0.05',
-      '    a = random.randrange(n_actions) if random.random() < eps else best_move(obs)', '    obs2, r, done = env.step(a)', '    memory.append((obs, a, r, None if done else obs2))', '    obs = env.reset() if done else obs2', '    if len(memory) < 64:', '        continue',
-      '    sample = [memory[random.randrange(len(memory))] for _ in range(batch)]', '    X, A = torch.stack([q[0] for q in sample]), torch.tensor([q[1] for q in sample])',
-      '    R, alive = torch.tensor([q[2] for q in sample]), torch.tensor([float(q[3] is not None) for q in sample])', '    X2 = torch.stack([q[0] if q[3] is None else q[3] for q in sample])',
-      '    with torch.no_grad():                         # double DQN: the network picks the next move, the target network says what it is worth', '        nxt = outputs(X2)[:, :n_actions].argmax(1)', '        y = R + gamma * alive * target(X2).gather(1, nxt[:, None])[:, 0]',
-      '    q = model(X).gather(1, A[:, None])[:, 0]', '    loss = F.smooth_l1_loss(q, y)                  # Huber: squared near the target, absolute beyond 1', ...update,
-      '    if step % 500 == 499:', '        target.load_state_dict(model.state_dict())', ...report('loss {loss.item():.4f}')];
+    // the methods for numbers: contPy, below
+    if (NA.brl.isCont(m)) return contPy(d, T, steps, every, { g, B, update, report, scaler, norm });
+    if (m === 'dqn') {
+      const mem = s.dqnMem || 10000, tgt = s.dqnTarget || 500, dbl = s.dqnDouble !== false, duel = !!s.dqnDueling, nst = s.dqnN || 1, Q = (x) => (duel ? `q_values(${x})` : `${x}[:, :n_actions]`);
+      return [...(duel ? ['def q_values(out):                                 # dueling: the value plus each move\'s advantage, less their mean', '    adv = out[:, :n_actions]', '    return out[:, n_actions:n_actions + 1] + adv - adv.mean(1, keepdim=True)', '', ''] : []),
+        `gamma, explore, batch, n_step = ${g}, ${s.explore}, ${B}, ${nst}`, `target = copy.deepcopy(model).eval()             # the target network: a copy, refreshed every ${tgt} updates`,
+        `memory = collections.deque(maxlen=${big(mem)})          # the replay memory: (observation, move, ${nst > 1 ? 'its next n rewards, discounted' : 'reward'}, the observation after them or None, how many)`,
+        ...(nst > 1 ? ['recent = collections.deque()                       # the last moves, waiting for their n-step return'] : []),
+        'obs = env.reset()', `for step in range(${big(steps)}):`, '    eps = max(0.05, 1 - step / explore) if explore else 0.0   # the chance of a random move: from 1 down to 0.05',
+        '    a = random.randrange(n_actions) if random.random() < eps else best_move(obs)', '    obs2, r, done = env.step(a)',
+        ...(nst > 1 ? ['    recent.append((obs, a, r))', '    while recent and (len(recent) == n_step or done):   # each waiting move: its next n rewards (fewer at the end), then where it got to', '        o0, a0, _ = recent[0]',
+          '        ret = sum(q[2] * gamma ** k for k, q in enumerate(recent))', '        memory.append((o0, a0, ret, None if done else obs2, len(recent)))', '        recent.popleft()'] : ['    memory.append((obs, a, r, None if done else obs2, 1))']),
+        '    obs = env.reset() if done else obs2', '    if len(memory) < 64:', '        continue',
+        '    sample = [memory[random.randrange(len(memory))] for _ in range(batch)]', '    X, A = torch.stack([q[0] for q in sample]), torch.tensor([q[1] for q in sample])',
+        '    R, alive = torch.tensor([q[2] for q in sample]), torch.tensor([float(q[3] is not None) for q in sample])', '    k = torch.tensor([float(q[4]) for q in sample])', '    X2 = torch.stack([q[0] if q[3] is None else q[3] for q in sample])',
+        ...(dbl ? ['    with torch.no_grad():                         # double DQN: the network picks the next move, the target network says what it is worth', `        nxt = ${Q('outputs(X2)')}.argmax(1)`, `        y = R + gamma ** k * alive * ${Q('target(X2)')}.gather(1, nxt[:, None])[:, 0]`]
+          : ['    with torch.no_grad():                         # the target network picks the next move and says what it is worth', `        y = R + gamma ** k * alive * ${Q('target(X2)')}.max(1).values`]),
+        `    q = ${Q('model(X)')}.gather(1, A[:, None])[:, 0]`, '    loss = F.smooth_l1_loss(q, y)                  # Huber: squared near the target, absolute beyond 1', ...update,
+        `    if step % ${tgt} == ${tgt - 1}:`, '        target.load_state_dict(model.state_dict())', ...report('loss {loss.item():.4f}')];
+    }
     if (m === 'pg') return [`gamma = ${g}`, 'obs = env.reset()', `for step in range(${big(steps)}):`, '    batch_obs, batch_a, batch_ret = [], [], []',
       '    while len(batch_obs) < 64:                    # whole episodes until about 64 moves are in hand', '        rewards, done = [], False', '        while not done:', '            a = int(torch.multinomial(outputs(obs[None])[0, :n_actions].softmax(0), 1))   # a move sampled from the policy',
       '            obs2, r, done = env.step(a)', '            batch_obs.append(obs); batch_a.append(a); rewards.append(r)', '            obs = env.reset() if done else obs2', '        ret, returns = 0.0, []', '        for r in reversed(rewards):                # the discounted return after each move',
@@ -1367,16 +1470,75 @@ def story():
       '    returns, V = torch.stack(returns).flatten(), torch.stack(V).flatten()', '    adv = returns - V                              # the advantage: better or worse than the critic expected', '    adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)',
       '    out = model(torch.cat(X))', '    logp = out[:, :n_actions].log_softmax(1)', '    entropy = -(logp.exp() * logp).sum(1)', '    chosen = logp[torch.arange(len(logp)), torch.cat(A)]',
       '    loss = -(adv * chosen).mean() - 0.01 * entropy.mean() + 0.25 * ((out[:, n_actions] - returns) ** 2).mean()', ...update, ...report('loss {loss.item():.4f}')];
-    if (m === 'ppo') return [`gamma, lam, batch = ${g}, 0.95, ${B}`, ...scaler, 'envs = [World() for _ in range(8)]', 'obs = [e.reset() for e in envs]', 'queue = []', `for step in range(${big(steps)}):`, '    if not queue:', '        X, A, R, V, LP, D = [], [], [], [], [], []', ...roll(16).map((l) => '    ' + l),
+    if (m === 'ppo' || m === 'pref') return [...(m === 'pref' ? [PREF_PY.replace('__EVERY__', String(Math.max(10, Math.round((s.prefEvery || 300) / 5)))), '', ''] : []), `gamma, lam, batch = ${g}, ${flt(s.ppoLam ?? 0.95)}, ${B}`, ...scaler, 'envs = [World() for _ in range(8)]', 'obs = [e.reset() for e in envs]', 'queue = []', `for step in range(${big(steps)}):`,
+      ...(m === 'pref' ? ['    while step >= next_ask:                       # a new pair (the first four one after another); the reward model learns', '        ask()', '        next_ask = step + (0 if len(pairs) < 4 else ask_every)'] : []), '    if not queue:', '        X, A, R, V, LP, D = [], [], [], [], [], []', ...roll(16).map((l) => '    ' + l),
       '        nxt, gae, adv = outputs(torch.stack(obs))[:, n_actions], torch.zeros(8), []', '        for t in reversed(range(16)):            # advantages by GAE (λ = 0.95)', '            delta = R[t] + gamma * nxt * (1 - D[t]) - V[t]', '            gae = delta + gamma * lam * (1 - D[t]) * gae', '            adv.insert(0, gae)', '            nxt = V[t]',
       '        adv = torch.stack(adv).flatten()', '        ret = adv + torch.stack(V).flatten()', '        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)', '        data = (torch.cat(X), torch.cat(A), torch.cat(LP), adv, ret)',
-      '        for _ in range(4):                       # 4 passes over the 128 moves, in shuffled minibatches', '            perm = torch.randperm(len(adv))', '            queue += [perm[i:i + batch] for i in range(0, len(perm), batch)]',
+      `        for _ in range(${s.ppoEpochs ?? 4}):                       # ${s.ppoEpochs ?? 4} pass${(s.ppoEpochs ?? 4) === 1 ? '' : 'es'} over the 128 moves, in shuffled minibatches`, '            perm = torch.randperm(len(adv))', '            queue += [perm[i:i + batch] for i in range(0, len(perm), batch)]',
       '    i = queue.pop(0)', '    x, a, old_logp, adv_i, ret_i = (q[i] for q in data)', '    out = model(x)', '    logp = out[:, :n_actions].log_softmax(1)', '    ratio = (logp[torch.arange(len(i)), a] - old_logp).exp()',
-      '    clipped = ratio.clamp(0.8, 1.2)                # once a move is 20% more or less likely than when it was played, no further push',
+      `    clipped = ratio.clamp(${flt(1 - (s.ppoClip ?? 0.2))}, ${flt(1 + (s.ppoClip ?? 0.2))})                # once a move is ${Math.round(100 * (s.ppoClip ?? 0.2))}% more or less likely than when it was played, no further push`,
       '    entropy = -(logp.exp() * logp).sum(1)           # less a little entropy, as in actor-critic, to keep it exploring',
-      '    loss = -torch.min(ratio * adv_i, clipped * adv_i).mean() - 0.01 * entropy.mean() + 0.25 * ((out[:, n_actions] - ret_i) ** 2).mean()', ...update, ...report('loss {loss.item():.4f}')];
+      `    loss = -torch.min(ratio * adv_i, clipped * adv_i).mean() - ${num(s.ppoEnt ?? 0.01)} * entropy.mean() + 0.25 * ((out[:, n_actions] - ret_i) ** 2).mean()`, ...update, ...report('loss {loss.item():.4f}')];
+  }
+  /* The methods for numbers, in PyTorch (the page: js/builder-rl.js). PPO with a Gaussian policy: a bell curve per
+     number, its middle from the network and its spread (log_std) learned beside it. SAC and TD3: two critics of their
+     own (64 and 64 ReLU neurons, the observation and the numbers in), their slow copies, a replay memory, 1,000 random
+     tries first; SAC's α learns to keep the curves' entropy near −(the numbers it sets). */
+  function contPy(d, T, steps, every, h) {
+    const m = d.method, { g, B, update, report, scaler, norm } = h;
+    const W = NA.rlEnvs.make(d.world, d.ws);
+    W.reset(new NA.RNG(1));
+    const most = W.maxSteps || 1000;
+    const s = d.s, clip = s.ppoClip ?? 0.2;
+    if (m === 'gauss') return [`gamma, lam, batch = ${g}, ${flt(s.ppoLam ?? 0.95)}, ${B}`, ...scaler,
+      'log_std = torch.full((n_numbers,), -0.5, requires_grad=True)   # the spread of each number\'s bell curve (its log), learned beside the network',
+      `opt_std = torch.optim.Adam([log_std], lr=${num(T.lr)})`, 'envs = [World() for _ in range(8)]', 'obs = [e.reset() for e in envs]', 'queue = []', `for step in range(${big(steps)}):`, '    if not queue:',
+      '        X, A, R, V, LP, D = [], [], [], [], [], []', '        for t in range(16):                      # 16 tries in each of 8 copies of the world, the copies as one batch', '            out = outputs(torch.stack(obs))',
+      '            dist = torch.distributions.Normal(out[:, :n_numbers], log_std.detach().exp())', '            acts = dist.sample()',
+      '            X.append(torch.stack(obs)); A.append(acts); V.append(out[:, n_numbers]); LP.append(dist.log_prob(acts).sum(1))', '            rs, ds = [], []', '            for k, e in enumerate(envs):',
+      '                o2, r, done = e.step(acts[k].clamp(-1, 1).tolist())   # the try, clipped to -1 ... 1', '                obs[k] = e.reset() if done else o2', `                rs.append(${norm ? 'scale(k, r, done)' : 'r'}); ds.append(float(done))`,
+      '            R.append(torch.tensor(rs)); D.append(torch.tensor(ds))', '        nxt, gae, adv = outputs(torch.stack(obs))[:, n_numbers], torch.zeros(8), []', '        for t in reversed(range(16)):            # advantages by GAE (λ = 0.95)',
+      '            delta = R[t] + gamma * nxt * (1 - D[t]) - V[t]', '            gae = delta + gamma * lam * (1 - D[t]) * gae', '            adv.insert(0, gae)', '            nxt = V[t]', '        adv = torch.stack(adv).flatten()', '        ret = adv + torch.stack(V).flatten()',
+      '        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)', '        data = (torch.cat(X), torch.cat(A), torch.cat(LP), adv, ret)', `        for _ in range(${s.ppoEpochs ?? 4}):                       # passes over the 128 tries, in shuffled minibatches`,
+      '            perm = torch.randperm(len(adv))', '            queue += [perm[i:i + batch] for i in range(0, len(perm), batch)]', '    i = queue.pop(0)', '    x, a, old_logp, adv_i, ret_i = (q[i] for q in data)', '    out = model(x)',
+      '    logp = torch.distributions.Normal(out[:, :n_numbers], log_std.exp()).log_prob(a).sum(1)', '    ratio = (logp - old_logp).exp()', `    clipped = ratio.clamp(${flt(1 - clip)}, ${flt(1 + clip)})                # once a try is ${Math.round(100 * clip)}% more or less likely than when it was made, no further push`,
+      '    entropy = (log_std + 0.5 * math.log(2 * math.pi * math.e)).sum()   # the curves\' entropy, a little of it, to keep it trying',
+      `    loss = -torch.min(ratio * adv_i, clipped * adv_i).mean() - ${num((s.ppoEnt ?? 0.01) / 10)} * entropy + 0.25 * ((out[:, n_numbers] - ret_i) ** 2).mean()`,
+      '    opt_std.zero_grad()', ...update, '    opt_std.step()', '    with torch.no_grad():', '        log_std.clamp_(-2.5, 0.5)', ...report('loss {loss.item():.4f}')];
+    const sac = m === 'sac';
+    return [
+      'class Critic(nn.Module):', '    """What a state and a try are worth: the observation and the numbers in, the return it expects out."""', '    def __init__(self):', '        super().__init__()',
+      '        self.net = nn.Sequential(nn.Linear(Xva[0].numel() + n_numbers, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1))', '',
+      '    def forward(self, x, a):', '        return self.net(torch.cat([x.flatten(1), a], 1))[:, 0]', '', '',
+      'q1, q2 = Critic(), Critic()                         # two critics, each judged against the smaller of their slow copies', 'q1_slow, q2_slow = copy.deepcopy(q1), copy.deepcopy(q2)',
+      'critic_opt = torch.optim.Adam(list(q1.parameters()) + list(q2.parameters()), lr=1e-3)', 'memory = collections.deque(maxlen=100_000)          # the replay memory: (observation, try, reward, next observation, over)',
+      `gamma, batch, tau, warm, most = ${g}, ${Math.max(64, B)}, 0.005, ${s.warm ?? 1000}, ${most}   # tau: how fast the slow copies follow; warm: random tries first; most: the longest episode`,
+      ...(sac ? ['log_alpha = torch.tensor(math.log(0.2), requires_grad=True)   # α: what the curves\' entropy is worth, learned', 'alpha_opt = torch.optim.Adam([log_alpha], lr=3e-4)']
+        : ['actor_slow = copy.deepcopy(model)                  # the slow copy of the network, for the critics\' targets']), '', '',
+      'def slow_follow(slow, fast):                       # Polyak averaging: the slow copy moves a little toward the fast one', '    with torch.no_grad():', '        for p_slow, p in zip(slow.parameters(), fast.parameters()):', '            p_slow.mul_(1 - tau).add_(tau * p)', '', '',
+      ...(sac ? ['def sac_try(out):', '    """For each row of outputs (the middles, then the logs of the spreads): tanh of a draw from the bell curve, and its log probability."""',
+        '    mu, log_sd = out[:, :n_numbers], out[:, n_numbers:].clamp(-5, 2)', '    u = mu + log_sd.exp() * torch.randn_like(mu)', '    a = u.tanh()',
+        '    logp = (torch.distributions.Normal(mu, log_sd.exp()).log_prob(u) - torch.log(1 - a ** 2 + 1e-6)).sum(1)', '    return a, logp', '', ''] : []),
+      'obs = env.reset()', `for step in range(${big(steps)}):`, '    if step < warm:                                # random tries first, to fill the memory', '        a = [random.uniform(-1, 1) for _ in range(n_numbers)]', '    else:', '        with torch.no_grad():',
+      sac ? '            a = sac_try(outputs(obs[None]))[0][0].tolist()' : '            a = (outputs(obs[None])[0, :n_numbers].tanh() + 0.1 * torch.randn(n_numbers)).clamp(-1, 1).tolist()   # with a little noise, to explore',
+      '    obs2, r, done = env.step(a)', '    memory.append((obs, a, r, obs2, float(done and env.t < most)))   # (one cut short by the time limit is not over: its last state has a value)', '    obs = env.reset() if done else obs2',
+      '    if step < warm or len(memory) < 256:', '        continue', '    sample = [memory[random.randrange(len(memory))] for _ in range(batch)]', '    X, X2 = torch.stack([q[0] for q in sample]), torch.stack([q[3] for q in sample])',
+      '    A, R, OVER = (torch.tensor([q[k] for q in sample], dtype=torch.float32) for k in (1, 2, 4))',
+      ...(sac ? ['    alpha = log_alpha.exp().detach()', '    with torch.no_grad():                         # the target: r + γ (the smaller slow critic\'s value of a fresh try at the next state − α log π of it)', '        a2, logp2 = sac_try(model(X2))',
+        '        y = R + gamma * (1 - OVER) * (torch.min(q1_slow(X2, a2), q2_slow(X2, a2)) - alpha * logp2)']
+        : ['    with torch.no_grad():                         # the target: the slow copy\'s try at the next state, with clipped noise, valued by the smaller slow critic', '        a2 = (actor_slow(X2)[:, :n_numbers].tanh() + (0.2 * torch.randn(batch, n_numbers)).clamp(-0.5, 0.5)).clamp(-1, 1)',
+          '        y = R + gamma * (1 - OVER) * torch.min(q1_slow(X2, a2), q2_slow(X2, a2))']),
+      '    critic_loss = 0.5 * ((q1(X, A) - y) ** 2).mean() + 0.5 * ((q2(X, A) - y) ** 2).mean()', '    critic_opt.zero_grad()', '    critic_loss.backward()', '    torch.nn.utils.clip_grad_norm_(list(q1.parameters()) + list(q2.parameters()), 10)', '    critic_opt.step()',
+      ...(sac ? ['    a_new, logp = sac_try(model(X))                 # the policy: tries the critics value more, and wider curves', '    loss = (alpha * logp - torch.min(q1(X, a_new), q2(X, a_new))).mean()', ...update,
+        '    alpha_loss = -(log_alpha * (logp.detach() - n_numbers)).mean()   # α up when the curves are narrower than wanted, down when wider', '    alpha_opt.zero_grad()', '    alpha_loss.backward()', '    alpha_opt.step()', '    slow_follow(q1_slow, q1)', '    slow_follow(q2_slow, q2)']
+        : ['    if step % 2:                                   # every second step: the network toward the tries the first critic values most, and the slow copies', '        loss = -q1(X, model(X)[:, :n_numbers].tanh()).mean()', ...update.filter(Boolean).map((l) => '    ' + l),
+          '        slow_follow(actor_slow, model)', '        slow_follow(q1_slow, q1)', '        slow_follow(q2_slow, q2)']),
+      ...report('critic loss {critic_loss.item():.4f}')];
   }
   function controlCode(setup, d, chk) {
+    const curr = d.s.curriculum === 'on' && NA.brl.hasCurriculum(d.world, d.method); // (easy first: a curriculum)
+    const wm = d.s.worldModel === 'on' && NA.brl.canModel(d.input, d.method); // (a model of the world)
+    const pp = !!d.s.chaserLearns && NA.brl.canChase(d.world, d.method); // (predator and prey: the chaser learns too)
     const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || NA.brl.stepsFor(d.world, d.method), M = NA.brl.METHODS[d.method], evo = NA.brl.isEvo(d.method), s = d.s;
     const how = { ga: `a population of ${s.pop}${s.grow && NA.bevo && NA.bevo.evolvable(setup.blocks, d.input) ? ' whose networks grow and shrink' : ''}`, es: `${Math.max(2, Math.round((s.pop || 24) / 2))} pairs of nudged copies a generation`, me: `${s.pop} new networks a generation, kept in a 12 × 12 grid of styles` }[d.method];
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt], every = Math.max(1, Math.round(steps / 10));
@@ -1385,28 +1547,61 @@ def story():
       `# Model:     ${summary(setup, d)}`,
       ...(Object.keys(partNames(setup).cls).length ? ['# Your parts, each a class below:', ...partsSummary(setup)] : []),
       `# Learns by: ${M.label}${evo ? `, ${how}` : `, ${optName}, learning rate ${num(T.lr)}, batch ${T.batch}`}, ${steps.toLocaleString('en')} ${evo ? 'generations' : 'steps'}${T.steps ? '' : ' (the page trains until you pause)'}`,
-      '# Only torch is needed.', 'import math', 'import random', d.method === 'dqn' ? 'import collections' : null, d.method === 'dqn' || keepsBest(d) ? 'import copy' : null, 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
+      d.s.pbt > 1 && NA.brl.pbtOk(d.method) ? `# Population-based training: the page trains ${Math.min(8, d.s.pbt)} learners side by side, the worst copying the best every 500 steps with a nudged learning rate; this script trains one.` : null,
+      '# Only torch is needed.', d.method === 'bc' ? 'import json' : null, 'import math', 'import random', d.method === 'dqn' || d.method === 'sac' || d.method === 'td3' || (d.s.worldModel === 'on' && NA.brl.canModel(d.input, d.method)) || (d.s.chaserLearns && NA.brl.canChase(d.world, d.method)) ? 'import collections' : null, d.method === 'dqn' || d.method === 'sac' || d.method === 'td3' || keepsBest(d) || (d.s.chaserLearns && NA.brl.canChase(d.world, d.method)) ? 'import copy' : null, 'import torch', 'import torch.nn as nn', 'import torch.nn.functional as F', '',
       `torch.manual_seed(${T.seed})`, `random.seed(${T.seed})`, '',
       '# ---------------------------------------------------------------- the world', ...worldPy(d), ...lastMoveWrap(d), ...(d.method === 'me' && !NA.builderPyWorlds.worlds[d.world] ? ['', '', ...NA.builderPyWorlds.style(d.world)] : []), '', '',
-      'env, judge = World(), World()                     # one to learn in, one to measure its best moves in', 'n_actions = len(World.actions)', '', '',
+      ...(curr ? ['class Curriculum:', '    """Easy first: the worlds it learns in start easier (level 0) and get a quarter harder whenever 3 in 4 of its last', '    10 episodes or more succeed; the one that scores it stays at full difficulty."""', '    level, tally = 0.0, []', '',
+        '    @classmethod', '    def ended(cls, success):', '        cls.tally = (cls.tally + [float(success)])[-20:]', '        if cls.level < 1 and len(cls.tally) >= 10 and sum(cls.tally) >= 0.75 * len(cls.tally):',
+        '            cls.level, cls.tally = min(1.0, cls.level + 0.25), []', '            print(f"curriculum: level {cls.level:.2f}")', '', '',
+        'class World(World):', '    full = False                                   # the one that scores it: always at full difficulty', '',
+        '    def reset(self, *args, **kw):', `        if not self.full and getattr(self, "t", 0) > 0:   # the episode that just ended: did it succeed?`, `            Curriculum.ended(${({ pole: 'self.t >= self.max_steps', arm: 'self.end == "reached"', lander: 'self.end == "landed"', hurdles: 'self.end == "course"' })[d.world]})`,
+        '        self.level = 1.0 if self.full else Curriculum.level', '        return super().reset(*args, **kw)', '', ''] : []),
+      ...(wm ? ['moves = collections.deque(maxlen=20_000)          # every move it makes: what it saw, the move, what it saw next, the reward', '', '',
+        'class World(World):', '    """The same world, keeping every move for the model of the world (the page learns it beside the network)."""', '    def reset(self, *args, **kw):', '        self.seen = super().reset(*args, **kw)', '        return self.seen', '',
+        '    def step(self, a):', '        o2, r, done = super().step(a)', '        moves.append((self.seen, a, o2, max(-10.0, min(10.0, r))))', '        self.seen = o2', '        return o2, r, done', '', ''] : []),
+      ...(pp ? ['class ChaserBrain:', '    """The chaser that learns too: a DQN of its own, 8 numbers in (where the runner is from it, how fast each moves, where it', '    is), 5 moves out; paid 1 for a catch, 0.1 for every metre it closes, -0.01 a step. The judge\'s chaser follows its rule."""',
+        '    def __init__(self):', '        self.q = nn.Sequential(nn.Linear(8, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 5))', '        self.slow = copy.deepcopy(self.q)', '        self.opt = torch.optim.Adam(self.q.parameters(), lr=5e-4)', '        self.memory, self.n = collections.deque(maxlen=20_000), 0', '',
+        '    def act(self, o):', '        if random.random() < max(0.05, 1 - self.n / 20_000):', '            return random.randrange(5)', '        with torch.no_grad():', '            return int(self.q(o).argmax())', '',
+        '    def keep(self, o, a, r, o2, over):', '        self.memory.append((o, a, r, o2, over))', '        self.n += 1', '        if self.n % 2 or len(self.memory) < 500:', '            return', '        sample = [self.memory[random.randrange(len(self.memory))] for _ in range(64)]',
+        '        O, O2 = torch.stack([q[0] for q in sample]), torch.stack([q[3] for q in sample])', '        A, R, OVER = torch.tensor([q[1] for q in sample]), torch.tensor([q[2] for q in sample]), torch.tensor([q[4] for q in sample])',
+        '        with torch.no_grad():', '            y = R + 0.97 * (1 - OVER) * self.slow(O2).max(1).values', '        loss = F.smooth_l1_loss(self.q(O).gather(1, A[:, None])[:, 0], y)', '        self.opt.zero_grad()', '        loss.backward()',
+        '        torch.nn.utils.clip_grad_norm_(self.q.parameters(), 10)', '        self.opt.step()', '        if self.n % 1000 == 0:', '            self.slow.load_state_dict(self.q.state_dict())', '', '',
+        'chaser = ChaserBrain()', '', '',
+        'class World(World):', '    learning = True                                # (the judge sets this off: its chaser follows its rule)', '',
+        '    def sees(self):                                # what the chaser that learns sees', '        m, c = self.me, self.chasers[0]', '        return torch.tensor([(m.x - c.x) / 10, (c.y - m.y) / 10, m.vx / 0.4, -m.vy / 0.4, c.vx / 0.35, -c.vy / 0.35, c.x / 10 - 1, 1 - c.y / 10])', '',
+        '    def step(self, a):', '        if not self.learning:', '            self.chaser_move = None', '            return super().step(a)', '        o, (_, d0) = self.sees(), self.nearest()', '        self.chaser_move = chaser.act(o)', '        o2, r, done = super().step(a)',
+        '        caught = self.end == "tagged"', '        chaser.keep(o, self.chaser_move, 1.0 if caught else -0.01 + 0.1 * (d0 - self.nearest()[1]), self.sees(), float(caught))', '        return o2, r, done', '', ''] : []),
+      'env, judge = World(), World()                     # one to learn in, one to measure its best moves in', curr ? 'judge.full = True' : null, pp ? 'judge.learning = False' : null, 'n_actions = len(World.actions)', d.cont ? `n_numbers = ${d.dA}                                      # the numbers it sets in place of a move (${d.cActions.join(', ')}), each from -1 to 1` : null, '', '',
       '# observations from random play (there are no examples with answers here): the architecture view\'s snippets', '# use the first as "the first validation example"', 'def random_observations(n):', '    w, out = World(), []', '    o = w.reset()', '    while len(out) < n:', '        out.append(o)', '        o, _, done = w.step(random.randrange(n_actions))', '        if done:', '            o = w.reset()', '    return torch.stack(out)', '', '', 'Xva = random_observations(40)', '', '',
       modelCode(setup, d, chk), '', '',
       'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '', '',
       'def outputs(X):                                    # the outputs for a batch of observations, without learning', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', '    model.train()', '    return out', '', '',
-      'def best_move(obs):                                # its best move: the largest output', '    return int(outputs(obs[None])[0, :n_actions].argmax())', '', '',
+      ...(d.cont ? ['def best_move(obs):                                # its best move: the middles of its curves' + (d.method === 'gauss' ? '' : ', through tanh'), `    return outputs(obs[None])[0, :n_numbers].${d.method === 'gauss' ? 'clamp(-1, 1)' : 'tanh()'}.tolist()`]
+        : ['def best_move(obs):                                # its best move: the largest output', '    return int(outputs(obs[None])[0, :n_actions].argmax())']), '', '',
       evo ? null : ['# ---------------------------------------------------------------- the optimizer', ...optCode(T), '', ''],
       `# ---------------------------------------------------------------- learning by ${M.label}`, keepsBest(d) ? 'best = (-1.0, None)                                # the best score so far, and its weights' : null, ...methodPy(d, T, steps, every, setup), '',
       ...(keepsBest(d) ? ['if best[1] is not None and judge.score(best_move) < best[0]:   # it ended below its best: the network it had then', '    model.load_state_dict(best[1])'] : []),
       'print(f"done: its best moves score {judge.score(best_move):.3f}")', '',
-      '# ---------------------------------------------------------------- watch it play one episode with its best moves', 'o, done, total = env.reset(), False, 0.0', 'while not done:', '    a = best_move(o)', '    o, r, done = env.step(a)', '    total += r', '    print(World.actions[a], end="  ")', 'print(f"\\nreturn {total:.2f}")');
+      ...(wm ? ['', '# ---------------------------------------------------------------- a model of the world', '# The page learns it beside the network, a batch every 4 moves; here it is fitted to the moves kept, after training.',
+        `n_act = ${d.cont ? 'n_numbers' : 'n_actions'}`, 'model_world = nn.Sequential(nn.Linear(Xva[0].numel() + n_act, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, Xva[0].numel() + 1))', 'opt_world = torch.optim.Adam(model_world.parameters(), lr=1e-3)', '', '',
+        'def encode(a):                                     # a move as the model sees it', d.cont ? '    return torch.tensor(a, dtype=torch.float32)' : '    return F.one_hot(torch.tensor(a), n_actions).float()', '', '',
+        'def imagine(o, a):                                 # its prediction: the next observation, and the reward', '    with torch.no_grad():', '        out = model_world(torch.cat([o.flatten(), encode(a)]))', '    return o + out[:-1].view_as(o), out[-1].item()', '', '',
+        `kept = [m for m in moves if isinstance(m[1], int) == ${d.cont ? 'False' : 'True'}]   # (its own kind of move: not the random moves that first showed the inputs)`, 'O = torch.stack([m[0].flatten() for m in kept])', 'A = torch.stack([encode(m[1]) for m in kept])', 'D = torch.stack([(m[2] - m[0]).flatten() for m in kept])', 'R = torch.tensor([m[3] for m in kept])',
+        'for step in range(3000):', '    i = torch.randint(len(O), (64,))', '    out = model_world(torch.cat([O[i], A[i]], 1))', '    loss = ((out - torch.cat([D[i], R[i, None]], 1)) ** 2).mean()   # the change in what it sees, and the reward',
+        '    opt_world.zero_grad()', '    loss.backward()', '    opt_world.step()', 'print(f"the model of the world, one move ahead: off by {loss.item() ** 0.5:.3f}")', '',
+        '# a dream beside the world: its best moves from one start, in the world and in the model\'s imagination', 'w = World()', 'o = w.reset()', 'oh, done, paid, dreamt = o.clone(), False, 0.0, 0.0', 'for t in range(60):', '    o, r, done = w.step(best_move(o))', '    oh, rh = imagine(oh, best_move(oh))', '    paid, dreamt = paid + r, dreamt + rh',
+        '    print(f"{t:3d}  the world {o.flatten()[0].item():+.3f}  its dream {oh.flatten()[0].item():+.3f}")', '    if done:', '        break', 'print(f"the world paid {paid:.2f}; it imagined {dreamt:.2f}")', ''] : []),
+      '# ---------------------------------------------------------------- watch it play one episode with its best moves', 'o, done, total = env.reset(), False, 0.0', 'while not done:', '    a = best_move(o)', '    o, r, done = env.step(a)', '    total += r', d.cont ? '    print(" ".join(f"{v:+.2f}" for v in a), end=" | ")' : '    print(World.actions[a], end="  ")', 'print(f"\\nreturn {total:.2f}")');
   }
 
   // the scripts that use random (the stroke drawings, the stories, the chaotic series, the sequence classes)
-  const needsRandom = (p, d) => d.family === 'digits' || p.task === 'language' || p.task === 'chaos' || p.task === 'heartbeat' || p.task === 'add' || d.family === 'seqclass';
+  const needsRandom = (p, d) => d.family === 'digits' || p.task === 'language' || p.task === 'chaos' || p.task === 'heartbeat' || p.task === 'add' || d.family === 'seqclass' || !!(NA.bgen && NA.bgen.owns(d.family));
   PY.code = function (setup, d) {
     const p = BT.byId[setup.problem], T = setup.train, steps = T.steps || 3000;
     if (!d || d.error) return `# ${d && d.error ? d.error : 'Pick a problem first.'}`;
     if (d.family === 'control' && NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) return '# A classic model learns from examples with answers, and here there are only rewards: use a network.';
+    if (NA.bgen && NA.bgen.owns(d.family) && NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) return '# A classic model cannot learn this kind of problem: use a network.';
     if (NA.cml && setup.blocks.some((b) => NA.cml.isClassic(b.type))) {
       const cc = NA.cml.check(setup.blocks, d);
       if (!cc.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((cc.shapes.find((s) => s && s.problem) || {}).problem || { reason: 'See the block marked in red.' }).reason}`);
@@ -1415,7 +1610,8 @@ def story():
     const chk = NA.bx ? NA.bx.check(setup.blocks, d.input, d.output) : { ok: false, shapes: [] };
     if (!chk.ok) return lines('# The model does not fit together yet, so there is nothing to write out.', `# ${((chk.problem || (chk.shapes.find((s) => s && s.problem) || {}).problem) || { reason: 'See the block marked in red.' }).reason}`);
     if (d.family === 'control') return controlCode(setup, d, chk);
-    const grows = !!T.grow && !!NA.bevo && NA.bevo.evolvable(setup.blocks, d.input), rnd = needsRandom(p, d) || grows; // (grow and prune picks its changes at random)
+    if (NA.builderPyGen && (d.family === 'gan' || d.family === 'contrast')) return NA.builderPyGen.script(setup, d, chk, PY._i);
+    const grows = !!T.grow && !!NA.bevo && !(NA.bgen && NA.bgen.owns(d.family)) && NA.bevo.evolvable(setup.blocks, d.input), vae = !!(NA.builderPyGen && NA.builderPyGen.hasSample(setup)), rnd = needsRandom(p, d) || grows; // (grow and prune picks its changes at random)
     const needs = ['import math', p.family === 'table' && setup.custom.table && setup.custom.table.rows.length * (d.feats ? d.feats.length + 1 : 1) > 2400 ? 'import csv' : null, rnd ? 'import random' : null, p.task === 'sentences' || p.task === 'language' ? 'import re' : null];
     const lossName = NA.bx.LOSSES[setup.loss.id] ? NA.bx.LOSSES[setup.loss.id].label : setup.loss.id;
     const optName = { sgd: 'SGD', momentum: 'SGD with momentum', adam: 'Adam', adamw: 'AdamW' }[T.opt];
@@ -1437,14 +1633,14 @@ def story():
       dataCode(setup, d), '', '',
       modelCode(setup, d, chk), '', '',
       'model = Model()', initCode(setup, d), 'print(f"{sum(p.numel() for p in model.parameters()):,} learned numbers")', '',
-      '# ---------------------------------------------------------------- loss, optimizer and measure', lossCode(setup, d), '', scoreCode(d), '',
+      '# ---------------------------------------------------------------- loss, optimizer and measure', lossCode(setup, d), '', scoreCode(d, setup), '',
       grow ? ['', growing] : [optCode(T), '',
-      'def evaluate(X, Y):', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', '        loss, s = loss_fn(out, Y).item(), score(out, Y).item()', '    model.train()', '    return loss, s', '',
+      'def evaluate(X, Y):', '    model.eval()', '    with torch.no_grad():', '        out = model(X)', vae ? '        loss, s = (loss_fn(out, Y) + kl(model)).item(), score(out, Y).item()' : '        loss, s = loss_fn(out, Y).item(), score(out, Y).item()', '    model.train()', '    return loss, s', '',
       '# ---------------------------------------------------------------- training', `batch = ${T.batch}`, 'order, pos = torch.randperm(len(Xtr)), 0',
       `for step in range(${big(steps)}):`,
       '    if pos + batch > len(order):                  # a new shuffle every pass over the data', '        order, pos = torch.randperm(len(Xtr)), 0',
       '    i = order[pos:pos + batch]', '    pos += batch',
-      '    loss = loss_fn(model(Xtr[i]), Ytr[i])', '    opt.zero_grad()', '    loss.backward()',
+      vae ? '    loss = loss_fn(model(Xtr[i]), Ytr[i]) + kl(model)   # a VAE: and its codes pulled toward one bell curve' : '    loss = loss_fn(model(Xtr[i]), Ytr[i])', '    opt.zero_grad()', '    loss.backward()',
       T.clip ? `    torch.nn.utils.clip_grad_norm_(model.parameters(), ${num(T.clip)})   # cap the size of the step` : null,
       '    opt.step()', T.sched !== 'const' ? '    sched.step()' : null,
       `    if step % ${evalEvery} == 0:`, '        val_loss, val_score = evaluate(Xva, Yva)', '        print(f"step {step:5d}  training loss {loss.item():.4f}  validation loss {val_loss:.4f}  score {val_score:.3f}")', '',
@@ -1452,5 +1648,7 @@ def story():
       afterCode(setup, d));
   };
 
+  // the pieces builder-py-gen.js builds its scripts from
+  PY._i = { lines, num, flt, big, SPLIT, DIGITS_PY, SHAPES_PY, ACT_FN, modelCode, initCode, optCode, summary, attrPath: (setup, i, stem) => PY.attrPath(setup, i, stem) };
   NA.builderPy = PY;
 })(window.NA);

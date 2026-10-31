@@ -460,13 +460,13 @@
     pOther: 'odds another lever pays', levers: 'levers', rFormula: 'reward formula', select: 'way of choosing parents', cross: 'way of mixing parents', mutate: 'kind of mutation', grow: 'grow and prune', penalty: 'size penalty',
     newLayer: 'how new layers start', layerSize: 'width of new layers', growStart: 'starting network', growAddNeuron: 'adding neurons', growCutNeuron: 'pruning neurons', growAddLayer: 'adding layers', growCutLayer: 'removing whole layers',
     growAct: 'changing activations', growLean: 'leaning', growRate: 'share of children that change shape', growWhere: 'place of new layers', growNeuron: 'start of new neurons', growPrune: 'neuron pruning takes',
-    growMaxLayers: 'most hidden layers', growMaxUnits: 'most neurons in a layer', growProtect: 'protection of new shapes', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', maze: 'maze', formula: 'formula', text: 'text', target: 'column it predicts' };
+    growMaxLayers: 'most hidden layers', growMaxUnits: 'most neurons in a layer', growProtect: 'protection of new shapes', prefAsk: 'who answers', prefEvery: 'steps between questions', esSigma: 'nudge size', esLr: 'step size', track: 'track', map: 'map', drones: 'drones', speed: 'speed', wind: 'wind', pad: 'pad', fuel: 'fuel', maze: 'maze', formula: 'formula', text: 'text', target: 'column it predicts' };
   const PS_RANGE = { noise: [0, 2], window: [1, 64], len: [2, 8], embed: [4, 128], gamma: [0, 1], explore: [0, 1e6], pop: [4, 500], sigma: [0.001, 5], slip: [0, 0.9], esSigma: [0.001, 5], esLr: [0.0001, 1], pRight: [0, 1], pOther: [0, 1], maxSteps: [0, 1e5],
     growRate: [0.01, 1], growMaxLayers: [1, 12], growMaxUnits: [1, 128] };
   const N_RANGE = { plane: [100, 1500], curve: [20, 1000], digits: [300, 4000], surface: [200, 3000], series: [400, 4000], seqclass: [500, 5000], sequence: [300, 6000] };
   const INT_KEYS = new Set(['n', 'len', 'window', 'embed', 'pop', 'maxSteps', 'growMaxLayers', 'growMaxUnits', 'levers', 'drones', 'chasers', 'sheep', 'length', 'target', 'units', 'filters', 'k', 'stride', 'size', 'heads', 'mlp', 'features', 'dim', 'dilation', 'depth', 'minLeaf', 'trees', 'rounds', 'state', 'pieces', 'experts', 'top', 'shift']);
   const PS_OPTS = { method: () => NA.brl.ORDER, select: () => ['tournament', 'truncation', 'rank'], cross: () => ['uniform', 'neuron', 'none'], mutate: () => ['plain', 'safe'], penalty: () => Object.keys((NA.bevo && NA.bevo.PENALTY) || { off: 0, light: 0, strong: 0 }), newLayer: () => ['identity', 'random'],
-    layerSize: () => ['one', 'some', 'whole'], growStart: () => ['built', 'small'], growLean: () => ['grow', 'even', 'prune'], growWhere: () => ['any', 'first', 'last'], growNeuron: () => ['silent', 'random'], growPrune: () => ['weak', 'random'] };
+    layerSize: () => ['one', 'some', 'whole'], growStart: () => ['built', 'small'], growLean: () => ['grow', 'even', 'prune'], growWhere: () => ['any', 'first', 'last'], growNeuron: () => ['silent', 'random'], growPrune: () => ['weak', 'random'], prefAsk: () => ['you', 'world'] };
   // grow and prune's choices in words (for the note that says what was applied)
   const PS_LABELS = { growStart: { built: 'your network', small: 'no hidden layer' }, growLean: { grow: 'to grow', even: 'even', prune: 'to prune' }, growWhere: { any: 'anywhere', first: 'after the input', last: 'before the output' },
     growNeuron: { silent: 'silent', random: 'at random' }, growPrune: { weak: 'the weakest', random: 'one at random' }, layerSize: { one: 'one neuron', some: 'a few, at random', whole: 'a whole layer' },
@@ -1039,6 +1039,16 @@
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     } }, 'Download');
   }
+  // your moves (Copy you), as the JSON file its script reads
+  function demosButton(lab) {
+    const d = lab.dataFor(), B = lab.demosFor(d);
+    return NA.el('button', { class: 'btn btn-quiet code-copy', type: 'button', disabled: !B || !B.acts.length, title: B && B.acts.length ? `Save your ${B.acts.length} moves as demos.json, next to the script` : 'Jump in and play first: no moves of yours yet', onclick: () => {
+      const json = JSON.stringify({ world: d.world, inputs: d.obsNames || null, obs: B.obs.map((o) => Array.from(o, (v) => +v.toFixed(5))), moves: B.acts });
+      const url = URL.createObjectURL(new Blob([json], { type: 'application/json' })), a = NA.el('a', { href: url, download: 'demos.json' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } }, 'Download your moves');
+  }
   const stateOf = (lab) => lab.pyEdit || (lab.pyEdit = { mode: 'view', note: null, changed: null, text: '', base: '', lastEdit: '' });
   // the script wide, over the page, for its long lines (the side panel is narrow); again to put it back
   function wideButton(lab, box) {
@@ -1061,6 +1071,8 @@
     const edit = el('button', { class: 'btn btn-primary code-copy bd-pe-edit', type: 'button', title: 'Change the script: the page reads your changes back into the model', onclick: () => PE.startEdit(lab) }, '✎ Edit');
     const box = el('div', { class: 'code-box bd-pe-box' + (st.wide ? ' is-wide' : '') }, el('div', { class: 'code-head' }, el('span', { text: label(lab) }), el('span', { class: 'bd-pe-tools' }, edit, copyButton(() => code), downloadButton(lab, () => code))), pre);
     box.querySelector('.bd-pe-tools').append(wideButton(lab, box));
+    // (Copy you: its script reads your moves from demos.json, saved here)
+    if (lab.family() === 'control' && lab.ps().method === 'bc' && lab.demosFor) box.querySelector('.bd-pe-tools').prepend(demosButton(lab));
     // a double-click (or double-tap) on a line edits the script there, the word under it selected
     pre.addEventListener('dblclick', (e) => { const at = placeOf(pre, e); if (at) PE.startEdit(lab, undefined, at); });
     const intro = el('p', { class: 'sec-note bd-pe-intro' }, 'You can change this script: press ', el('strong', { text: 'Edit' }), ` or ${tap ? 'double-tap' : 'double-click'} a line, change a number or a name, then `, el('strong', { text: 'Apply' }),

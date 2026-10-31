@@ -4,6 +4,40 @@ An interactive lab for looking inside small neural networks. Pick a pre-trained 
 
 **Live site:** https://ferns4.github.io/neural-anatomy/
 
+## New in version 31
+
+- **One home for how it learns:** every setting of the method (grow and prune too) is in the model builder's **Training tab**; the Output block says what comes out and what its outputs mean, and opens the Training tab at the right place.
+- **Find a setting:** a search box at the top of the right panel (press **/**). Type a few letters of a setting, a choice or a feature ("learning rate", "explore", "bigger network", "record") and pick one: its tab opens, and the setting is scrolled to and lit up.
+- **Watching it play:** a bar under the picture pauses and plays (**K**), steps a move back or on, slides through the episode, and plays from a quarter of the speed to four times; New episode starts another. **Record a video** saves an episode as a video file. **Race…** plays two runs side by side from the same start, or you against a run, and counts the wins.
+- **Teach it yourself:**
+  - **Copy you** (behaviour cloning): Jump in and play, then train; it learns your move in every moment you played, as a classifier learns its classes. What is happening says when it copies your moves but not your results.
+  - **Which did better?** (learning from preferences, the idea behind RLHF): two tries from the same start side by side; you say which did better (← ↓ →), a reward model learns from your answers and PPO from the reward model. Or let the world's reward answer, to compare.
+  - **Start from:** a run can begin from another run's network, such as a copy of your play handed to PPO.
+
+  Both are parts of the palette too (Rewards), with their guides, and both have their Python: Copy you reads your moves from the file the Python tab saves (Download your moves).
+- **Controls that are numbers:** the robot arm, the rocket, the walker and the race track can be set by numbers from −1 to 1 (each motor's push, the throttle, each muscle's length, the steering) by three new methods: **PPO with a Gaussian policy**, **SAC** (soft actor-critic) and **TD3**. SAC and TD3 bring two critics of their own and a replay memory. The bars beside the picture show each number and its spread; the Python writes all three in PyTorch.
+- **My models:** keep a run's network under a name, in this browser, and open it again later (its setup back in the builder, its weights in a new run that starts where they were); download it as a file and load it in any browser. The latest run is kept by itself, so a reload loses nothing.
+- **Training in the background:** in a tab you are not looking at, training goes on (a worker keeps the time), and the tab's title says how far it has got.
+- **Worlds of your own:** an editor for the maze (walls, pits, the start and the goal), the race track (drag its points; it checks the bends and that it never runs into itself), the hurdles course (each hurdle and bar) and where the sheep and the dog start. It says what is wrong as you go and what the world pays; Use this puts it in the settings, so Undo, share links, the run list and the Python all carry it.
+- **Looking closer at a learner:** Test it 100 times (how its episodes end, its returns and lengths), a **value map** over any two of its inputs (the value it expects, or the move it would make), and **where it went** while it learned (the maze, the race track, the herding field).
+- **The knobs of PPO and DQN:** PPO's clip, passes over each batch, GAE λ and entropy bonus; DQN's replay memory, target refresh, double DQN, **dueling** heads and **n-step** returns; SAC's and TD3's random tries first.
+- **Easy first, dreams and rivals:** a **curriculum** for the pole, the arm, the rocket and the hurdles; a learned **model of the world** whose dreams are drawn beside the world; and **predator and prey**, a chaser that learns too.
+- **NEAT:** networks that grow their own structure (connections and neurons added by mutation, genes lined up by innovation number, species with shared fitness), with views of **the network it grew** and **its species**; and its Python.
+- **Family tree of shapes** (grow and prune) and **population-based training** (4 or 8 learners, the worst copying the best with a nudged learning rate).
+- **Six more kinds of problem**, each with its own pictures, settings, templates and Python:
+  - **Squeeze and rebuild:** an autoencoder (with a map of its codes), a **VAE** that draws new digits, and cleaning up noisy pictures.
+  - **Make new examples:** a **GAN** whose generator is your model, on eight blobs in a ring (watch for mode collapse), two moons or tiny digits; the discriminator's verdict behind the points and where it pushes each one; scored by precision and recall.
+  - **Learn without labels:** contrastive learning on two views of each picture (SimCLR's NT-Xent), scored by a vote of the nearest codes against the raw pixels.
+  - **Label every pixel:** segmentation of circles, squares and triangles, with a **tiny U-Net**, scored by the overlap of its shapes (IoU).
+  - **Graphs:** friend groups found by **message passing**, against a model that only sees each node alone.
+  - **Predict with uncertainty:** a middle and a spread with the **Gaussian loss**, its band of ±2 spreads and the share of points inside it.
+
+  New parts for them: **Upsample**, **Sample** (a VAE's middle, its KL divergence added to the loss) and **Graph convolution**, with their guides.
+- **More parts:** a **skip connection** from any earlier block (added or joined), a **Kolmogorov–Arnold layer**, a **Hopfield memory**; and **More than one right answer**, where a **mixture of bell curves** (a mixture density network) finds every branch.
+- **The Analyse tab:** sweep a setting (batch size, weight decay, the optimizer, a layer's width), **luck** across 3 or 5 seeds, **calibration** (with temperature scaling), **which inputs matter** (permutation importance), **adversarial examples** (FGSM, with accuracy as ε grows) and **pruning and quantising** a copy of the network.
+- **Guess first** (in the Runs tab): each new run asks what score you expect, and says at its end how close you were; and **paths** that lead through the challenges in order.
+- Smaller fixes: the run list counts generations for evolution, the toast no longer covers the buttons in full screen on a phone, and the smallest labels are easier to read; What is happening no longer warns that the first layers hardly learn when the first block is a Flatten (it has no weights to learn); the loss chart turns to a straight scale when a loss goes below 0; and Find a setting finds the palette's parts too.
+
 ## New in version 30
 
 - **Grow and prune, fully set:** on the Output block (and in the Training tab for problems with answers), every part of it can be chosen, with what each choice does written beside it:

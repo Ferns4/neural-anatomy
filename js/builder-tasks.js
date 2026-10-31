@@ -640,14 +640,14 @@
   // the settings the world itself takes (rl-envs.js names): yours where you set them, its own where you did not
   const WORLD_SETTINGS = {
     levers: (s) => ({ levers: s.levers, p: s.pRight, q: s.pOther }),
-    maze: (s) => ({ view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0, maxSteps: s.maxSteps }),
+    maze: (s) => ({ view: s.view, maze: s.maze, closer: !!s.closer, random: !!s.random, slip: s.slip || 0, maxSteps: s.maxSteps, rows: s.maze === 'own' ? s.mazeRows : undefined }),
     pole: (s) => ({ view: s.view, force: s.force, length: s.poleLen, gravity: s.gravity, steps: s.maxSteps, track: s.track, fall: s.fall, start: s.start }),
     catch: (s) => ({ view: s.view, drift: s.drift !== false, width: s.width, height: s.height, paddle: s.paddle }),
-    track: (s) => ({ view: s.view, track: s.track, steps: s.maxSteps, laps: s.laps, vmax: s.vmax, grip: s.grip, range: s.range }),
+    track: (s) => ({ view: s.view, track: s.track, steps: s.maxSteps, laps: s.laps, vmax: s.vmax, grip: s.grip, range: s.range, pts: s.track === 'own' ? s.trackPts : undefined }),
     arena: (s) => ({ view: s.view, map: s.map, drones: s.drones, speed: s.speed, steps: s.maxSteps, lives: s.lives, goal: s.goal, recharge: s.recharge }),
     lander: (s) => ({ gravity: s.gravity, wind: !!s.wind, pad: s.pad, fuel: s.fuel, steps: s.maxSteps, padWidth: s.padWidth, engine: s.engine }),
     thermo: (s) => ({ climate: s.climate, insulation: s.insulation, schedule: s.schedule, days: s.days, warm: s.warm, band: s.band, radiator: s.radiator }),
-    hurdles: (s) => ({ obstacles: s.obstacles, course: s.course, run: s.run, jump: s.jump }),
+    hurdles: (s) => ({ obstacles: s.obstacles, course: s.course, run: s.run, jump: s.jump, obst: s.obstacles === 'own' ? s.obst : undefined }),
     memory: (s) => ({ view: s.view, length: s.length, lit: s.lit, wait: s.wait }),
     mountain: (s) => ({ engine: s.engine, steps: s.maxSteps, start: s.start }),
     swingup: (s) => ({ motor: s.motor, gravity: s.gravity, steps: s.maxSteps, start: s.start, friction: s.friction }),
@@ -656,7 +656,7 @@
     walker: (s) => ({ ground: s.ground, steps: s.maxSteps, gravity: s.gravity, muscles: s.muscles }),
     trap: (s) => ({ maze: s.maze, steps: s.maxSteps, speed: s.speed }),
     chase: (s) => ({ map: s.map, chasers: s.chasers, speed: s.speed, aim: s.aim, steps: s.maxSteps }),
-    herd: (s) => ({ sheep: s.sheep, steps: s.maxSteps, flee: s.flee, dog: s.dog }),
+    herd: (s) => ({ sheep: s.sheep, steps: s.maxSteps, flee: s.flee, dog: s.dog, sheepAt: s.sheepAt, flock: s.sheepAt === 'own' ? s.flock : undefined, dogAt: s.sheepAt === 'own' ? s.dogAt : undefined }),
   };
   BT.worldSettings = (p, s) => {
     const t = p.task, o = (WORLD_SETTINGS[t] || WORLD_SETTINGS.catch)(s);
@@ -668,11 +668,14 @@
     return o;
   };
   function controlData(p, s, seed) {
-    const E = NA.rlEnvs, BRL = NA.brl, ws = BT.worldSettings(p, s), world = E.make(p.task, ws), method = BRL.METHODS[s.method] ? s.method : 'dqn', K = BRL.outputs(method, world.nA);
+    const E = NA.rlEnvs, BRL = NA.brl, ws = BT.worldSettings(p, s), world = E.make(p.task, ws);
+    // (a method for numbers on a world of moves, from a link made up: PPO instead)
+    const method = !BRL.METHODS[s.method] ? 'dqn' : BRL.isCont(s.method) && !(world.dA > 0) ? 'ppo' : s.method === 'neat' && !BRL.neatOk(world.input) ? 'ga' : s.method, cont = BRL.isCont(method), nOut = cont ? world.dA : world.nA, K = BRL.outputs(method, nOut, s), duel = method === 'dqn' && !!s.dqnDueling;
     // no examples with answers: observations from random play, so every view that shows an input has one to show
     const n = 200, nTr = 160, X = E.samples(world, n, new NA.RNG(seed * 31 + 7)), F = world.obsSize;
-    const names = method === 'dqn' || method === 'ga' ? world.actions.map((a) => (method === 'dqn' ? `Q(${a})` : a)) : [...world.actions, ...(K > world.nA ? ['value'] : [])];
-    return { family: 'control', task: p.task, world: p.task, ws, method, s, input: world.input, output: { kind: 'value', k: K }, nA: world.nA, actions: world.actions.slice(), obsNames: world.obsNames, names,
+    const names = cont ? (method === 'sac' ? [...world.cActions.map((c) => `${c}: middle`), ...world.cActions.map((c) => `${c}: log spread`)] : [...world.cActions, ...(K > nOut ? ['value'] : [])])
+      : duel ? [...world.actions.map((a) => `advantage(${a})`), 'value'] : method === 'dqn' || method === 'ga' ? world.actions.map((a) => (method === 'dqn' ? `Q(${a})` : a)) : [...world.actions, ...(K > world.nA ? ['value'] : [])];
+    return { family: 'control', task: p.task, world: p.task, ws, method, s, input: world.input, output: { kind: 'value', k: K }, nA: world.nA, actions: world.actions.slice(), duel, cont, dA: cont ? world.dA : 0, cActions: cont ? world.cActions.slice() : null, obsNames: world.obsNames, names,
       keep: world.keep ? Array.from(world.keep) : null, hidden: world.hidden || [], extra: world.shown || [], ownReward: !!world.rf,
       Xtr: X.slice(0, nTr * F), Ytr: new Float32Array(nTr * K), nTr, Xva: X.slice(nTr * F), Yva: new Float32Array((n - nTr) * K), nVa: n - nTr };
   }

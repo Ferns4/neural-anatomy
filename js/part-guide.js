@@ -508,6 +508,12 @@
     me: 'cell = style_cell(play(w))                             # e.g. (average speed, side of the track): one of 12 x 12\nif cell not in archive or fit > archive[cell][0]:\n    archive[cell] = (fit, w)                           # the best of each style is kept\nw = mutate(random.choice(list(archive.values()))[1])   # new ones come from any elite',
     novelty: 'styles = [play(w)[1] for w in population]             # what each did: e.g. where it ended up\ndef novelty(s):                                        # mean distance to its k nearest, now and before\n    return mean(sorted(dist(s, t) for t in styles + archive)[1:k + 1])\nfit = [novelty(s) for s in styles]                     # chosen for what is new, not for reward\narchive += most_novel(styles, 2)                       # a place once reached stops being new',
     cem: 'samples = [mu + sd * torch.randn_like(mu) for _ in range(n)]   # a generation from the bell curve\nfit = [play(w) for w in samples]\nelite = torch.stack(best_of(samples, fit, n // 5))     # the best fifth\nmu = elite.mean(0)                                     # the middle moves to them\nsd = (elite.var(0) + floor ** 2).sqrt()                # the spread: how much they disagree',
+    neat: 'child = cross(fitter, other)                       # genes lined up by innovation number\nmutate(child)                                      # weights nudged; now and then a new connection or neuron\nspecies = speciate(population, threshold=3.0)      # shared fitness within each species',
+    gauss: 'dist = Normal(model(x)[:, :n], log_std.exp())   # a bell curve per number\na = dist.sample()                                  # a try: its density goes into the clip, as a move\'s probability\nratio = (dist.log_prob(a).sum(1) - old_logp).exp()',
+    sac: 'mu, log_sd = out[:, :n], out[:, n:]\na = torch.tanh(mu + log_sd.exp() * torch.randn_like(mu))   # a try, through the draw\nloss = (alpha * logp - torch.min(q1(x, a), q2(x, a))).mean()',
+    td3: 'a = torch.tanh(model(x))                           # its try: no curve\nloss = -q1(x, a).mean()                            # every second step\ny = r + gamma * torch.min(q1_slow(x2, a2), q2_slow(x2, a2))   # a2: the slow copy\'s try, plus clipped noise',
+    bc: 'out = model(seen)[:, :n_moves]                    # its scores for each move, in the moments you played\nloss = F.cross_entropy(out, your_moves)             # your move in each moment, as a class\nopt.zero_grad(); loss.backward(); opt.step()',
+    pref: 'z = r_hat(try_a).sum() - r_hat(try_b).sum()        # the totals of the reward model\'s rewards\nloss = F.binary_cross_entropy_with_logits(z, answer)   # answer: 1 if A did better, 0 if B, 0.5 the same\n# ...and PPO learns from r_hat(o, a) in place of the world\'s reward',
     erl: 'for w in population:\n    play(w, memory)                                    # every move goes into the replay memory\nfor _ in range(200):\n    dqn_step(q_net, sample(memory, 32))                # the DQN learns from all of them\npopulation = breed(population)                         # the genetic algorithm, as usual\nif gen % 5 == 4:\n    population[-1] = copy(q_net)                       # the DQN joins in place of the worst',
   };
   Object.assign(G, {
@@ -560,7 +566,7 @@
     'rl-grow': {
       what: 'A genetic algorithm that evolves the network itself, not only its weights: a child may gain or lose a neuron, or gain a new hidden layer. A new neuron starts with outgoing weights of 0, so it changes nothing until mutation puts it to work. A new layer starts with a single neuron that passes on the signal the next layer leans on most: a bottleneck, so unlike a new neuron it changes what the network does, and selection keeps it only if the child still plays well. Later “+1 neuron” changes widen it without changing anything, and a layer goes when its last neuron is pruned. A small size penalty decides between two that play equally well, so networks grow only when growing pays.',
       deep: ['Starting small and adding one neuron at a time is the idea behind NEAT (Stanley and Miikkulainen, 2002): the smallest change first, kept only if it pays. You can set new layers to start with a few neurons, or as a whole layer as wide as what it reads, passing its input straight through (the older way here), to compare.',
-        'Every part of it can be set on the Output block: start from no hidden layer at all (as NEAT does) or from your network; which changes it can make (a neuron more or less, a new layer, a whole layer out at once, a new activation) and whether it leans to grow or to prune; how many children change; where new layers go and how new neurons start; whether pruning takes the weakest neuron or one at random; the largest network; and protecting new shapes, NEAT’s answer to a new part that needs time: for 5 generations the best of a new shape carries on unchanged.'],
+        'Every part of it can be set in the Training tab: start from no hidden layer at all (as NEAT does) or from your network; which changes it can make (a neuron more or less, a new layer, a whole layer out at once, a new activation) and whether it leans to grow or to prune; how many children change; where new layers go and how new neurons start; whether pruning takes the weakest neuron or one at random; the largest network; and protecting new shapes, NEAT’s answer to a new part that needs time: for 5 generations the best of a new shape carries on unchanged.'],
       how: ['Every network plays; its fitness is its return, less a little for every 100 weights.', 'The best two pass on unchanged; parents are picked, mixed and mutated as in the genetic algorithm.', 'A quarter of the children also change shape: a neuron more (most often) or less, or a new layer of one neuron.', 'Removing a neuron takes the one the next layer listens to least; removing the last neuron of a layer folds the layer into the next.'],
       math: ['fitness = return − penalty × weights / 100', 'new neuron: incoming weights random, outgoing 0', 'new layer of one neuron: weight 1 on the input j the next layer leans on most (the largest Σ|W₂[:, j]|), read by the next layer with W₂[:, j]', 'last neuron removed: W = W₂W₁, b = W₂b₁ + b₂   (the layer folded into the next)'],
       params: 'none of its own: each member is a network of its own shape (Dense layers, at most 6 of up to 48 neurons unless you set other limits)',
@@ -614,6 +620,66 @@
       use: ['Worlds where many moves teach something: the DQN learns from all of them, not only from the best.', 'When evolution finds rewards that a gradient method alone would miss, and a gradient method could polish what evolution finds.'],
       watch: ['The DQN learns from moves it did not choose: its Q-values can be off for a while, and its copy simply loses to the population until they are right.', 'Each generation also takes gradient steps: a little slower than the genetic algorithm.'],
       code: RL_CODE.erl, try: 'lander',
+    },
+    'rl-bc': {
+      what: 'Behaviour cloning: learning by copying. You play (Jump in), and every move you make is kept with what the network would have seen in that moment. Then it learns as a classifier does, the moments its inputs and your moves its classes: cross-entropy, a gradient step at a time. No reward is used at all. It is how many robots and self-driving cars start, from people driving or steering them.',
+      deep: ['It copies what you did, not why: where you never went, it has no example, and one slip takes it into moments it has never seen, where it slips again (the errors compound). DAgger (Ross and others, 2011) answers by asking the expert what they would do in the moments the copy gets itself into: here, Jump in where it goes wrong and show it more. Or start PPO from the copy (Start from, in the Training tab) and let rewards fix what copying could not.'],
+      how: ['Jump in and play a few episodes: each move is kept with what was seen just before it.', 'Draw a batch of those moments.', 'Its outputs for each, through softmax, against your move: cross-entropy.', 'A gradient step; again.'],
+      math: ['p = softmax(outputs(s))', 'loss = −log p[your move]'],
+      params: 'none of its own: your network, with one output per move',
+      use: ['A start that already plays, for a method that learns from rewards (Start from).', 'Worlds where a reward is hard to write but the right moves are easy to show.'],
+      watch: ['It can only be as good as your play, and only where you played.', 'Its curve beside the score is how often its best move is yours, on the moves it learned from: high agreement and a low score means it copies your moves but has not learned your results.'],
+      code: RL_CODE.bc, try: 'pole',
+    },
+    'rl-neat': {
+      what: 'NEAT (NeuroEvolution of Augmenting Topologies) evolves the structure of a network as well as its weights, and does not use the network you built. Every member starts with no hidden neuron, every input wired to every output. A child is its parent with its weights nudged, and now and then a new connection between two neurons, or a new neuron in the middle of a connection. Each connection carries an innovation number, the order it first appeared in anywhere, so two parents’ genes can be lined up to make a child. Members are grouped into species by how different their genes are, and share their fitness within their species: a new structure, which starts out worse, competes with its own kind until it has improved.',
+      deep: ['Stanley and Miikkulainen (2002) showed that starting minimal and protecting innovation through species finds small networks quickly, often smaller than a person would build. Their idea of tracking genes by innovation number solved what had made crossover between different structures meaningless. HyperNEAT, novelty search and many evolved robots grew from it.'],
+      how: ['Judge every genome: its average return over a few episodes, the same starts for all.', 'Sort them into species by their distance: excess and disjoint genes, and the weights of the matching ones.', 'Shared fitness: each species gets children in proportion to its members’ fitness divided by its size.', 'Children: crossover lined up by innovation number, weights nudged; a new connection or a new neuron now and then.'],
+      math: ['δ = (E + D) / N + 0.4 · W̄', 'f′ = f / (size of its species)', 'a new neuron: in with weight 1, out with the old weight'],
+      params: 'none of the network you built: its own genomes, a weight per connection',
+      use: ['Finding a small network for a problem without designing it.', 'Seeing species protect new structure while it improves.'],
+      watch: ['The network it grew and its species are views beside the results.', 'Its network is not your blocks, so it cannot race or be kept in My models.'],
+      code: RL_CODE.neat, try: 'pole',
+    },
+    'rl-gauss': {
+      what: 'PPO for a world whose controls are numbers: how hard each motor pushes, how far to steer, how much throttle, each from −1 to 1. For every number the network gives the middle of a bell curve (μ), and a spread of its own for each number (σ), learned beside the network, says how far its tries stray from the middle. A try is a draw from the curves, clipped to −1…1; the rest is PPO as with moves: 128 tries in 8 copies of the world, then 16 small steps, the clip stopping any try’s probability (here a density) from moving more than 20%.',
+      deep: ['With moves, a policy’s probabilities are a softmax; with numbers there are infinitely many tries, so it gives a density instead, and the ratio PPO clips is a ratio of densities. The spread starts at about 0.6 and shrinks as it grows sure: a little of the curves’ entropy is added to its reward to keep it from closing too early. Its best moves, the ones the score counts, are the middles.'],
+      how: ['The network gives each number’s middle, and the critic’s value.', 'A try: each number drawn from its bell curve, clipped to −1…1.', 'The advantages by GAE, as in PPO.', '16 small steps on the 128 tries: the clipped ratio of densities, the critic’s error, a little entropy.'],
+      math: ['π(a | s) = Π N(aᵢ; μᵢ(s), σᵢ²)', 'log π = Σ −½((aᵢ − μᵢ)/σᵢ)² − log σᵢ − ½ log 2π', 'loss = −min(ρA, clip(ρ, 0.8, 1.2)A), ρ = π(a)/π_old(a)'],
+      params: 'one spread per number, learned beside the network; one output per number, and the critic’s',
+      use: ['The robot arm, the rocket, the walker and the race track with continuous controls.', 'Seeing that PPO needs no change but the shape of its policy.'],
+      watch: ['A learning rate of 0.001 suits it better than 0.003 (choosing it sets that).', 'The bars beside the picture show each number it sets, and the lighter band its spread.'],
+      code: RL_CODE.gauss, try: 'arm',
+    },
+    'rl-sac': {
+      what: 'Soft actor-critic, for numbers as controls. For each number the network gives a middle and a spread; a try is tanh of a draw from that bell curve, so it stays within −1…1. Two critics of their own learn what a state and a try are worth, from a replay memory of every move so far, each toward the reward plus the smaller of their two slow copies’ value of the next state. The network learns to make the tries the critics value most, while keeping its curves as wide as it can: the entropy, weighed by α, counts as reward, and α learns too, so that the entropy stays near a target.',
+      deep: ['Haarnoja and others (2018). Learning from every move kept, old ones too, makes it far more sparing of moves than PPO, which uses each batch once; each step costs more, though (two critics, a batch of 64, every move). The smaller of two critics keeps either from overrating a try for long (the double-Q trick of TD3); the slow copies, following by Polyak averaging, keep the targets from chasing themselves.'],
+      how: ['1,000 random tries first, to fill the memory.', 'Each move: a try from the curves; kept in the memory.', 'The critics: toward r + γ(min slow critic(s′, a′) − α log π(a′ | s′)), a′ a fresh try.', 'The network: toward tries the critics value, through the try itself (the reparameterisation trick); α toward the entropy target.'],
+      math: ['a = tanh(μ(s) + σ(s)·ε), ε ~ N(0, 1)', 'y = r + γ (min Q′(s′, a′) − α log π(a′ | s′))', 'loss_π = α log π(a | s) − min Q(s, a)'],
+      params: 'two outputs per number; two critics of their own, 64 and 64 ReLU neurons each, and their slow copies',
+      use: ['Worlds where moves are dear: it learns from every move it ever made.', 'Seeing entropy as part of the goal: it keeps trying things while it gets better.'],
+      watch: ['The first 1,000 moves are random: its score only starts to move after them.', 'α falls as it grows sure; a value near 0 means it has all but stopped exploring.'],
+      code: RL_CODE.sac, try: 'arm',
+    },
+    'rl-td3': {
+      what: 'TD3 (twin delayed deep deterministic policy gradient), for numbers as controls. The network gives one output per number, tanh of it is the try: no bell curve, so noise is added to explore. Two critics learn from a replay memory what a state and a try are worth, each judged against the smaller of their slow copies’ values; the network learns only every second step, toward the tries the first critic values most, and the critics’ targets use a slow copy of the network with clipped noise added to its try, so a narrow peak in a critic cannot be exploited.',
+      deep: ['Fujimoto and others (2018) found three fixes for DDPG overrating its tries: twin critics (take the smaller), a delayed policy (the critics settle first) and target policy smoothing (noise on the target’s try). Each is a line or two; together they made it one of the steadiest methods for robots in simulation.'],
+      how: ['1,000 random tries first, to fill the memory.', 'Each move: tanh of the outputs, plus a little noise; kept in the memory.', 'The critics: toward r + γ min Q′(s′, ã′), ã′ the slow network’s try plus clipped noise.', 'Every second step: the network toward tries the first critic values most; the slow copies follow.'],
+      math: ['a = tanh(f(s)) + noise', 'y = r + γ min(Q′₁, Q′₂)(s′, clip(tanh(f′(s′)) + clip(ε, −0.5, 0.5), −1, 1))', 'loss_π = −Q₁(s, tanh(f(s)))'],
+      params: 'one output per number; two critics of their own, 64 and 64 ReLU neurons each, slow copies of them and of the network',
+      use: ['A deterministic controller: the same state, the same try.', 'Comparing with SAC: noise to explore instead of entropy.'],
+      watch: ['The first 1,000 moves are random.', 'Its tries are never spread: what the bars show is exactly what it does.'],
+      code: RL_CODE.td3, try: 'arm',
+    },
+    'rl-pref': {
+      what: 'Learning from preferences: no reward table at all. You are shown two tries of the same start, side by side, and say which did better (or the world’s own reward answers, to compare). A second network, the reward model, learns a reward for every move so that the try you preferred collects more of it in total (the Bradley–Terry model); PPO learns to collect that learned reward. This is the idea behind RLHF, reinforcement learning from human feedback, that taught chatbots which answers people prefer.',
+      deep: ['Christiano and others (2017) taught a simulated robot to do a backflip from about 900 such answers, a task hard to write a reward for. The reward model only ever learns from comparisons, so it can be fooled the way any reward can: a policy that finds moves the reward model overrates gets paid for them (reward hacking), which is why the score here still measures the world’s own goal.'],
+      how: ['The policy plays two tries from the same start; the second makes a quarter of its moves at random, so they differ by their moves.', 'You (or the world’s reward) say which did better.', 'The reward model learns: σ(its total for A − its total for B) toward the answer.', 'PPO learns from the reward model’s rewards; a new pair every so many steps.'],
+      math: ['P(A better) = σ(Σ r̂(s, a) over A − Σ r̂(s, a) over B)', 'loss = −[y log P + (1 − y) log(1 − P)]', 'then PPO on r̂ in place of the reward'],
+      params: 'a reward model of its own: two layers of 32 neurons, from what was seen and the move made to one number',
+      use: ['Worlds where it is easier to say which try was better than to write the reward.', 'Seeing why chatbots need so many people answering: the pole learns from a dozen answers, most worlds need many more.'],
+      watch: ['Training waits for each answer (or let the world’s reward answer, five times as often).', 'Your answers are its only reward: if they are inconsistent, so is what it learns.'],
+      code: RL_CODE.pref, try: 'pole',
     },
   });
 
@@ -760,6 +826,60 @@
       pts.forEach((p, i) => { const e = elite.includes(i); dot(p[0], p[1], 3, c(e ? 's2' : 'muted')); if (e && f > 0.35) { ctx.strokeStyle = c('s2'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, Math.PI * 2); ctx.stroke(); } });
       if (f > 0.7) { ctx.setLineDash([3, 3]); ctx.strokeStyle = c('s7'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(nx, ny, s0 * 0.8 * 1.4, s0 * 0.8 * 0.8, 0, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
       label('draw from the bell curve; refit it to the best fifth', W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-bc') {
+      // the moments you played, each with your move; the network's choice for each lights up in turn, matching yours
+      const rows = 5, rh = (H - 34) / rows, k = Math.floor(t / 0.7) % rows, x0 = W * 0.06;
+      for (let i = 0; i < rows; i++) {
+        const y = 10 + i * rh, on = i === k, mv = rnd(i + 3) < 0.5 ? '◀' : '▶';
+        box(x0, y + 2, W * 0.16, rh - 6, c('ink-2', on ? 0.35 : 0.15), c('line-2'));
+        label(mv, x0 + W * 0.26, y + rh / 2, { color: c(on ? 's2' : 'muted'), w: 700 });
+        if (on) { ctx.strokeStyle = c('s2'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x0 + W * 0.31, y + rh / 2); ctx.lineTo(W * 0.56, mid); ctx.stroke(); }
+      }
+      box(W * 0.56, mid - 18, W * 0.2, 36, c('s1', 0.85), c('line-2'));
+      label('network', W * 0.66, mid, { color: c('panel'), w: 700, maxW: W * 0.18 });
+      const ok = (t % 0.7) / 0.7 > 0.4;
+      label(ok ? (rnd(k + 3) < 0.5 ? '◀ yours' : '▶ yours') : '…', W * 0.88, mid, { color: c(ok ? 'good' : 'muted'), w: 700, maxW: W * 0.2 });
+      label('your moments → your moves, as classes', W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-neat') {
+      // a network growing: inputs and outputs, then a connection, then a neuron in the middle of it
+      const ph = Math.floor(t / 1.6) % 4, ins = [0.25, 0.5, 0.75].map((f) => [W * 0.15, H * f]), outs = [0.35, 0.65].map((f) => [W * 0.85, H * f]), hid = [W * 0.5, H * 0.5];
+      const line = (a, b, col, wd) => { ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); };
+      ins.forEach((p, i) => outs.forEach((q, k) => { const split = ph >= 2 && i === 1 && k === 0; line(p, q, split ? c('line-2', 0.4) : c(k ? 's2' : 's1', 0.5), 1.5); }));
+      if (ph >= 2) { line(ins[1], hid, c('s7'), 2.5); line(hid, outs[0], c('s7'), 2.5); dot(hid[0], hid[1], 6, c('s7')); }
+      if (ph >= 3) line(ins[2], hid, c('s7', 0.7), 2);
+      [...ins, ...outs].forEach((p, i) => dot(p[0], p[1], 5, c(i < 3 ? 'ink-2' : 's2')));
+      label(['no hidden neuron: inputs wired to outputs', 'weights nudged', 'a connection split: a new neuron', 'a new connection'][ph], W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-gauss' || type === 'rl-sac' || type === 'rl-td3') {
+      // a number from −1 to 1: the bell curve's middle and spread (TD3: one try and its noise), tries landing; the critics beside
+      const ax0 = W * 0.08, ax1 = W * (type === 'rl-gauss' ? 0.92 : 0.6), base = H * 0.7, X = (v) => ax0 + ((v + 1) / 2) * (ax1 - ax0), mu = 0.45 * Math.sin(t * 0.7), sg = type === 'rl-td3' ? 0 : 0.28 + 0.1 * Math.cos(t * 0.5);
+      ctx.strokeStyle = c('line-2'); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(ax0, base); ctx.lineTo(ax1, base); ctx.stroke();
+      [-1, 0, 1].forEach((v) => label(v ? (v > 0 ? '1' : '−1') : '0', X(v), base + 11, { color: c('muted') }));
+      if (sg) {
+        ctx.strokeStyle = c('s1'); ctx.lineWidth = 2; ctx.beginPath();
+        for (let k = 0; k <= 60; k++) { const v = -1 + (2 * k) / 60, y = base - H * 0.45 * Math.exp(-0.5 * ((v - mu) / sg) ** 2); if (k) ctx.lineTo(X(v), y); else ctx.moveTo(X(v), y); }
+        ctx.stroke();
+      }
+      ctx.strokeStyle = c('s2'); ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X(mu), base); ctx.lineTo(X(mu), base - H * 0.47); ctx.stroke(); ctx.setLineDash([]);
+      for (let k = 0; k < 5; k++) { const v = Math.max(-1, Math.min(1, mu + (sg || 0.08) * (rnd(Math.floor(t * 2) * 7 + k) * 2 - 1) * 1.6)); dot(X(type === 'rl-sac' ? Math.tanh(v * 1.3) : v), base - 3, 3, c('s2', 0.5 + 0.1 * k)); }
+      if (type !== 'rl-gauss') {
+        ['critic 1', 'critic 2'].forEach((s, k) => { const y = H * 0.18 + k * H * 0.3; box(W * 0.68, y, W * 0.27, H * 0.22, c(k ? 's4' : 's7', 0.85), c('line-2')); label(s, W * 0.815, y + H * 0.11, { color: c('panel'), w: 700, maxW: W * 0.25 }); });
+        label(type === 'rl-sac' ? 'tanh(a draw) → the smaller critic' : 'a try + noise → the smaller critic', W / 2, H - 9, { maxW: W - 12 });
+      } else label('a bell curve per number: middle, spread, a try', W / 2, H - 9, { maxW: W - 12 });
+    } else if (type === 'rl-pref') {
+      // two tries side by side; one is picked; the reward model learns; PPO follows it
+      const ph = (t % 3) / 3, pickA = Math.floor(t / 3) % 2 === 0, bw = W * 0.26, by = 12, bh = H * 0.42;
+      [0, 1].forEach((k) => {
+        const x = W * 0.06 + k * (bw + W * 0.05), chosen = ph > 0.45 && (k === 0) === pickA;
+        box(x, by, bw, bh, c(chosen ? 's2' : 'ink-2', chosen ? 0.3 : 0.12), c(chosen ? 's2' : 'line-2'));
+        const sway = Math.sin(t * 3 + k * 1.7) * (k === 0 ? 0.25 : 0.6);
+        ctx.strokeStyle = c('s1'); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + bw / 2, by + bh - 8); ctx.lineTo(x + bw / 2 + Math.sin(sway) * bh * 0.6, by + bh - 8 - Math.cos(sway) * bh * 0.6); ctx.stroke();
+        label(k ? 'B' : 'A', x + 9, by + 10, { color: c('ink-2'), w: 700 });
+        if (chosen) label('✓', x + bw - 10, by + 11, { color: c('good'), w: 700 });
+      });
+      box(W * 0.68, mid - 16, W * 0.27, 32, c('s7', 0.85), c('line-2'));
+      label('reward model', W * 0.815, mid, { color: c('panel'), w: 700, maxW: W * 0.25 });
+      if (ph > 0.55) dot(W * 0.62 + (W * 0.06) * ((ph - 0.55) / 0.45), mid, 3, c('s2'));
+      label('which did better? → a reward → PPO', W / 2, H - 9, { maxW: W - 12 });
     } else if (type === 'rl-erl') {
       // a population (bars) whose moves stream into a replay memory that a DQN learns from; every other generation in
       // the picture, the DQN's copy (its colour) takes the worst place

@@ -104,10 +104,14 @@
     const pays = h.pays(`${say(rw.rRun)} for every step it keeps running, ${say(rw.rBump)} for touching a hurdle${bars ? ' or a bar' : ''}, ${say(rw.rFinish)} at the finish${rw.rClear ? `, ${say(rw.rClear)} for each obstacle it passes` : ''}${rw.rJump ? `, ${say(rw.rJump)} for each jump` : ''}${rw.rDuck ? `, ${say(rw.rDuck)} for each step it ducks` : ''}${rw.rAir ? `, ${say(rw.rAir)} for each step in the air` : ''}.`);
     // a jump: its time in the air, and how far it runs with its feet above a hurdle's top (none when it cannot get that high)
     const above = J * J > 2 * 15 * 0.7 ? (2 * Math.sqrt(J * J - 2 * 15 * 0.7) / 15) * W.run : 0;
+    // the obstacles: your own course (from the editor), or a new random one every episode
+    const layOut = W.own ? ['        self.obst = list(OBSTACLES)                   # your own course, the same every episode']
+      : ['        self.obst, x = [], 14 + random.uniform(0, 4)   # the obstacles, (where, a bar?), 7 to 14 m apart', '        while x < COURSE - 4:',
+        `            self.obst.append((x, ${bars ? 'random.random() < 0.4))   # two in five a bar' : 'False))'}`, '            x += random.uniform(7, 14)'];
     return [
       ...rows(String.raw`RUN, DT, JUMP, GRAV = ${num(W.run)}, 0.05, ${num(J)}, 15.0          # its running speed (m/s), a step (s), its take-off speed (m/s), gravity (m/s²)
 HURDLE, BAR, TALL, LOW = 0.7, 1.2, 1.8, 1.0         # a hurdle's top, a bar's underside, its height standing and ducking, m
-COURSE = ${num(W.course)}                                     # m`), '', '',
+COURSE = ${num(W.course)}                                     # m`), ...(W.own ? [`OBSTACLES = [${W.own.map((q) => `(${n1(q.x)}, ${q.bar ? 'True' : 'False'})`).join(', ')}]   # your own course: where each stands (m), and whether it is a bar`] : []), '', '',
       ...h.head(rows(String.raw`class World:
     """A runner at ${n1(W.run)} m/s down a ${n1(W.course)} m course of hurdles to jump (0.7 m high)${bars ? ' and bars to duck under (their underside\n    1.2 m up)' : ''}. A jump leaves the ground at ${n1(J)} m/s against 15 m/s² of gravity: ${(2 * J / 15).toFixed(2)} s in the air, ${above ? `its feet above
     a hurdle's height for about ${n1(above)} m, so it has to take off at the right moment` : `never as high
@@ -117,10 +121,7 @@ COURSE = ${num(W.course)}                                     # m`), '', '',
     actions = ["run", "jump", "duck"]
     max_steps = ${W.maxSteps}`)), '',
       ...rows(String.raw`    def reset(self):
-        self.obst, x = [], 14 + random.uniform(0, 4)   # the obstacles, (where, a bar?), 7 to 14 m apart
-        while x < COURSE - 4:
-            self.obst.append((x, ${bars ? 'random.random() < 0.4))   # two in five a bar' : 'False))'}
-            x += random.uniform(7, 14)
+${layOut.join('\n')}${d.s.curriculum === 'on' ? '\n        if getattr(self, "level", 1.0) < 1:         # (easy first: obstacles early in the course only)\n            self.obst = [q for q in self.obst if q[0] < (COURSE - 4) * (0.25 + 0.75 * self.level)]' : ''}
         self.x, self.y, self.vy = 0.0, 0.0, 0.0    # how far it has run, its feet off the ground (m), its speed up (m/s)
         self.duck, self.t, self.end, self.jumps, self.ducking, self.hit = 0, 0, None, 0, 0, None
         return self.obs()
@@ -370,9 +371,9 @@ COURSE = ${num(W.course)}                                     # m`), '', '',
   PW.worlds.arm = function (d, h) {
     const W = make(d), rw = h.rw, num = h.num, say = h.say;
     const reward = h.f ? ['        reached, dist, speed, elbow, t = float(reached), d, moved / DT, self.q2 / DEG, self.t',
-      '        shoulder, bump, braked = self.q1 / DEG, float(bump), float(a == 4)', ...h.ownLine]
+      '        shoulder, bump = self.q1 / DEG, float(bump)', ...h.ownLine]
       : [`        r = ${terms([rw.rReach ? `(${num(rw.rReach)} if reached else 0.0)` : null, rw.rApproach ? `${num(rw.rApproach)} * closer` : null, rw.rStep ? num(rw.rStep) : null,
-        rw.rPush ? `(${num(rw.rPush)} if a <= 3 else 0.0)` : null, rw.rBrake ? `(${num(rw.rBrake)} if a == 4 else 0.0)` : null, rw.rBump ? `(${num(rw.rBump)} if bump else 0.0)` : null])}`];
+        rw.rPush ? `${num(rw.rPush)} * pushed` : null, rw.rBrake ? `${num(rw.rBrake)} * braked` : null, rw.rBump ? `(${num(rw.rBump)} if bump else 0.0)` : null])}`];
     const pays = h.pays(`${say(rw.rReach)} on reaching the target${rw.rApproach ? `, ${say(rw.rApproach)} for every metre the hand gets closer to it (shaping)` : ''}${rw.rStep ? `, ${say(rw.rStep)} every step` : ''}${rw.rPush ? `, ${say(rw.rPush)} for each push of a joint` : ''}${rw.rBrake ? `, ${say(rw.rBrake)} for each brake` : ''}${rw.rBump ? `, ${say(rw.rBump)} for hitting the bench or the end of a joint's swing` : ''}.`);
     const cm = String(+(W.reach * 100).toFixed(1));
     return [
@@ -396,7 +397,7 @@ COURSE = ${num(W.course)}                                     # m`), '', '',
         R, A = random.uniform(0.6, 1.65), random.uniform(0.3, math.pi - 0.3)    # a new target, somewhere it can reach
         self.tx, self.ty = R * math.cos(A), R * math.sin(A)
         if self.hand(self.q1, self.q2)[1] < 0.05:  # no start with the hand in the bench
-            self.q2 = 0.0
+            self.q2 = 0.0${d.s.curriculum === 'on' ? '\n        if getattr(self, "level", 1.0) < 1:         # (easy first: the target nearer the hand at first)\n            k, (hx, hy) = 0.3 + 0.7 * self.level, self.hand(self.q1, self.q2)\n            self.tx, self.ty = hx + (self.tx - hx) * k, max(0.15, hy + (self.ty - hy) * k)' : ''}
         self.hx, self.hy = self.hand(self.q1, self.q2)
         self.d = math.hypot(self.tx - self.hx, self.ty - self.hy)   # the hand's distance to the target
         return self.obs()
@@ -405,7 +406,13 @@ COURSE = ${num(W.course)}                                     # m`), '', '',
         return torch.tensor([math.sin(self.q1), math.cos(self.q1), math.sin(self.q2), math.cos(self.q2), self.w1 / 3, self.w2 / 3,
                              (self.tx - self.hx) / 2, (self.ty - self.hy) / 2, self.tx / 2, self.ty / 2])`)), '',
       ...rows(String.raw`    def step(self, a):
-        if a == 0:                                 # a push: one joint, one way
+        pushed, braked = (float(a <= 3), float(a == 4)) if isinstance(a, int) else (0.0, 0.0)
+        if not isinstance(a, int):                 # three numbers: each motor from -1 to 1 (both at once), and the brake from 0 to 1
+            c = [min(max(float(v), -1.0), 1.0) for v in a]
+            k = 1 - 0.5 * max(c[2], 0.0)
+            self.w1, self.w2 = (self.w1 + c[0] * ACC * DT) * k, (self.w2 + c[1] * ACC * DT) * k
+            pushed, braked = max(abs(c[0]), abs(c[1])), max(c[2], 0.0)
+        elif a == 0:                               # a push: one joint, one way
             self.w1 += ACC * DT
         elif a == 1:
             self.w1 -= ACC * DT
@@ -634,7 +641,7 @@ def part_of(x, y):                                 # which of the maze's 10 × 1
         wx, wy = m.x, m.y
         self.confine(m, 0.4)
         wall = m.x != wx or m.y != wy              # touching a wall or a pillar
-        for c in self.chasers:                     # each heads ${ahead ? 'for where it will be, a moment ahead' : 'straight for it'}`), ...aim,
+        for c in self.chasers:                     # each heads ${ahead ? 'for where it will be, a moment ahead' : 'straight for it'}${d.s.chaserLearns && NA.brl.canChase(d.world, d.method) ? '\n            if c is self.chasers[0] and getattr(self, "chaser_move", None) is not None:   # (the chaser that learns: its move)\n                k = self.chaser_move\n                c.vx, c.vy = (c.vx + 0.06 * (-1 if k == 2 else 1 if k == 3 else 0)) * 0.85, (c.vy + 0.06 * (-1 if k == 0 else 1 if k == 1 else 0)) * 0.85\n                sp = math.hypot(c.vx, c.vy)\n                if sp > CHASE_SPEED:\n                    c.vx, c.vy = c.vx * CHASE_SPEED / sp, c.vy * CHASE_SPEED / sp\n                c.x, c.y = c.x + c.vx, c.y + c.vy\n                self.confine(c, 0.45)\n                continue' : ''}`), ...aim,
       ...rows(String.raw`            gl = math.hypot(gx, gy) or 1
             c.vx, c.vy = c.vx * 0.6 + gx / gl * CHASE_SPEED * 0.4, c.vy * 0.6 + gy / gl * CHASE_SPEED * 0.4
             c.x, c.y = c.x + c.vx, c.y + c.vy
@@ -826,8 +833,14 @@ REST = [math.hypot(START[i][0] - START[j][0], START[i][1] - START[j][1]) for i, 
                 q[0] = p[0] if abs(vt) <= friction else p[0] - (vt - (1 if vt > 0 else -1) * friction)
 
     def step(self, a):
+        if isinstance(a, int):
+            s0, s1 = MOVES[a]                      # each muscle short or long
+        else:                                      # two numbers from -1 to 1: each muscle's length, from short to long
+            c = [min(max(float(v), -1.0), 1.0) for v in a]
+            lo, hi = MOVES[2][0], MOVES[3][0]
+            s0, s1 = (lo + (v + 1) / 2 * (hi - lo) for v in c)
+            a = (0 if c[1] > 0 else 2) if c[0] < 0 else (1 if c[1] < 0 else 3)   # the nearest move
         switched, self.a = a != self.a, a          # another move than the last
-        s0, s1 = MOVES[a]                          # each muscle short or long
         self.goal = [REST[0] * s0, REST[1] * s1]
         for _ in range(4):
             self.physics()
@@ -861,11 +874,15 @@ REST = [math.hypot(START[i][0] - START[j][0], START[i][1] - START[j][1]) for i, 
         rw.rFlock ? `${num(rw.rFlock)} * dist` : null, rw.rRun ? `${num(rw.rRun)} * ran` : null, rw.rAll ? `(${num(rw.rAll)} if last else 0.0)` : null])}`];
     const pays = h.pays(`${say(rw.rPenned)} for each sheep penned${rw.rNearer ? `, ${say(rw.rNearer)} for every metre the sheep come nearer the gate (shaping)` : ''}${rw.rStep ? `, ${say(rw.rStep)} every step` : ''}${rw.rFlock ? `, ${say(rw.rFlock)} × the dog's distance from the flock (m) every step` : ''}${rw.rRun ? `, ${say(rw.rRun)} for every metre the dog runs` : ''}${rw.rAll ? `, ${say(rw.rAll)} on penning the last sheep` : ''}.`);
     const n2 = (v) => String(+(+v).toFixed(2)), nearest = (d.extra || []).includes('the nearest sheep');
+    // where they start: your own places (from the editor), or grazing in the bottom left
+    const startAt = W.own ? ['        self.dog, self.sheep = Animal(*DOG_AT), []', '        for x, y in SHEEP_AT:                      # where you put them, each wandering its own way', '            s = Animal(x, y)']
+      : ['        self.dog, self.sheep = Animal(2.0, 22.0), []', '        for _ in range(SHEEP):                     # grazing in the bottom left, each wandering its own way', '            s = Animal(random.uniform(4, 12), random.uniform(11, 20))'];
     return [
       ...rows(String.raw`FIELD, GATE = 24.0, (19.0, 6.5)                    # the field, 24 m square (y points down); the pen's gate, the middle of its open side
 PEN_X0, PEN_X1, PEN_Y = 16.0, 22.0, 6.0            # the pen: from 16 to 22 m across, the top 6 m`),
       note(`SHEEP, MAX_STEPS = ${W.n}, ${W.maxSteps}`, 'the sheep; the longest game'),
-      note(`FLEE, DOG_SPEED = ${num(W.flee)}, ${num(W.dogV)}`, "how near the dog comes before the sheep run (m); the dog's top speed (m a step)"), '', '',
+      note(`FLEE, DOG_SPEED = ${num(W.flee)}, ${num(W.dogV)}`, "how near the dog comes before the sheep run (m); the dog's top speed (m a step)"),
+      ...(W.own ? [`SHEEP_AT = [${W.own.sheep.map(([x, y]) => `(${n2(x)}, ${n2(y)})`).join(', ')}]   # where each sheep starts, m across and down: your own`, `DOG_AT = (${n2(W.own.dog[0])}, ${n2(W.own.dog[1])})   # where the dog starts`] : []), '', '',
       ...rows(String.raw`class Animal:                                      # where it is and how it moves (m, and m a step)
     def __init__(self, x, y):
         self.x, self.y, self.vx, self.vy = x, y, 0.0, 0.0`), '', '',
@@ -876,9 +893,7 @@ PEN_X0, PEN_X1, PEN_Y = 16.0, 22.0, 6.0            # the pen: from 16 to 22 m ac
     ${pays}"""
     actions = ["up", "down", "left", "right", "stay"]`)), '',
       ...rows(String.raw`    def reset(self):
-        self.dog, self.sheep = Animal(2.0, 22.0), []
-        for _ in range(SHEEP):                     # grazing in the bottom left, each wandering its own way
-            s = Animal(random.uniform(4, 12), random.uniform(11, 20))
+${startAt.join('\n')}
             s.penned, s.wx, s.wy = False, random.uniform(-1, 1), random.uniform(-1, 1)
             self.sheep.append(s)
         self.t, self.end, self.path, self.sum_d = 0, None, 0.0, 0.0

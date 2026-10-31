@@ -51,11 +51,13 @@
     if (evo && m !== 'me') out.push({ value: 'generation', label: 'The whole generation', title: Wd.trace ? 'Every member of the last generation at once, from the same start: the colours match their bars. And how varied they are, generation by generation' : 'Every member of the last generation, best first, and how varied they are, generation by generation' });
     if (m === 'me' && o.narrow) out.push({ value: 'grid', label: 'The grid of styles', title: 'The best network of each style of play: tap a cell to watch it' });
     if (evo && m !== 'es' && m !== 'cem' && ev && typeof ev.lineage === 'function') out.push({ value: 'family', label: 'Family line', title: 'The best network’s ancestors, generation by generation: what changed in each, and its score' });
+    if (NA.rlx) out.push(...NA.rlx.views(o)); // (the value map, where it went: builder-rlx.js)
+    if (NA.neat) out.push(...NA.neat.views(o)); // (NEAT's network and its species: builder-neat.js)
     if (evo && m !== 'me' && Wd.axes) out.push({ value: 'styles', label: 'Styles of play', title: `Where each member’s way of playing put it: ${Wd.axes[0]} across, ${Wd.axes[1]} up` });
     return out;
   };
   // the view to draw: the one picked if this run has it, otherwise the best plays
-  BD.view = (L, wide) => { const v = L.evoView || 'best', d = L.data; return v !== 'best' && BD.views({ method: d.method, world: d.world, narrow: !wide, evo: L.evo }).some((x) => x.value === v) ? v : 'best'; };
+  BD.view = (L, wide) => { const v = L.evoView || 'best', d = L.data; return v !== 'best' && BD.views({ method: d.method, world: d.world, narrow: !wide, evo: L.evo, data: d, visits: !!(NA.rlx && NA.rlx.visitsOk(L)) }).some((x) => x.value === v) ? v : 'best'; };
 
   // ------------------------------------------------------------------ what it looked at
   /* Inputs with the same name move together (the track camera's speed fills a whole channel of the picture): the
