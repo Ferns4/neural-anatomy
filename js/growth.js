@@ -5,7 +5,9 @@
    them out as a strip, draws the learning curve with its stages named (warming up, learning fast, polishing,
    memorising, slipping back) and explained where they show, and draws how the insides grew.
 
-   A source tells the view what to show: { unit, frames(), curve(), version(), math?, fromScratch?, scratchLabel? }.
+   A source tells the view what to show: { unit, frames(), curve(), version(), math?, fromScratch?, scratchLabel?,
+   start?, busy? }. start(): the button an empty view offers, { label, run } or null (train it and watch; without
+   one, Learn again from scratch, unless busy() says it is training already).
    math(frame, before, first): the math at a moment, as blocks { title, lines: [text | { t, strong, muted }], note }
    (G.math writes the common ones: the loss, the optimiser's rule with that moment's numbers, the change since the
    moment before, and the update rules of the reinforcement learning methods).
@@ -73,6 +75,57 @@
     version() { return this.v; }
   }
   G.Recorder = Recorder;
+
+  // ------------------------------------------------------------------ recorded films
+  /* A model trained offline comes with the film of that training (js/films/<name>.js, written by its tool in tools/,
+     which checks it ends with the shipped weights): its weights at moments of the run, packed small (int8 in blocks
+     of 64, each block with its own scale: tools/film-pack.js), with that moment's numbers. G.film(name, onLoad)
+     gives it once loaded (asking for it the first time, then calling onLoad); G.unpack(p) gives a moment's weights. */
+  const b64 = (s) => { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+  G.unpack = function (p) {
+    const s = new Float32Array(b64(p.s).buffer), q = new Int8Array(b64(p.q).buffer), w = new Float32Array(p.n);
+    for (let i = 0; i < p.n; i++) w[i] = q[i] * s[(i / 64) | 0];
+    return w;
+  };
+  // (asked: 'loading', then 'failed' if it could not be had: offline before it was ever loaded; it is not asked for again)
+  const asked = {};
+  G.film = function (name, onLoad) {
+    const F = NA.films && NA.films[name];
+    if (F) return F;
+    if (!asked[name] && NA.labHost && NA.labHost.loadScript) {
+      asked[name] = 'loading';
+      NA.labHost.loadScript(`js/films/${name}.js`).then(() => { if (onLoad) onLoad(); }, () => { asked[name] = 'failed'; if (onLoad) onLoad(); });
+    }
+    return null;
+  };
+  G.filmLoading = (name) => asked[name] === 'loading' && !(NA.films && NA.films[name]);
+  /* The frames of a recorded film, drawn by the model's own code from that moment's weights: o.set(i) puts moment
+     i's weights in place and returns a function that puts the model's back; o.draw(ctx, w, h) draws as a live
+     frame would; o.layers() (its layers, for how big its weights are and how far they moved from the first moment)
+     and o.metrics(record) are read with moment i's weights in place. */
+  G.recordedFrames = function (film, o) {
+    let start = null;
+    return film.frames.map((rec, i) => {
+      let inside = null, m = {};
+      const undo = o.set(i);
+      try {
+        if (o.layers) { const L = o.layers(); if (!start) start = G.copyLayers(L); inside = G.sizes(L, start); }
+        m = o.metrics ? o.metrics(rec) : {};
+      } finally { undo(); }
+      return { step: rec.step, recorded: true, m, x: rec.x || null, inside, draw: (ctx, w, h) => { const back = o.set(i); try { o.draw(ctx, w, h); } finally { back(); } } };
+    });
+  };
+  // a recorded film, then the live moments after its last (training on from where it ended: their insides are left out, measured from another start)
+  G.joined = function (rec, live) {
+    if (!rec || !rec.length) return live || [];
+    const last = rec[rec.length - 1].step;
+    return rec.concat((live || []).filter((f) => f.step > last).map((f) => ({ step: f.step, img: f.img, thumb: f.thumb, m: f.m, x: f.x, inside: null })));
+  };
+  // the line under the title of a recorded film (and of the training that carried on from it)
+  G.recordedSub = function (F, unit) {
+    const rec = F.filter((f) => f.recorded), last = rec.length ? rec[rec.length - 1].step : 0, more = F.length - rec.length;
+    return `The training that made this model, recorded when it was trained offline with this same code: ${rec.length} moments from ${unit} ${fmtInt(rec[0] ? rec[0].step : 0)} to ${unit} ${fmtInt(last)}, spaced evenly on a log scale (the early ones are close together because that is when it changes fastest).${more ? ` After ${unit} ${fmtInt(last)}: ${more} moment${more === 1 ? '' : 's'} of your own training, carrying on from it.` : ' Learn again from scratch to watch it happen here, live.'}`;
+  };
 
   // ------------------------------------------------------------------ the insides
   // the size of a layer's weights (their root mean square) and how far they have moved from a copy taken at the start
@@ -158,7 +211,10 @@
       this.stageKey = el('div', { class: 'gw-stages' });
       this.inside = el('canvas', { class: 'gw-inside', role: 'img' });
       this.insideNote = el('p', { class: 'gw-note' });
-      this.empty = el('p', { class: 'gw-empty', hidden: '' });
+      // nothing to show yet: what will collect here, and a button that starts it (the source's start(), else learning again from scratch)
+      this.emptyText = el('p', { class: 'gw-empty-text' });
+      this.emptyBtn = el('button', { class: 'btn btn-primary gw-empty-go', type: 'button', onclick: () => { const a = this.emptyAct; if (!a) return; this.stop(); a.run(); this.sel = -1; this.dirty = true; } });
+      this.empty = el('div', { class: 'gw-empty', hidden: '' }, this.emptyText, this.emptyBtn);
       this.mathBody = el('div', { class: 'gw-mathbody' });
       this.mathSec = el('section', { class: 'gw-sec gw-math' }, el('h4', { class: 'gw-k', text: 'The math at this moment' }), this.mathBody);
       this.body = el('div', { class: 'gw-body' },
@@ -209,14 +265,18 @@
       this.body.hidden = F.length < 2;
       this.playBtn.disabled = F.length < 2;
       if (F.length < 2) {
-        this.empty.textContent = this.o.emptyText || 'Train it, and the moments of its learning collect here: what it does after 1, 2, 5, 10, 20… steps.';
+        const t = typeof this.o.emptyText === 'function' ? this.o.emptyText() : this.o.emptyText;
+        this.emptyText.textContent = t || 'Train it, and the moments of its learning collect here: what it does after 1, 2, 5, 10, 20… steps.';
+        this.emptyAct = (this.src.start && this.src.start()) || (this.src.fromScratch && !(this.src.busy && this.src.busy()) ? { label: this.src.scratchLabel || 'Learn again from scratch', run: () => this.src.fromScratch() } : null);
+        this.emptyBtn.hidden = !this.emptyAct;
+        if (this.emptyAct) this.emptyBtn.textContent = this.emptyAct.label;
         this.sub.textContent = '';
         return;
       }
       if (this.sel < 0 || this.sel >= F.length || (!this.play && this.wasLast)) this.sel = F.length - 1;
       this.wasLast = this.sel === F.length - 1;
       this.scrub.max = String(F.length - 1); this.scrub.value = String(this.sel);
-      this.sub.textContent = this.src.sub ? this.src.sub(F) : `${F.length} moments, from ${unit} ${fmtInt(F[0].step)} to ${unit} ${fmtInt(F[F.length - 1].step)}, spaced evenly on a log scale: the early ones are close together because that is when it changes fastest.`;
+      this.sub.textContent = (this.src.sub && this.src.sub(F)) || `${F.length} moments, from ${unit} ${fmtInt(F[0].step)} to ${unit} ${fmtInt(F[F.length - 1].step)}, spaced evenly on a log scale: the early ones are close together because that is when it changes fastest.`;
       this.stages = G.stages(c);
       // which line is which: the curve has no other label
       if (c) clear(this.curveKey).append(...G.keyItems([{ tok: c.tok || 's1', label: c.label }, c.second ? { tok: c.second.tok || 's2', label: c.second.label, dash: true } : null].filter(Boolean)));
@@ -320,8 +380,9 @@
           F.forEach((f, i) => { const q = f.inside[j]; if (!q) return; const x = X(f.step), y = Y(q[key]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
           ctx.stroke();
         });
+        // (the moment shown, when it is one of these: training carried on from a recorded film has no insides)
         const f = this.frames[this.sel];
-        if (f) { const x = Math.round(X(f.step)) + 0.5; ctx.strokeStyle = theme.c('ink', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, y0 + pad.t); ctx.lineTo(x, y0 + ph - pad.b); ctx.stroke(); }
+        if (f && f.step <= maxS) { const x = Math.round(X(f.step)) + 0.5; ctx.strokeStyle = theme.c('ink', 0.6); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, y0 + pad.t); ctx.lineTo(x, y0 + ph - pad.b); ctx.stroke(); }
       };
       panel(0, 0, 'size', 'Size of its weights (root mean square)');
       if (rows === 1) panel(half + 16, 0, 'moved', 'How far they have moved from the start'); else panel(0, ph + 12, 'moved', 'How far they have moved from the start');

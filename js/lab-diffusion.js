@@ -36,7 +36,7 @@
     this.dataset = dataset;
     this.D = points(dataset, W ? W.noise : 0.03);
     this.model = new DM.Diffusion({ T: W ? W.T : 100, hidden: W ? W.hidden : [64, 64, 64], seed: scratch ? 2 : 1 });
-    this.history = []; this.step = 0; this.pretrained = false; this.film = null;
+    this.history = []; this.step = 0; this.pretrained = false; this.film = null; this.rec = null;
     if (W && !scratch) {
       this.model.net.setParams(NA.tf.decodeWeights(W.weights));
       this.step = W.steps; this.pretrained = true;
@@ -72,9 +72,28 @@
   };
   DF.onPause = function () { this.generate(true); this.bump(); if (this.film) this.film.tick(true); };
   // ------------------------------------------------------------------ its film (growth.js)
+  // the denoiser's layers with weights, named, for how big they are and how far they have moved
+  DF.filmLayers = (net) => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] }));
+  /* The film of how a denoiser trained in advance was trained (js/films/diffusion-<dataset>.js), its frames drawn by
+     filmFrame from that moment's weights; null for new weights, or until the film has loaded. */
+  DF.recorded = function () {
+    if (!this.pretrained) return null;
+    const name = `diffusion-${this.dataset}`;
+    if (this.rec && this.rec.name === name) return this.rec.frames;
+    const F = NA.growth.film(name, () => { this.bump(); if (this.growth) this.growth.dirty = true; });
+    if (!F) return null;
+    const W = NA.diffusionWeights[this.dataset], m = new DM.Diffusion({ T: W.T, hidden: W.hidden, seed: 1 }), cache = [];
+    const frames = NA.growth.recordedFrames(F, {
+      set: (i) => { m.net.setParams(cache[i] || (cache[i] = NA.growth.unpack(F.frames[i].w))); const keep = this.model; this.model = m; return () => { this.model = keep; }; },
+      draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
+      layers: () => this.filmLayers(m.net),
+    });
+    this.rec = { name, frames };
+    return frames;
+  };
   DF.filmTick = function (force) {
     if (!this.film) {
-      const net = this.model.net, layers = () => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] })), start = NA.growth.copyLayers(layers());
+      const net = this.model.net, layers = () => this.filmLayers(net), start = NA.growth.copyLayers(layers());
       this.film = new NA.growth.Recorder({
         step: () => this.step,
         draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
@@ -294,14 +313,21 @@
     root.append(this.stage, this.archStage, el('div', { class: 'df-scrub' }, this.playBtn, this.slider, this.sliderLab));
     this.growth = NA.growth.mount(this.archStage, {
       unit: 'step',
-      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
-      frames: () => (this.film ? this.film.frames() : []),
+      // (a denoiser trained in advance: the film of that training, then any training that carries on from it)
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}:${this.dataset}:${this.recorded() ? 1 : 0}`,
+      frames: () => NA.growth.joined(this.recorded(), this.film ? this.film.frames() : []),
+      sub: (F) => (F.length && F[0].recorded ? NA.growth.recordedSub(F, 'step') : null),
       curve: () => ({ label: 'Loss (smoothed)', higher: false, fmt: (v) => fmt(v, 4), points: this.history.map((q) => [q.step, q.loss]) }),
       math: (f, before) => this.filmMath(f, before),
       fromScratch: () => { if (this.training) this.pause(); this.load(this.dataset, true); this.play(); this.filmTick(true); NA.ui.toast.show('Random weights, training now: the film fills up as noise learns to become the data.'); },
+      busy: () => this.training,
+      start: () => (this.training || this.step ? null : { label: '▶ Train it and watch', run: () => this.play() }),
     }, { title: 'How it learned', what: 'Points it generates from the same noise every time, over the training data',
       key: [{ tok: 'pos', label: 'points it generates', dot: true }, { tok: 'muted', label: 'the training data', dot: true, faint: true }],
-      emptyText: 'Train it, and the moments of its learning collect here. The page opens on a model trained in advance: Learn again from scratch watches noise slowly learn to become the data.' });
+      emptyText: () => (this.pretrained && NA.growth.filmLoading(`diffusion-${this.dataset}`) ? 'Loading the film of how this model was trained…'
+        : this.training ? 'Training: the first moments are on their way.'
+          : this.step ? 'Train it, and the moments of its learning collect here. Learn again from scratch watches noise slowly learn to become the data.'
+            : 'New random weights: train it, and the moments of its learning collect here as noise slowly learns to become the data.') });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot = el('div', { class: 'lab-foot' })); // the key for the view on show (renderFoot)
     this.canvas.addEventListener('click', (e) => this.click(e));

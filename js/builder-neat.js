@@ -285,7 +285,27 @@
     place('_');
     const rows = Math.max(1, next), x0 = r.x + 14, y0 = r.y + 26, w = r.w - 28 - 90, h = r.h - 44, maxG = Math.max(1, gen), X = (g) => x0 + (g / maxG) * w, Y = (k) => y0 + ((k + 0.5) / rows) * h;
     const fits = nodes.map((q) => q.best).filter(Number.isFinite), lo = Math.min(...fits), hi = Math.max(...fits);
-    text(ctx, `The family tree of shapes: ${nodes.length} shapes shown of ${T.size}, from generation 1 to ${fmtInt(gen)}`, r.x + 2, r.y + 9, { w: 650, size: 12, color: theme.c('ink-2') });
+    text(ctx, `The family tree of shapes: ${nodes.length} shapes shown of ${T.size}, from generation 1 to ${fmtInt(gen)}${L.hits ? ` · ${NA.mobile && NA.mobile.mobile ? 'tap' : 'point at'} a line for its shape` : ''}`, r.x + 2, r.y + 9, { w: 650, size: 12, color: theme.c('ink-2') });
+    /* every shape answers a pointer anywhere along its line (the nearest within 12 px): the shape, where it came
+       from and how, when it lived, the most members it had at once, its best fitness */
+    if (L.hits) {
+      const shapeSay = (u) => (u.length ? `${u.join(' → ')} neuron${u.length === 1 && u[0] === 1 ? '' : 's'}` : 'no hidden layer');
+      const tipTitle = (s) => NA.el('div', { class: 'tt-title', text: s }), tipRow = (k, v) => NA.el('div', { class: 'tt-row' }, NA.el('span', { class: 'tt-k', text: k }), NA.el('span', { class: 'tt-v', text: v }));
+      L.hits.push({ x: r.x, y: y0 - 10, w: r.w, h: h + 20, tip: (px, py) => {
+        let q = null, bd = 144;
+        for (const z of nodes) {
+          const a = X(z.gen), b = Math.max(a, X(z.last)), dx = px < a ? a - px : px > b ? px - b : 0, dy = Y(row.get(z.key)) - py, dd = dx * dx + dy * dy;
+          if (dd < bd) { bd = dd; q = z; }
+        }
+        if (!q) return null;
+        const p = q.parent ? T.get(q.parent) : null, alive = q.last >= gen - 1;
+        return [tipTitle(`${shapeSay(q.units)}${q.key === ev.bestShape ? ': the best’s shape now' : ''}`),
+          p ? tipRow('came from', `${shapeSay(p.units)}${q.how ? ` (${String(q.how).replace(/ in layer \d+| at \d+/, '')})` : ''}`) : tipRow('came from', 'the first generation'),
+          tipRow('lived', `generation ${fmtInt(q.gen)} to ${alive ? 'now' : fmtInt(q.last)}`),
+          tipRow('most at once', `${fmtInt(q.most)} member${q.most === 1 ? '' : 's'}`),
+          Number.isFinite(q.best) ? tipRow('best fitness', fmt(q.best, 2)) : null].filter(Boolean);
+      } });
+    }
     ctx.lineWidth = 1.2;
     for (const q of nodes) {
       const p = q.parent && row.has(q.parent) ? q.parent : null;

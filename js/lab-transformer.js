@@ -91,9 +91,29 @@
   };
   TL.onPause = function () { this.recordPoint(); this.bumpVersion(); if (this.film) this.film.tick(true); };
   // ------------------------------------------------------------------ its film (growth.js)
+  // its layers with weights, named, for how big they are and how far they have moved
+  TL.filmLayers = (m) => [{ name: 'Embeddings', arrays: [m.E.w, m.Pos.w] }, ...m.layers.flatMap((P, l) => [{ name: `Attention ${l + 1}`, arrays: [P.Wqkv.w, P.Wo.w] }, { name: `MLP ${l + 1}`, arrays: [P.W1.w, P.W2.w] }]), { name: 'Unembedding', arrays: [m.U.w] }];
+  /* The film of how a model trained in advance was trained (js/films/lm-<variant>.js), its frames drawn by
+     filmFrame from that moment's weights; null for new weights, or until the film has loaded. */
+  TL.recorded = function () {
+    if (!this.pretrained || this.variant === 'scratch') return null;
+    const name = `lm-${this.variant}`;
+    if (this.rec && this.rec.name === name) return this.rec.frames;
+    const F = NA.growth.film(name, () => { this.bumpVersion(); if (this.growth) this.growth.dirty = true; });
+    if (!F) return null;
+    const m = new TF.TinyGPT(Object.assign({}, NA.lmWeights[this.variant].cfg)), cache = [];
+    const frames = NA.growth.recordedFrames(F, {
+      set: (i) => { m.setParams(cache[i] || (cache[i] = NA.growth.unpack(F.frames[i].w))); const keep = this.model; this.model = m; return () => { this.model = keep; }; },
+      draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
+      layers: () => this.filmLayers(m),
+      metrics: (r) => ({ 'Verbs that agree (validation)': fmtPct(r.m.agree, 0), 'Validation loss': fmt(r.m.val, 3) }),
+    });
+    this.rec = { name, frames };
+    return frames;
+  };
   TL.filmTick = function (force) {
     if (!this.film) {
-      const m = this.model, layers = () => [{ name: 'Embeddings', arrays: [m.E.w, m.Pos.w] }, ...m.layers.flatMap((P, l) => [{ name: `Attention ${l + 1}`, arrays: [P.Wqkv.w, P.Wo.w] }, { name: `MLP ${l + 1}`, arrays: [P.W1.w, P.W2.w] }]), { name: 'Unembedding', arrays: [m.U.w] }];
+      const m = this.model, layers = () => this.filmLayers(m);
       const start = NA.growth.copyLayers(layers());
       this.film = new NA.growth.Recorder({
         step: () => this.step,
@@ -414,14 +434,21 @@
     root.append(this.stage, this.archStage);
     this.growth = NA.growth.mount(this.archStage, {
       unit: 'step',
-      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
-      frames: () => (this.film ? this.film.frames() : []),
+      // (a model trained in advance: the film of that training, then any training that carries on from it)
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}:${this.variant}:${this.recorded() ? 1 : 0}`,
+      frames: () => NA.growth.joined(this.recorded(), this.film ? this.film.frames() : []),
+      sub: (F) => (F.length && F[0].recorded ? NA.growth.recordedSub(F, 'step') : null),
       curve: () => ({ label: 'Lookups right (validation)', higher: true, fmt: (v) => fmtPct(v, 0), points: this.history.map((q) => [q.step, q.lookup]) }),
       math: (f, before) => this.filmMath(f, before),
       fromScratch: () => { if (this.training) this.pause(); this.load('scratch'); this.play(); this.filmTick(true); NA.ui.toast.show('New random weights, training now: grammar appears within seconds, lookups after about 2,000 steps.'); },
+      busy: () => this.training,
+      start: () => (this.training || this.step ? null : { label: '▶ Train it and watch', run: () => this.play() }),
     }, { title: 'How it learned', what: 'Its three likeliest next words after “alice drinks”, and where each head of its last block looks',
       key: [{ tok: 'pos', label: 'the right word', box: true }, { tok: 'muted', label: 'other guesses', box: true, faint: true }, { label: 'maps: a row per token, brighter where it looks' }],
-      emptyText: 'Train it, and the moments of its learning collect here. The page opens on a model trained in advance: Learn again from scratch watches grammar appear within seconds, and lookups after about 2,000 steps.' });
+      emptyText: () => (this.pretrained && NA.growth.filmLoading(`lm-${this.variant}`) ? 'Loading the film of how this model was trained…'
+        : this.training ? 'Training: the first moments are on their way.'
+          : this.step ? 'Train it, and the moments of its learning collect here. Learn again from scratch watches grammar appear within seconds, and lookups after about 2,000 steps.'
+            : 'New random weights: train it, and the moments of its learning collect here as it learns. Grammar appears within seconds, lookups after about 2,000 steps.') });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     root.append(this.foot);
     this.zoom = new NA.ui.Zoom(this.canvas, { host: this.stage, panOne: true, max: 4, wheel: 'fixed', onChange: () => { this.dirty = true; NA.tooltip.hide(); } });

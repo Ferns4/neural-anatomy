@@ -1835,7 +1835,13 @@
       math: (f, before) => this.filmMath(f, before),
       fromScratch: () => { this.reset(); if (!this.training) this.play(); },
       scratchLabel: 'New run from scratch',
-    }, { title: 'How it learned', what: 'Its results', emptyText: 'Press Train. The moments of the run collect here: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.' });
+      // (an empty film: nothing trained yet, so Train fills it; weights opened from My models came without one)
+      busy: () => this.training,
+      start: () => (this.training ? null : !this.run || this.stale || !this.run.step ? { label: '▶ Train it and watch', run: () => this.play() } : { label: '▶ Train it again from scratch and watch', run: () => { this.reset(); if (!this.training) this.play(); } }),
+    }, { title: 'How it learned', what: 'Its results', emptyText: () => (this.training ? 'Training: the first moments of the run are on their way.'
+      : this.run && !this.stale && this.run.step && this.run.from === 'kept' ? 'These weights were opened from My models, so the film of how they learned was not kept with them. Train it again from scratch, and the moments of the new run collect here as it learns: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.'
+        : this.run && !this.stale && this.run.step ? 'This run has no film yet. Train it again from scratch, and its moments collect here as it learns: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step.'
+          : 'Train it, and the moments of the run collect here as it learns: what it does after 1, 2, 5, 10, 20… steps, the learning curve with its stages, how its weights grow, and the math of each step. Stay on this view to watch them arrive.') });
     this.resCanvas.addEventListener('contextmenu', (e) => { if (this.problem().id === 'draw') e.preventDefault(); });
     this.resCanvas.tabIndex = 0; // (a click on the picture, then a key of the world's: you jump in)
     this.resCanvas.addEventListener('pointerdown', (e) => this.resultsPointer(e));
@@ -3343,6 +3349,10 @@
     const EV = NA.bevo, s = o.s, sup = o.sup, g = EV.growOptions(s, sup), on = !!s.grow, K = sup ? { penalty: 'growPenalty', size: 'growWidth', mode: 'growNew' } : { penalty: 'penalty', size: 'layerSize', mode: 'newLayer' };
     const seg = (label, key, opts, cur, title) => UI.field(label, UI.seg(opts.map(([value, l, t]) => ({ value, label: l, title: t })), cur, (v) => o.set(key, v), title || label));
     const N = g.members, ga = !sup;
+    /* the layers you built, when it starts from them: one at the neuron limit cannot gain a neuron, and a whole new
+       layer cannot follow one over it; with every one of them at the limit, “+1 neuron” is never made */
+    const built = g.start === 'built' ? EV.unitsOf((this.setup.blocks || []).filter((b) => b.type === 'dense')) : [];
+    const full = built.filter((u) => u >= g.maxUnits), over = full.filter((u) => u > g.maxUnits), allFull = built.length > 0 && full.length === built.length && g.ops['neuron+'];
     const head = UI.section('Grow and prune', seg('Architecture', 'grow', [[false, 'Fixed'], [true, 'Grows and prunes']], on),
       on && o.can ? seg('Start from', 'growStart', [['built', 'Your network', 'The first networks are the one you built and copies of it'], ['small', 'No hidden layer', 'The first networks have no hidden layer: every neuron and layer they end with, evolution added']], g.start) : null,
       UI.note(!o.can ? (sup ? 'Only a model of Dense blocks on a list of numbers can change shape. Start from the Linear template, or one Dense block of 1 neuron, and let it grow.' : 'Only a model of Dense blocks on a list of numbers can change shape; yours keeps its shape and only its weights evolve. The Small MLP can grow, and so can the Linear template, from no hidden layer at all.')
@@ -3353,14 +3363,16 @@
     // the changes it can make, their odds, and how many children change
     const OPS = [['neuron+', 'growAddNeuron', 'A hidden layer gains a neuron'], ['neuron-', 'growCutNeuron', 'A hidden layer loses a neuron (its last takes the layer with it)'], ['layer+', 'growAddLayer', 'A new hidden layer'],
       ['layer-', 'growCutLayer', 'A whole hidden layer goes at once, folded into the next'], ['act', 'growAct', `A hidden layer switches to another activation: ${EV.ACTS.map((a) => (ACTS[a] || {}).label || a).join(', ')}`]];
-    const odds = EV.changeOdds(g), allowed = OPS.filter(([k]) => g.ops[k]), none = !allowed.length;
+    // (the odds of the changes it can really make: none of “+1 neuron” while every layer you built is at the limit)
+    const odds = EV.changeOdds(allFull ? Object.assign({}, g, { weights: Object.assign({}, g.weights, { 'neuron+': 0 }) }) : g), none = !OPS.some(([k]) => g.ops[k]);
+    const allowed = OPS.filter(([k]) => g.ops[k] && !(allFull && k === 'neuron+'));
     const chips = el('div', { class: 'chip-row bd-grow-ops', role: 'group', 'aria-label': 'Changes it can make' }, ...OPS.map(([k, key, title]) => UI.chip(EV.CHANGES[k], g.ops[k], (v) => o.set(key, v), title)));
     const rateSay = { 0.1: 'One child in ten is', 0.25: 'A quarter of the children are', 0.5: 'Half the children are', 1: 'Every child is' }[g.rate] || `${GROW_PCT(g.rate)} of the children are`;
     const changes = UI.section('Changes to its shape', UI.field('It can make', chips),
       none ? null : seg('Leaning', 'growLean', [['grow', 'To grow', 'Gaining neurons and layers is likelier'], ['even', 'Even', 'The usual odds'], ['prune', 'To prune', 'Losing neurons and layers is likelier']], g.lean),
       none || sup ? null : seg('Children that change', 'growRate', [[0.1, '1 in 10'], [0.25, '1 in 4'], [0.5, 'Half'], [1, 'All']], g.rate, 'How many children are born with a change to their shape'),
       UI.note(none ? 'Every change is off, so its shape stays as it is: turn one on.'
-        : `Of the changes it makes: ${allowed.map(([k]) => `${EV.CHANGES[k]} ${GROW_PCT(odds[k])}`).join(', ')}${g.ops['layer+'] ? ' (with no hidden layer, a new layer is the only change it can make)' : ''}. ${{ grow: 'Leaning to grow: networks get bigger sooner, and the size penalty has more to hold back.', even: 'Even: a neuron more is likeliest, then a neuron less, then a new layer, so it grows slowly and prunes what does not pay.', prune: 'Leaning to prune: it keeps networks small and tries out removing parts, so it suits a network you built too big.' }[g.lean]} ${sup ? `Each copy that replaces one of the worse half is born with one change; then its gradient steps teach it to use what it has.` : `${rateSay} born with one change; the rest only have their weights mutated. More changes explore more shapes, but fewer children get to tune the shape they have.`}${g.ops.act ? ' A new activation keeps the layer’s weights but changes what it computes: ReLU cuts negatives to 0, tanh and sigmoid squash into a range, leaky ReLU and ELU let a little of the negatives through.' : ''}`));
+        : `Of the changes it makes: ${allowed.length ? allowed.map(([k]) => `${EV.CHANGES[k]} ${GROW_PCT(odds[k])}`).join(', ') : 'none for now'}${((q) => (q.length ? ` (${q.join('; ')})` : ''))([allFull ? 'no “+1 neuron” while every layer you built is at the neuron limit, below' : null, g.ops['layer+'] ? 'with no hidden layer, a new layer is the only change it can make' : null].filter(Boolean))}. ${{ grow: 'Leaning to grow: networks get bigger sooner, and the size penalty has more to hold back.', even: 'Even: a neuron more is likeliest, then a neuron less, then a new layer, so it grows slowly and prunes what does not pay.', prune: 'Leaning to prune: it keeps networks small and tries out removing parts, so it suits a network you built too big.' }[g.lean]} ${sup ? `Each copy that replaces one of the worse half is born with one change; then its gradient steps teach it to use what it has.` : `${rateSay} born with one change; the rest only have their weights mutated. More changes explore more shapes, but fewer children get to tune the shape they have.`}${g.ops.act ? ' A new activation keeps the layer’s weights but changes what it computes: ReLU cuts negatives to 0, tanh and sigmoid squash into a range, leaky ReLU and ELU let a little of the negatives through.' : ''}`));
     // how new neurons and layers start, and where layers go
     const grows = g.ops['layer+'] || g.ops['neuron+'];
     const parts = !grows ? null : UI.section('New neurons and layers',
@@ -3369,6 +3381,8 @@
       g.ops['layer+'] ? seg('New layers go', 'growWhere', [['any', 'Anywhere'], ['first', 'After the input'], ['last', 'Before the output']], g.where) : null,
       g.ops['neuron+'] ? seg('New neurons start', 'growNeuron', [['silent', 'Silent', 'Outgoing weights 0: it changes nothing at first'], ['random', 'At random', 'Outgoing weights at random: it joins in at once']], g.neuron) : null,
       UI.note([g.ops['layer+'] ? `${GROW_LAYER_SAY[g.size] || GROW_LAYER_SAY.one}${g.mode === 'random' ? ` Its weights start at random, so right after it is added the network forgets much of what it did: ${sup ? 'it has to learn again' : 'children that grow a layer rarely win'}.` : ''} ${GROW_WHERE_SAY[g.where]}` : '',
+        // (evolution has no gradient to teach a bottleneck: in a network that works, a child that grows one loses)
+        g.ops['layer+'] && ga && g.size !== 'whole' ? `Evolution has no gradient to repair a bottleneck: in a network that already works, a new layer of ${g.size === 'one' ? 'one neuron' : 'a few'} cuts ${built.length ? `the ${Math.max(...built)} numbers your widest layer passes on` : 'what the layer before it passes on'} down to ${g.size === 'one' ? '1' : 'a few'}, so a child that grows one almost never wins. To try deeper networks, start new layers as “A whole layer”: it passes everything through, so the child does just what its parent did.` : '',
         g.ops['neuron+'] ? (g.neuron === 'random' ? 'A new neuron’s outgoing weights start at random: it joins in at once, so a child that grows does differently from its parent, often worse at first.' : `A new neuron’s outgoing weights start at 0: it changes nothing until ${sup ? 'gradient steps' : 'mutations'} put it to work, so growing never costs a ${sup ? 'network' : 'child'} anything at first.`) : ''].filter(Boolean).join(' ')));
     // what pruning takes
     const prunes = g.ops['neuron-'] || g.ops['layer-'];
@@ -3382,7 +3396,9 @@
       : sup ? `The penalty adds ${EV.PENALTY_EX[pen]} to a network’s validation loss for every 100 weights, so the smaller of two equal networks wins.` : `The penalty takes ${GROW_PCT(EV.PENALTY[pen])} of a good episode’s return off the fitness for every 100 weights, so the smaller of two equal networks wins.`;
     const limits = UI.section('Limits and pressure',
       seg('Hidden layers, at most', 'growMaxLayers', [[2, '2'], [4, '4'], [6, '6'], [8, '8']], g.maxLayers),
-      seg('Neurons in a layer, at most', 'growMaxUnits', [[16, '16'], [32, '32'], [48, '48'], [64, '64']], g.maxUnits),
+      seg('Neurons in a layer, at most', 'growMaxUnits', [[16, '16'], [32, '32'], [48, '48'], [64, '64'], [128, '128']], g.maxUnits),
+      // a layer you built over the limit, or every one at it: what that stops, and the limit that lets it grow
+      over.length || allFull ? el('div', { class: 'diag bd-warn bd-grow-limit' }, el('p', { class: 'diag-body', text: ((u, wider) => `${full.length === 1 ? `Your layer of ${u} neurons is ${over.length ? 'over' : 'at'} this limit, so it` : `Your layers of ${full.slice(0, -1).join(', ')} and ${full[full.length - 1]} neurons are at or over this limit, so they`} can lose neurons but not gain any${allFull ? ': “+1 neuron” is never made, and another change is picked instead' : ''}.${g.ops['layer+'] && g.size === 'whole' && over.length ? ` No whole new layer can follow ${over.length === 1 ? 'it' : 'them'} either: it would be ${Math.max(...over)} wide.` : ''} ${wider ? `Choose ${wider}${wider < 128 ? ' or more' : ''} to let ${full.length === 1 ? 'it' : 'them'} grow.` : 'No limit here is that high.'}`)(Math.max(...full), [16, 32, 48, 64, 128].find((v) => v > Math.max(...full))) })) : null,
       seg('Size penalty', K.penalty, [['off', 'None'], ['light', 'Light'], ['strong', 'Strong']], pen),
       ga ? seg('Protect new shapes', 'growProtect', [[false, 'Off'], [true, `For ${EV.PROTECT.gens} generations`]], g.protect) : null,
       sup ? seg('Networks side by side', 'growSize', [[4, '4'], [6, '6'], [10, '10']], N) : null,

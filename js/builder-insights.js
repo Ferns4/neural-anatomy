@@ -159,15 +159,19 @@
         [{ label: 'Jump in and show it more', run: () => { if (NA.mobile && NA.mobile.mobile) NA.mobile.go('network'); if (L.centerView !== 'results') { L.centerView = 'results'; L.layoutCenter(); } L.playYourself(true); } }]);
     }
     /* grow and prune: new shapes that keep losing. The best has kept one shape for 40 generations or more while other
-       shapes played beside it (the generations' shape counts), and it has not learned the world yet. */
+       shapes played beside it (the generations' shape counts). Before it has learned the world: they lose because they
+       start worse. Once it plays well: a bigger shape can only tie, so it has nothing to win. */
     const ev = L.agent && L.agent.evo;
-    if (ga && run.grow && ev && ev.grow && ev.history.length >= 40 && low) {
+    if (ga && run.grow && ev && ev.grow && ev.history.length >= 40 && vm !== null) {
       const H = ev.history, now = H[H.length - 1].units, same = (u) => u.length === now.length && u.every((x, i) => x === now[i]);
       let k = H.length - 1;
       while (k > 0 && same(H[k - 1].units)) k--;
       const stuck = H.length - k, tried = Math.max(1, ...H.slice(k).map((h) => h.shapes || 1)), g = ev.gopt;
-      if (stuck >= 40 && tried > 1) {
-        add('info', 'New shapes keep losing', `For ${fmtInt(stuck)} generations the best network has kept the shape ${now.length ? now.join(' → ') : 'with no hidden layer'}, though up to ${tried} shapes played in a generation. A new shape usually starts a little worse (${g.neuron === 'random' ? 'a new neuron joins in at random' : 'a new neuron does nothing yet'}, a new layer is a bottleneck), so it is thrown out before mutations can tune it${g.penalty === 'strong' ? ', and a strong size penalty makes every bigger shape start further behind' : ''}. ${g.protect ? 'New shapes are protected already: this shape may simply be the right size for the world.' : 'Protecting new shapes keeps the best of each new one for 5 generations, so it gets time to catch up.'}`,
+      const shape = now.length ? `${now.length === 1 ? 'one hidden layer' : `${now.length} hidden layers`} of ${now.join(' → ')} neuron${now.length === 1 && now[0] === 1 ? '' : 's'}` : 'no hidden layer';
+      if (stuck >= 40 && tried > 1 && !low) {
+        add('info', 'It plays well with the shape it has', `For ${fmtInt(stuck)} generations the best network has kept the same shape, ${shape}, and scored ${fmtPct(vm, 0)}, though other shapes played beside it. A bigger network could at best do as well${g.penalty === 'off' ? '' : ', and the size penalty takes a little off for every weight, so the smaller of two equal networks wins'}${g.ops['layer+'] && g.size !== 'whole' ? '; a new layer also starts as a bottleneck, so a child that grows one does worse at first and is dropped' : ''}. Shapes stay only where they help, and this one is enough here. To watch layers grow and stay, give it a problem that needs them: Two spirals, learning from examples, with grow and prune starting from no hidden layer.`);
+      } else if (stuck >= 40 && tried > 1) {
+        add('info', 'New shapes keep losing', `For ${fmtInt(stuck)} generations the best network has kept the same shape, ${shape}, though up to ${tried} shapes played in a generation. A new shape usually starts a little worse (${g.neuron === 'random' ? 'a new neuron joins in at random' : 'a new neuron does nothing yet'}, a new layer is a bottleneck), so it is thrown out before mutations can tune it${g.penalty === 'strong' ? ', and a strong size penalty makes every bigger shape start further behind' : ''}. ${g.protect ? 'New shapes are protected already: this shape may simply be the right size for the world.' : 'Protecting new shapes keeps the best of each new one for 5 generations, so it gets time to catch up.'}`,
           [g.protect ? null : again('Protect new shapes, new run', setPs((q) => { q.growProtect = true; })), g.penalty === 'strong' ? again('Light size penalty, new run', setPs((q) => { q.penalty = 'light'; })) : null,
             g.neuron === 'random' ? again('Silent new neurons, new run', setPs((q) => { q.growNeuron = 'silent'; })) : null].filter(Boolean));
       }

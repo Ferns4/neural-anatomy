@@ -125,10 +125,36 @@
   // ------------------------------------------------------------------ its film (growth.js)
   // each agent keeps its own: the board at moments spread on a log scale of its episodes, games or generations
   const UNIT = { maze: 'episode', three: 'game', four: 'game', evolve: 'generation' };
+  // its network's layers with weights, named, for how big they are and how far they have moved (none for a table)
+  const filmLayers = (S) => (S.net ? [{ name: 'Hidden', arrays: [S.net.W1, S.net.b1] }, { name: 'Q-values', arrays: [S.net.W2, S.net.b2] }] : S.brain && S.brain.W1 ? [{ name: 'Hidden', arrays: [S.brain.W1, S.brain.b1] }, { name: 'Value', arrays: [S.brain.W2] }] : null);
+  /* The film of how an agent trained in advance was trained (js/films/rl-four.js, rl-maze.js), its frames drawn by
+     filmFrame from that moment's weights; null for an agent that started from nothing, or until the film has loaded. */
+  LAB.recorded = function (S) {
+    const four = S.id === 'four', name = !S.pretrained ? null : four ? 'rl-four' : S.id === 'maze' && S.model === 'net' ? 'rl-maze' : null;
+    if (!name) return null;
+    if (S.rec && S.rec.name === name) return S.rec.frames;
+    const F = NA.growth.film(name, () => { this.bump(); if (this.growth) this.growth.dirty = true; });
+    if (!F) return null;
+    const net = four ? new RL.ValueNet(S.brain.n, S.brain.nH) : new RL.MazeNet(S.net.nH), parts = four ? [net.W1, net.b1, net.W2] : [net.W1, net.b1, net.W2, net.b2], cache = [];
+    const set = (i) => {
+      const w = cache[i] || (cache[i] = NA.growth.unpack(F.frames[i].w));
+      let k = 0;
+      for (const a of parts) { a.set(w.subarray(k, k + a.length)); k += a.length; }
+      if (four) net.b2 = w[k];
+      const kn = S.net, kb = S.brain;
+      if (four) S.brain = net; else S.net = net;
+      this.fieldC = this.hereC = null; // (what the board shows is worked out again, from these weights and then from its own)
+      return () => { S.net = kn; S.brain = kb; this.fieldC = this.hereC = null; };
+    };
+    const frames = NA.growth.recordedFrames(F, { set, draw: (ctx, w, h) => this.filmFrame(ctx, w, h, S), layers: () => filmLayers(S),
+      metrics: (r) => (four ? { 'Wins against a random player': fmtPct(r.m.rnd, 0), 'Against the rule-follower': fmtPct(r.m.rules, 0) } : { 'New mazes it gets through': fmtPct(r.m.fresh, 0), 'Named mazes': fmtPct(r.m.named, 0) }) });
+    S.rec = { name, frames };
+    return frames;
+  };
   LAB.filmTick = function (force) {
     const S = this.S;
     if (!S.film) {
-      const layers = () => (S.net ? [{ name: 'Hidden', arrays: [S.net.W1, S.net.b1] }, { name: 'Q-values', arrays: [S.net.W2, S.net.b2] }] : S.brain && S.brain.W1 ? [{ name: 'Hidden', arrays: [S.brain.W1, S.brain.b1] }, { name: 'Value', arrays: [S.brain.W2] }] : null);
+      const layers = () => filmLayers(S);
       const start = layers() && NA.growth.copyLayers(layers());
       S.film = new NA.growth.Recorder({
         step: () => (S.id === 'evolve' ? S.evo.gen : S.n),
@@ -557,12 +583,22 @@
     root.append(this.stage, this.archStage);
     this.growth = NA.growth.mount(this.archStage, {
       get unit() { return UNIT[this.lab.S.id]; }, lab: this,
-      version: () => `${this.S.id}:${this.S.model}:${this.S.film ? this.S.film.version() : 0}`,
-      frames: () => (this.S.film ? this.S.film.frames() : []),
+      // (an agent trained in advance: the film of that training, then any training that carries on from it)
+      version: () => `${this.S.id}:${this.S.model}:${this.S.film ? this.S.film.version() : 0}:${this.recorded(this.S) ? 1 : 0}`,
+      frames: () => NA.growth.joined(this.recorded(this.S), this.S.film ? this.S.film.frames() : []),
+      sub: (F) => (F.length && F[0].recorded ? NA.growth.recordedSub(F, UNIT[this.S.id]) : null),
       curve: () => this.filmCurve(),
       math: (f) => this.filmMath(f),
       fromScratch: () => { this.runTry({ action: 'scratch' }); this.filmTick(true); },
-    }, { title: 'How it learned', rl: true, what: 'The board', emptyText: 'Train it, and the moments of its learning collect here. A trained agent opens with all it knows: Learn again from scratch watches it start from nothing.' });
+      busy: () => this.training,
+      start: () => (this.training || (this.S.id === 'evolve' ? (this.S.evo ? this.S.evo.gen : 0) : this.S.n) ? null : { label: '▶ Train it and watch', run: () => this.play() }),
+    }, { title: 'How it learned', rl: true, what: 'The board', emptyText: () => {
+      const S = this.S, n = S.id === 'evolve' ? (S.evo ? S.evo.gen : 0) : S.n;
+      return S.pretrained && NA.growth.filmLoading(S.id === 'four' ? 'rl-four' : 'rl-maze') ? 'Loading the film of how this agent was trained…'
+        : this.training ? 'Training: the first moments are on their way.'
+          : n ? 'Train it, and the moments of its learning collect here. Learn again from scratch watches it start from nothing.'
+            : `It starts from nothing: train it, and the moments of its learning collect here as it learns, from the first ${UNIT[S.id]} on.`;
+    } });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 });
     root.append(this.foot = el('div', { class: 'lab-foot' }, ...(evo
       ? [key('s2', 'the best, carried on'), key('s1', 'children'), el('span', { class: 'lg-item', text: `bar: steps the pole stayed up (${fmtInt(NA.rlEvo.MAXT)} at most) · arrow: the way it pushes` })]

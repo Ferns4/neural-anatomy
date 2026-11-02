@@ -23,7 +23,7 @@
     const sizes = [1, ...Array(this.depth).fill(this.width), 1];
     this.plain = new PN.PINN(sizes, 1);
     this.pinn = new PN.PINN(sizes, 1);
-    this.history = []; this.step = 0; this.film = null;
+    this.history = []; this.step = 0; this.film = null; this.rec = null;
     const W = NA.pinnWeights;
     if (pretrained && W && W.pinn.sizes.join() === sizes.join()) {
       this.plain.setParams(NA.tf.decodeWeights(W.plain.weights));
@@ -62,9 +62,31 @@
   };
   PL.onPause = function () { this.measure(); this.bump(); if (this.film) this.film.tick(true); };
   // ------------------------------------------------------------------ its film (growth.js)
+  // a network's layers with weights, named, for how big they are and how far they have moved
+  PL.filmLayers = (net) => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] }));
+  /* The film of how the networks the page opens on were trained (js/films/pinn.js), its frames drawn by filmFrame
+     from both networks' weights at that moment; null for new weights, or until the film has loaded. */
+  PL.recorded = function () {
+    if (!this.pretrained) return null;
+    if (this.rec) return this.rec;
+    const F = NA.growth.film('pinn', () => { this.bump(); if (this.growth) this.growth.dirty = true; });
+    if (!F) return null;
+    const W = NA.pinnWeights, a = new PN.PINN(W.plain.sizes, 1), b = new PN.PINN(W.pinn.sizes, 1), cache = [];
+    this.rec = NA.growth.recordedFrames(F, {
+      set: (i) => {
+        const c = cache[i] || (cache[i] = [NA.growth.unpack(F.frames[i].plain), NA.growth.unpack(F.frames[i].pinn)]), kp = this.plain, kq = this.pinn;
+        a.setParams(c[0]); b.setParams(c[1]); this.plain = a; this.pinn = b;
+        return () => { this.plain = kp; this.pinn = kq; };
+      },
+      draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
+      layers: () => this.filmLayers(b),
+      metrics: () => { const m = this.measureOf(a, b); return { 'The plain network’s error': fmtPct(m.plainErr, 1), 'How far the PINN breaks the equation': fmt(m.pinnRes, 3) }; },
+    });
+    return this.rec;
+  };
   PL.filmTick = function (force) {
     if (!this.film) {
-      const net = this.pinn, layers = () => net.W.map((w, l) => ({ name: l < net.W.length - 1 ? `Layer ${l + 1}` : 'Output', arrays: [w, net.b[l]] })), start = NA.growth.copyLayers(layers());
+      const net = this.pinn, layers = () => this.filmLayers(net), start = NA.growth.copyLayers(layers());
       this.film = new NA.growth.Recorder({
         step: () => this.step,
         draw: (ctx, w, h) => this.filmFrame(ctx, w, h),
@@ -102,7 +124,9 @@
   PL.bump = function () { this.version++; this.dirty = true; this.inspDirty = true; this.leftDirty = true; this.archStale = true; this.infoStale = true; };
 
   // Errors against the exact solution, overall and beyond the data, and the ODE residual of both networks.
-  PL.measure = function () {
+  PL.measure = function () { this.m = this.measureOf(this.plain, this.pinn); };
+  // how far each network is from the exact motion (over all of it, and after the measurements end) and from obeying the equation
+  PL.measureOf = function (plain, pinn) {
     const P = this.prob, n = 160, k = P.omega * P.omega, c = 2 * P.zeta * P.omega;
     const acc = (net) => {
       let num = 0, den = 0, numX = 0, denX = 0, res = 0;
@@ -113,8 +137,8 @@
       }
       return { err: Math.sqrt(num / den), extra: denX ? Math.sqrt(numX / denX) : 0, res: Math.sqrt(res / (n + 1)) };
     };
-    const a = acc(this.plain), b = acc(this.pinn);
-    this.m = { plainErr: a.err, pinnErr: b.err, plainExtra: a.extra, pinnExtra: b.extra, plainRes: a.res, pinnRes: b.res };
+    const a = acc(plain), b = acc(pinn);
+    return { plainErr: a.err, pinnErr: b.err, plainExtra: a.extra, pinnExtra: b.extra, plainRes: a.res, pinnRes: b.res };
   };
 
   // ------------------------------------------------------------------ lifecycle
@@ -205,7 +229,7 @@
     const sizes = [1, ...Array(this.depth).fill(this.width), 1];
     this.pinn = new PN.PINN(sizes, 1);
     this.plain = new PN.PINN(sizes, 1);
-    this.history = []; this.step = 0; this.film = null; this.pretrained = false;
+    this.history = []; this.step = 0; this.film = null; this.rec = null; this.pretrained = false;
     this.measure(); this.bump(); this.play();
     const w = this.weights(), parts = [w.data && 'data', w.phys && 'physics', w.ic && 'initial conditions'].filter(Boolean);
     NA.ui.toast.show(parts.length ? `PINN loss: ${parts.join(' + ')}. Retraining.` : 'With no loss terms the PINN has nothing to learn from.');
@@ -244,15 +268,22 @@
     root.append(this.stage, this.archStage);
     this.growth = NA.growth.mount(this.archStage, {
       unit: 'step',
-      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}`,
-      frames: () => (this.film ? this.film.frames() : []),
+      // (the networks trained in advance: the film of that training, then any training that carries on from it)
+      version: () => `${this.film ? this.film.version() : 0}:${this.history.length}:${this.recorded() ? 1 : 0}`,
+      frames: () => NA.growth.joined(this.recorded(), this.film ? this.film.frames() : []),
+      sub: (F) => (F.length && F[0].recorded ? NA.growth.recordedSub(F, 'step') : null),
       curve: () => ({ label: 'The PINN’s error', tok: 'pos', higher: false, fmt: (v) => fmtPct(v, 1), points: this.history.map((q) => [q.step, q.pinnErr]),
         second: { label: 'The plain network’s error', tok: 'neg', points: this.history.map((q) => [q.step, q.plainErr]), judge: false } }),
       math: (f, before) => this.filmMath(f, before),
       fromScratch: () => { this.retrain('Both networks start again from random weights: the film fills up as they learn.'); this.filmTick(true); },
+      busy: () => this.training,
+      start: () => (this.training || this.step ? null : { label: '▶ Train them and watch', run: () => this.play() }),
     }, { title: 'How it learned', what: 'The fits: the exact motion dashed, the plain network and the PINN, over the measurements',
       key: [{ tok: 'ink-2', label: 'exact', dash: true }, { tok: 'neg', label: 'plain network' }, { tok: 'pos', label: 'PINN' }, { tok: 'ink', label: 'measurements', dot: true }],
-      emptyText: 'Train it, and the moments of its learning collect here. The page opens on networks trained in advance: Learn again from scratch watches them start from random weights.' });
+      emptyText: () => (this.pretrained && NA.growth.filmLoading('pinn') ? 'Loading the film of how these networks were trained…'
+        : this.training ? 'Training: the first moments are on their way.'
+          : this.step ? 'Train them, and the moments of their learning collect here. Learn again from scratch watches them start from random weights.'
+            : 'New random weights: train them, and the moments of their learning collect here as they learn.') });
     this.info = UI.infoPanel(root, { open: !(NA.mobile && NA.mobile.mobile) && root.clientHeight >= 680 }); // open at first only when there is room for it under the picture
     // the PINN's entry and the collocation points follow the loss terms in use (renderFoot)
     this.footPinn = el('span');
